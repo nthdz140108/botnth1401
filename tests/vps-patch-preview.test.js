@@ -43,6 +43,23 @@ test('preview CLI prints JSON and identifies a JS-only restart', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('preview CLI can create a package in a new directory', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-cli-package-'));
+  const repo = path.join(dir, 'repo'); fs.mkdirSync(repo);
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    fs.mkdirSync(path.join(repo, 'src')); fs.writeFileSync(path.join(repo, 'src', 'bot.js'), 'committed');
+    git('add', '.'); git('commit', '-qm', 'target');
+    const cli = fileURLToPath(new URL('../deploy/patch-cli.mjs', import.meta.url));
+    const output = path.join(dir, 'package');
+    execFileSync(process.execPath, [cli, '--repo', repo, '--base', base, '--target', 'HEAD', '--output', output], { encoding: 'utf8' });
+    assert.equal(fs.readFileSync(path.join(output, 'files', 'src', 'bot.js'), 'utf8'), 'committed');
+    assert.equal(fs.existsSync(path.join(output, 'manifest.json')), true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('preview rejects symlinks in target commit', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-link-'));
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
@@ -63,6 +80,19 @@ test('documentation-only commit needs no deployment', () => {
     git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
     fs.writeFileSync(path.join(dir, 'README.md'), 'documentation'); git('add', '.'); git('commit', '-qm', 'docs');
     assert.deepEqual(buildPreview({ repo: dir, base, target: 'HEAD' }).files, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('database migrations require a separate maintenance procedure', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-migration-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    const migration = path.join(dir, 'rust', 'crates', 'storage', 'migrations'); fs.mkdirSync(migration, { recursive: true });
+    fs.writeFileSync(path.join(migration, '0002.sql'), 'ALTER TABLE data ADD COLUMN value TEXT;');
+    git('add', '.'); git('commit', '-qm', 'migration');
+    assert.throws(() => buildPreview({ repo: dir, base, target: 'HEAD' }), /migration.*maintenance/i);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -10,7 +10,7 @@ function commit(repo, ref) {
 }
 export function safePath(name) {
   const parts = name.split('/');
-  return allowed.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
+  return allowed.test(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
   return /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
@@ -19,7 +19,7 @@ export function buildPreview({ repo, base, target }) {
   base = commit(repo, base); target = commit(repo, target);
   const targetPaths = git(repo, 'ls-tree', '-r', '-z', '--name-only', target).toString('utf8').split('\0').filter(Boolean);
   const names = new Map();
-  for (const name of targetPaths.filter(name => allowed.test(name) && !ignored(name))) {
+  for (const name of targetPaths.filter(name => allowed.test(name) && !ignored(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name))) {
     if (!safePath(name) || name.includes('\ufffd')) throw new Error(`Path requires manual review: ${name}`);
     const parts = name.split('/');
     for (let i = 1; i <= parts.length; i++) {
@@ -34,6 +34,7 @@ export function buildPreview({ repo, base, target }) {
   for (let i = 0; i < entries.length - 1; i += 2) {
     const code = entries[i], name = entries[i + 1];
     if (ignored(name)) continue;
+    if (/(?:^|\/)migrations?\/.*\.sql$/i.test(name)) throw new Error(`Migration requires separate maintenance: ${name}`);
     if (!safePath(name)) throw new Error(`Path requires manual review: ${name}`);
     if (!['A', 'M', 'D'].includes(code)) throw new Error(`Unsupported change ${code}: ${name}`);
     if (code === 'D') { files.push({ status: 'delete', path: name }); continue; }

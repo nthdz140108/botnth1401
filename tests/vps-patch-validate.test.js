@@ -20,5 +20,7 @@ test('package verification detects corruption and rejects path traversal', () =>
     assert.throws(() => validatePatchPackage(dir), /hash/i);
     file.path = 'src/../../escape'; save();
     assert.throws(() => validatePatchPackage(dir), /path/i);
+    file.path = 'rust/crates/storage/migrations/0002.sql'; save();
+    assert.throws(() => validatePatchPackage(dir), /path/i);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
