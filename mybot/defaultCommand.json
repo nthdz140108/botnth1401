@@ -2785,7 +2785,7 @@
     },
     {
       "name": "getuser",
-      "description": "Liệt kê thành viên nhóm từ API, mỗi thành viên một tin nhắn cách nhau ít nhất 1 giây",
+      "description": "Liệt kê thành viên nhóm, gom tối đa 20 thành viên mỗi tin và giãn cách ít nhất 1 giây",
       "syntax": "{p}getuser",
       "permission": "all",
       "scope": "group",

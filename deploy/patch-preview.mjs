@@ -37,7 +37,22 @@ function releaseBackedCatalog(repo, base, target, name) {
     const oldNames = new Set(before.map(command => command.name));
     const newNames = new Set(after.map(command => command.name));
     if (oldNames.size !== before.length || newNames.size !== after.length) return false;
-    if (!isDeepStrictEqual(before, after.filter(command => oldNames.has(command.name)))) return false;
+    const retained = after.filter(command => oldNames.has(command.name));
+    if (!isDeepStrictEqual(before, retained)) {
+      // Code-backed metadata can evolve between releases; never copy the
+      // corresponding shared JSON or accept edits to unrelated/custom settings.
+      if (!git(repo, 'ls-tree', base, '--', defaultsPath).length) return false;
+      const oldSource = git(repo, 'show', `${base}:${defaultsPath}`).toString('utf8').trim();
+      const oldMatch = /^export default ([\s\S]+);$/.exec(oldSource);
+      const oldDefaults = oldMatch ? JSON.parse(oldMatch[1]) : [];
+      if (!Array.isArray(oldDefaults) || retained.length !== before.length) return false;
+      for (let index = 0; index < before.length; index++) {
+        if (isDeepStrictEqual(before[index], retained[index])) continue;
+        if (before[index].name !== retained[index].name
+          || !oldDefaults.some(entry => isDeepStrictEqual(entry, before[index]))
+          || !defaults.some(entry => isDeepStrictEqual(entry, retained[index]))) return false;
+      }
+    }
     const additions = after.filter(command => !oldNames.has(command.name));
     return additions.every(command => defaults.some(entry => isDeepStrictEqual(entry, command)));
   } catch {

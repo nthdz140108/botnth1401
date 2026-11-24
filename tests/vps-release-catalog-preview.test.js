@@ -51,6 +51,15 @@ test("preview rejects additions not mirrored by the target release defaults", (t
   assert.throws(() => buildPreview({ repo: f.repo, base: f.base, target: f.commit() }), /manual|catalog/i);
 });
 
+test("preview supports updated release metadata without overwriting shared catalogs", (t) => {
+  const f = fixture(t), base = f.commit();
+  const updated = { ...f.addition, description: "Gom 20 thành viên mỗi tin" };
+  for (const name of f.paths) f.write(name, JSON.stringify({ ...f.catalog, commands: [...f.catalog.commands, updated] }));
+  f.write("src/utils/release-command-defaults.js", `export default ${JSON.stringify([updated])};\n`);
+  const preview = buildPreview({ repo: f.repo, base, target: f.commit() });
+  assert.deepEqual(preview.files.map((file) => file.path), ["src/utils/release-command-defaults.js"]);
+});
+
 test("preview rejects prefix changes, removals and unrelated runtime assets", async (t) => {
   for (const change of ["prefix", "remove", "runtime"]) {
     await t.test(change, (t) => {

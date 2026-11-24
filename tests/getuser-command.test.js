@@ -55,6 +55,10 @@ function fakeTime(t) {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_700_000_000_000 });
 }
 
+function listedUids(sent) {
+  return sent.flatMap((entry) => [...entry.text.matchAll(/UID: (\d+)/g)].map((match) => match[1]));
+}
+
 test("getuser is available to group members and agrees with the command manifest", () => {
   const resolved = resolveCommand(["getuser"], commandRegistry);
   assert.equal(resolved.code, "RESOLVED");
@@ -85,10 +89,11 @@ test("getuser lists each distinct member with names, UIDs and at least one secon
   });
   await finish(t, invoke(api));
   const members = sent.filter((entry) => /UID:/.test(entry.text));
-  assert.equal(members.length, 3);
+  assert.equal(members.length, 1);
   assert.match(members[0].text, /Người 100[\s\S]*UID: 100[\s\S]*Trưởng nhóm/);
-  assert.match(members[1].text, /Người 200[\s\S]*UID: 200[\s\S]*Phó nhóm/);
-  assert.match(members[2].text, /Người 300[\s\S]*UID: 300/);
+  assert.match(members[0].text, /Người 200[\s\S]*UID: 200[\s\S]*Phó nhóm/);
+  assert.match(members[0].text, /Người 300[\s\S]*UID: 300/);
+  assert.deepEqual(listedUids(sent), ["100", "200", "300"]);
   assert.deepEqual(profileRequests, [["100_2", "200_4", "300_0"]]);
   for (let index = 1; index < sent.length; index++) {
     assert.ok(sent[index].at - sent[index - 1].at >= 1000, "all responses must respect pacing");
@@ -105,8 +110,8 @@ test("getuser displays API-supplied hidden members without modifying trusted own
   const before = structuredClone(info);
   const { api, sent } = fixture(info);
   await finish(t, invoke(api));
-  assert.equal(sent.filter((entry) => /UID:/.test(entry.text)).length, 2);
-  assert.match(sent.find((entry) => /UID: 200/.test(entry.text)).text, /Thành viên/);
+  assert.equal(listedUids(sent).length, 2);
+  assert.match(sent.find((entry) => /UID: 200/.test(entry.text)).text, /UID: 200[^\n]*Thành viên/);
   assert.deepEqual(info, before);
 });
 
@@ -118,7 +123,7 @@ test("getuser reports an incomplete hidden roster instead of claiming all member
     setting: { hideMembers: 1 },
   });
   await finish(t, invoke(api));
-  assert.equal(sent.filter((entry) => /UID:/.test(entry.text)).length, 2);
+  assert.equal(listedUids(sent).length, 2);
   const text = sent.map((entry) => entry.text).join("\n");
   assert.match(text, /2\/50/);
   assert.match(text, /chưa đầy đủ|chỉ trả về/i);
@@ -134,8 +139,9 @@ test("getuser batches profile lookups for groups larger than 500 and preserves e
   await finish(t, invoke(api));
   assert.deepEqual(profileRequests.map((ids) => ids.length), [500, 1]);
   const members = sent.filter((entry) => /UID:/.test(entry.text));
-  assert.equal(members.length, 501);
-  assert.match(members[500].text, /UID: 1500/);
+  assert.equal(members.length, 26);
+  assert.equal(listedUids(sent).length, 501);
+  assert.match(members.at(-1).text, /UID: 1500/);
 });
 
 test("getuser prevents overlapping listings for the same API and group", async (t) => {
@@ -172,9 +178,9 @@ test("getuser retains UIDs and embedded names when profile access is denied", as
   }, { async getGroupMembers() { throw new Error("permission denied"); } });
   await finish(t, invoke(api));
   const members = sent.filter((entry) => /UID:/.test(entry.text));
-  assert.equal(members.length, 2);
+  assert.equal(members.length, 1);
   assert.match(members[0].text, /Tên có sẵn/);
-  assert.match(members[1].text, /UID: 200/);
+  assert.match(members[0].text, /UID: 200/);
 });
 
 test("getuser reports group API denial and releases its running lock for retries", async () => {
@@ -217,9 +223,9 @@ test("getuser includes memberIds from SDK group responses even without memVerLis
   const { api, sent } = fixture({ totalMember: 2, memberIds: ["100", "200"] });
   await finish(t, invoke(api));
   const members = sent.filter((entry) => /UID:/.test(entry.text));
-  assert.equal(members.length, 2);
+  assert.equal(members.length, 1);
   assert.match(members[0].text, /UID: 100/);
-  assert.match(members[1].text, /UID: 200/);
+  assert.match(members[0].text, /UID: 200/);
 });
 
 test("getuser respects the server's hasMoreMember signal even when the cached total matches", async (t) => {
@@ -238,7 +244,7 @@ test("getuser does not invent member UIDs from malformed server lists", async ()
 test("getuser can finish a paced roster longer than the broadcast broker's default deadline", async (t) => {
   fakeTime(t);
   const { api, sent } = fixture({
-    totalMember: 65, memVerList: Array.from({ length: 65 }, (_, index) => `${100 + index}_0`),
+    totalMember: 1261, memVerList: Array.from({ length: 1261 }, (_, index) => `${100 + index}_0`),
   });
   const broker = createWorkloadBroker({ logger: { error() {}, warn() {} } });
   t.mock.method(console, "error", () => {});
@@ -251,7 +257,7 @@ test("getuser can finish a paced roster longer than the broadcast broker's defau
   await finish(t, broker.drain(120_000));
   assert.equal(broker.snapshot().counters.broadcastFailed, 0);
   assert.equal(broker.snapshot().counters.broadcastCompleted, 1);
-  assert.equal(sent.filter((entry) => /UID:/.test(entry.text)).length, 65);
+  assert.equal(listedUids(sent).length, 1261);
   assert.equal(sent.some((entry) => /timed out/i.test(entry.text)), false);
   await broker.shutdown();
 });
@@ -299,4 +305,94 @@ test("getuser uses the trusted instance UID when a relay API has no own-ID helpe
   ]));
   assert.equal(results[1].status, "busy");
   assert.equal(sent.filter((entry) => /UID:/.test(entry.text)).length, 1);
+});
+
+test("getuser recovers all 255 hidden-group members through getgi/v2 when getmg-v2 supplies only nine", async (t) => {
+  fakeTime(t);
+  const pageCalls = [];
+  const info = Object.freeze({ groupId: "group-a", totalMember: 255, creatorId: "100", adminIds: Object.freeze(["101"]),
+    memVerList: Object.freeze(Array.from({ length: 9 }, (_, index) => `${100 + index}_0`)), setting: Object.freeze({ lockViewMember: 1 }) });
+  const { api, sent } = fixture(info, {
+    async getGroupInfoV2(groupId, options) {
+      pageCalls.push([groupId, options]);
+      return { groupId, totalMember: 255, memberIds: Array.from({ length: 255 }, (_, index) => String(100 + index)), hasMoreMember: 0 };
+    },
+  });
+  const result = await finish(t, invoke(api));
+  assert.equal(result.sent, 255);
+  assert.equal(pageCalls.length, 1);
+  assert.equal(pageCalls[0][0], "group-a");
+  assert.deepEqual(pageCalls[0][1], { mpage: 1, mcount: 100 });
+  assert.equal(new Set(listedUids(sent)).size, 255);
+  assert.equal(sent.filter((entry) => /UID:/.test(entry.text)).length, 13);
+  assert.match(sent[0].text, /255\/255/);
+  assert.doesNotMatch(sent[0].text, /chưa đầy đủ/);
+  for (let index = 1; index < sent.length; index++) assert.ok(sent[index].at - sent[index - 1].at >= 1000);
+});
+
+test("getuser follows member pages and deduplicates overlapping UIDs", async (t) => {
+  fakeTime(t);
+  const pages = [];
+  const { api, sent } = fixture({ totalMember: 5, memVerList: ["100_0"] }, {
+    async getGroupInfoV2(groupId, { mpage }) {
+      pages.push(mpage);
+      return { groupId, totalMember: 5, memberIds: mpage === 1 ? ["100", "200", "300"] : ["300", "400", "500"], hasMoreMember: mpage === 1 ? 1 : 0 };
+    },
+  });
+  await finish(t, invoke(api));
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(listedUids(sent), ["100", "200", "300", "400", "500"]);
+});
+
+test("getuser advances past a first detailed page already present in getmg metadata", async (t) => {
+  fakeTime(t);
+  const pages = [];
+  const { api, sent } = fixture({ totalMember: 3, memVerList: ["100_0", "200_0"] }, {
+    async getGroupInfoV2(groupId, { mpage }) {
+      pages.push(mpage);
+      return { groupId, totalMember: 3, memberIds: mpage === 1 ? ["100", "200"] : ["300"], hasMoreMember: mpage === 1 ? 1 : 0 };
+    },
+  });
+  await finish(t, invoke(api));
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(listedUids(sent), ["100", "200", "300"]);
+});
+
+test("getuser stops paginating a repeated page and reports the remaining partial roster", async (t) => {
+  fakeTime(t);
+  let calls = 0;
+  const { api, sent } = fixture({ totalMember: 255, memVerList: ["100_0"] }, {
+    async getGroupInfoV2(groupId) { calls++; return { groupId, totalMember: 255, memberIds: ["100", "200"], hasMoreMember: 1 }; },
+  });
+  await finish(t, invoke(api));
+  assert.equal(calls, 2);
+  assert.deepEqual(listedUids(sent), ["100", "200"]);
+  assert.match(sent[0].text, /chưa đầy đủ/);
+});
+
+test("getuser retains the known roster if the detailed endpoint is denied or belongs to another group", async (t) => {
+  for (const denied of [true, false]) {
+    await t.test(String(denied), async (t) => {
+      fakeTime(t);
+      const { api, sent } = fixture({ totalMember: 255, memVerList: ["100_0"] }, {
+        async getGroupInfoV2() { if (denied) throw new Error("denied"); return { groupId: "other", memberIds: ["999"] }; },
+      });
+      await finish(t, invoke(api));
+      assert.deepEqual(listedUids(sent), ["100"]);
+      assert.match(sent[0].text, /chưa đầy đủ/);
+    });
+  }
+});
+
+test("getuser packs long profile names into bounded messages without losing members", async (t) => {
+  fakeTime(t);
+  const { api, sent } = fixture({ totalMember: 45, memVerList: Array.from({ length: 45 }, (_, index) => `${100 + index}_0`) }, {
+    async getGroupMembers(ids) { return { profiles: Object.fromEntries(ids.map((id) => [id.split("_")[0], { displayName: "Tên dài ".repeat(45) }])) }; },
+  });
+  await finish(t, invoke(api));
+  assert.equal(listedUids(sent).length, 45);
+  for (const message of sent.filter((entry) => /UID:/.test(entry.text))) {
+    assert.ok(message.text.length <= 3000);
+    assert.ok([...message.text.matchAll(/UID:/g)].length <= 20);
+  }
 });

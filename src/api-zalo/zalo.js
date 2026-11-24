@@ -11,6 +11,7 @@ import { changeGroupNameFactory } from "./apis/changeGroupName.js";
 import { createGroupFactory } from "./apis/createGroup.js";
 import { findUserFactory } from "./apis/findUser.js";
 import { getGroupInfoFactory } from "./apis/getGroupInfo.js";
+import { getGroupInfoV2Factory } from "./apis/getGroupInfoV2.js";
 import { getStickersFactory } from "./apis/getStickers.js";
 import { getStickersDetailFactory } from "./apis/getStickersDetail.js";
 import { removeUserFromGroupFactory } from "./apis/removeUserFromGroup.js";
@@ -305,6 +306,7 @@ class API {
     ];
 
     const optionalCapabilities = [
+      ["getGroupInfoV2", getGroupInfoV2Factory],
       ["getStickers", getStickersFactory],
       ["getStickersDetail", getStickersDetailFactory],
       ["findUser", findUserFactory],

@@ -38,8 +38,9 @@ Catalog dùng chung và dữ liệu runtime không bị ghi đè. Lệnh mới c
 trong `src/utils/release-command-defaults.js`: bot và dashboard bổ sung metadata
 chỉ khi release đang chạy chưa có tên lệnh đó trong catalog dùng chung. Cấu hình
 đã có luôn được ưu tiên. Preview chỉ bỏ qua thay đổi trong hai catalog JSON khi
-chúng thuần bổ sung các khai báo khớp chính xác file defaults của commit đích;
-đổi prefix, sửa/xóa lệnh cũ hoặc đụng dữ liệu khác vẫn bị từ chối. Rollback mã
+chúng bổ sung khai báo khớp chính xác defaults của commit đích, hoặc cập nhật
+metadata khớp defaults ở cả commit nền và đích. Đổi prefix, sửa cấu hình ngoài
+defaults, xóa lệnh cũ hoặc đụng dữ liệu khác vẫn bị từ chối. Rollback mã
 cũng loại bỏ các khai báo ngầm bổ sung mà không sửa catalog dùng chung. Chỉnh
 một lệnh khác không ghi các khai báo ngầm này vào JSON. Nếu quản trị viên sửa
 đích danh cấu hình global của lệnh mới, cấu hình đó được lưu như lựa chọn chủ
