@@ -603,6 +603,7 @@ export async function messagesUser(api, message) {
         handleChat,
         effectiveAuthorization
       );
+      let mediaReplyHandled = false;
       if (isPlainText) {
         const shouldHandleOnChatUser = handleChat && groupSettings[threadId]?.activeBot === true && isSelf;
         if (shouldHandleOnChatUser || callerIsBotAdmin) {
@@ -622,7 +623,7 @@ export async function messagesUser(api, message) {
             isAdminBox,
             canProcessReply || (callerIsBotAdmin && !protectionHandled && !muted)
           );
-          if (replyHandled) handleChat = true;
+          if (replyHandled) { handleChat = true; mediaReplyHandled = true; }
         }
         if (handleChat) {
           const replyTagHandled = await handleCalls(
@@ -647,7 +648,7 @@ export async function messagesUser(api, message) {
       if (!protectionHandled && !muted) {
         await Promise.all([
           handleAutoReplyGemini(api, message, groupSettings, isSelf),
-          handleDownloadZalo(api, message, groupSettings, isSelf),
+          !mediaReplyHandled && !isUserBlocked(senderId) && handleDownloadZalo(api, message, groupSettings, isSelf),
           handleAutoJoin(api, message, groupSettings, botIsAdminBox, isSelf),
         ]);
       }

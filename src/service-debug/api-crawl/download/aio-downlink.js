@@ -1,3 +1,6 @@
+import { platformFromUrl, readDownloadLink } from "../download/download-input.js";
+import { logDownloadEvent, downloadErrorCode } from './download-job.js';
+import { uploadPreparedVideo, videoPayload, isCompleteVideoCache } from "../download/video-delivery.js";
 import axios from "axios";
 import { execFile } from "node:child_process";
 import path from "path";
@@ -153,35 +156,7 @@ export const MEDIA_TYPES = {
   "bluesky.": "bluesky",
 };
 
-const matchDomainToMediaType = (hostname) => {
-  const host = String(hostname || "").toLowerCase();
-  if (!host) return null;
-  for (const [domain, type] of Object.entries(MEDIA_TYPES)) {
-    if (domain.endsWith(".")) {
-      const prefix = domain.slice(0, -1);
-      if (host === prefix || host.startsWith(`${prefix}.`) || host.includes(`.${prefix}.`)) {
-        return type;
-      }
-    } else if (host === domain || host.endsWith(`.${domain}`)) {
-      return type;
-    }
-  }
-  return null;
-};
-
-export const getMediaType = (url) => {
-  const raw = String(url || "").trim();
-  if (!raw) return null;
-  const urlMatch = raw.match(/https?:\/\/[^\s]+/i);
-  const candidate = urlMatch ? urlMatch[0] : (raw.includes(".") && !raw.includes(" ") ? `https://${raw}` : "");
-  if (candidate) {
-    try {
-      const parsed = new URL(candidate);
-      return matchDomainToMediaType(parsed.hostname);
-    } catch {}
-  }
-  return null;
-};
+export const getMediaType = (text) => readDownloadLink({ body: String(text || "") })?.platform || platformFromUrl(text);
 
 const extractFacebookId = (url) => {
   let uniqueId;
@@ -264,8 +239,7 @@ export const getDataDownloadVideo = async (url) => {
 
       console.error(`[download] API ${candidate.name} không trả về dữ liệu hợp lệ`);
     } catch (error) {
-      const safeMsg = API_KEY_HOANGDEV ? error.message.replace(API_KEY_HOANGDEV, "***") : error.message;
-      console.error(`[download] Lỗi khi tải video từ API ${candidate.name}:`, safeMsg);
+      logDownloadEvent({ source: candidate.name, stage: "source", status: "failed", code: downloadErrorCode(error) });
     }
   }
 
@@ -357,7 +331,7 @@ async function processAndSendMultipleImages(api, message, images, mediaData) {
           }
         } catch (downloadError) {
           retryCount++;
-          console.error(`Lỗi tải ảnh lần ${retryCount}:`, downloadError.message);
+          logDownloadEvent({ source: "aio", stage: "download", status: "failed", code: downloadErrorCode(downloadError) });
           if (retryCount >= maxRetries) {
             continue;
           }
@@ -430,7 +404,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
             downloadSuccess = true;
           } catch (downloadError) {
             retryCount++;
-            console.error(`Lỗi tải ảnh lần ${retryCount}:`, downloadError.message);
+            logDownloadEvent({ source: "aio", stage: "download", status: "failed", code: downloadErrorCode(downloadError) });
             if (retryCount >= maxRetries) {
               throw downloadError;
             }
@@ -464,11 +438,13 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
 
   const cachedMedia = await getCachedMedia(mediaType, safeUniqueId, quality, title);
   let videoUrl;
+  let delivery;
   let progress = null;
   let operationTempPath = null;
 
   try {
-    if (cachedMedia) {
+    if (cachedMedia && (typeFile !== "video" || isCompleteVideoCache(cachedMedia))) {
+      delivery = cachedMedia;
       videoUrl = cachedMedia.fileUrl;
     } else {
       if (!isMultipleImages) {
@@ -481,6 +457,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
       }
 
       const downloaded = await categoryDownload(api, message, mediaType, safeUniqueId, selectedMedia, quality);
+      delivery = downloaded?.delivery;
       videoUrl = typeof downloaded === "string" ? downloaded : downloaded?.videoUrl;
       operationTempPath = typeof downloaded === "object" ? downloaded?.tempFilePath || null : null;
       if (!videoUrl) {
@@ -493,13 +470,10 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
     }
 
     if (typeFile === "video") {
-      await progress?.complete();
       await api.sendVideo({
-        videoUrl: videoUrl,
+        ...videoPayload(delivery),
         threadId: message.threadId,
         threadType: message.type,
-        thumbnail: selectedMedia.thumbnail,
-        localThumbnailSource: operationTempPath || undefined,
         message: {
           text:
             `[ ${senderName} ]\n` +
@@ -511,12 +485,13 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
         },
         ttl: 3600000,
       });
+      await setCacheData(mediaType, safeUniqueId, { ...delivery, title }, quality);
     } else if (typeFile === "audio" && mediaType !== "tiktok") {
       try {
         await progress?.complete();
         await api.sendVoice(message, videoUrl, 3600000);
       } catch (error) {
-        console.error("Lỗi khi xử lý audio:", error.message);
+        logDownloadEvent({ source: "aio", stage: error.stage || "send", status: "failed", code: downloadErrorCode(error) });
         await api.sendMessage({
           msg: `Không thể tải audio từ ${capitalizeEachWord(mediaType)}`,
           ttl: 30000,
@@ -557,7 +532,7 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
 
     return await handleDownloadUrl(api, message, query, senderId, senderName);
   } catch (error) {
-    console.error("Lỗi khi xử lý lệnh download:", error.message);
+    logDownloadEvent({ source: "aio", stage: error.stage || "send", status: "failed", code: downloadErrorCode(error) });
     const object = {
       caption: `Đã xảy ra lỗi khi xử lý lệnh tải dữ liệu: ${error.message}`,
     };
@@ -781,7 +756,7 @@ export async function handleDownloadUrl(api, message, query, senderId, senderNam
       senderName
     });
   } catch (error) {
-    console.error("Lỗi khi xử lý URL download:", error.message);
+    logDownloadEvent({ source: "aio", stage: error.stage || "send", status: "failed", code: downloadErrorCode(error) });
     const object = {
       caption: `Đã xảy ra lỗi khi xử lý link tải dữ liệu: ${error.message}`,
     };
@@ -824,7 +799,7 @@ export async function categoryDownload(api, message, platform, uniqueId, selecte
           downloadSuccess = true;
         } catch (downloadError) {
           retryCount++;
-          console.error(`Lỗi tải video lần ${retryCount} cho ${selectedMedia.url}:`, downloadError.message);
+          logDownloadEvent({ source: platform, stage: "download", status: "failed", code: "DOWNLOAD_FAILED" });
           if (retryCount >= maxRetries) {
             throw downloadError;
           }
@@ -833,16 +808,18 @@ export async function categoryDownload(api, message, platform, uniqueId, selecte
       }
     }
 
+    if (selectedMedia.type !== 'audio' && (selectedMedia.type === "video" || !/^(mp3|m4a|aac|ogg|wav|flac|opus)$/i.test(selectedMedia.extension || ''))) {
+      const delivery = await uploadPreparedVideo(api, message, tempFilePath);
+      return { videoUrl: delivery.fileUrl, tempFilePath, delivery };
+    }
     const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
     const videoUrl = uploadResult[0].fileUrl;
-
     const duration = await getDurationVideo(tempFilePath);
-
-    setCacheData(platform, uniqueId, { fileUrl: videoUrl, title: selectedMedia.title, duration }, qualityVideo);
+    await setCacheData(platform, uniqueId, { fileUrl: videoUrl, title: selectedMedia.title, duration }, qualityVideo);
     return { videoUrl, tempFilePath };
   } catch (error) {
     if (tempFilePath) await deleteFile(tempFilePath).catch(() => {});
-    console.error(`Lỗi khi tải video ${quality} từ ${platform}:`, error.message);
+    logDownloadEvent({ source: platform, stage: error.stage || "download", status: "failed", code: "MEDIA_ERROR" });
     return null;
   }
 }
@@ -909,7 +886,7 @@ export async function handleDownloadReply(api, message) {
 
     return true;
   } catch (error) {
-    console.error("Lỗi xử lý reply download:", error.message);
+    logDownloadEvent({ source: "aio", stage: error.stage || "send", status: "failed", code: downloadErrorCode(error) });
     const object = {
       caption: `Đã xảy ra lỗi khi xử lý tin nhắn của bạn: ${error.message}`,
     };

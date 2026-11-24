@@ -1,3 +1,5 @@
+import { platformFromUrl, readDownloadLink } from "../download/download-input.js";
+import { uploadPreparedVideo, videoPayload, isCompleteVideoCache } from "../download/video-delivery.js";
 import { createDownloadJob, runPlatformDownload, downloadFailureCaption, logDownloadEvent } from "../download/download-job.js";
 import { ensureUploadResult } from "../youtube/youtube-core.js";
 import axios from "axios";
@@ -157,35 +159,7 @@ const MEDIA_TYPES = {
   "bluesky.": "bluesky",
 };
 
-const matchDomainToMediaType = (hostname) => {
-  const host = String(hostname || "").toLowerCase();
-  if (!host) return null;
-  for (const [domain, type] of Object.entries(MEDIA_TYPES)) {
-    if (domain.endsWith(".")) {
-      const prefix = domain.slice(0, -1);
-      if (host === prefix || host.startsWith(`${prefix}.`) || host.includes(`.${prefix}.`)) {
-        return type;
-      }
-    } else if (host === domain || host.endsWith(`.${domain}`)) {
-      return type;
-    }
-  }
-  return null;
-};
-
-const getMediaType = (url) => {
-  const raw = String(url || "").trim();
-  if (!raw) return null;
-  const urlMatch = raw.match(/https?:\/\/[^\s]+/i);
-  const candidate = urlMatch ? urlMatch[0] : (raw.includes(".") && !raw.includes(" ") ? `https://${raw}` : "");
-  if (candidate) {
-    try {
-      const parsed = new URL(candidate);
-      return matchDomainToMediaType(parsed.hostname);
-    } catch {}
-  }
-  return null;
-};
+const getMediaType = (text) => readDownloadLink({ body: String(text || "") })?.platform || platformFromUrl(text);
 
 const extractFacebookId = (url) => {
   let uniqueId;
@@ -347,12 +321,14 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
 
   const cachedMedia = await getCachedMedia(mediaType, uniqueId, quality, title);
   let videoUrl;
+  let delivery;
   let progress = null;
   // Operation temp của lần thử này: chỉ xóa sau khi gửi cuối resolve/reject.
   let operationTempPath = null;
 
   try {
-    if (cachedMedia) {
+    if (cachedMedia && (typeFile !== "video" || isCompleteVideoCache(cachedMedia))) {
+      delivery = cachedMedia;
       videoUrl = cachedMedia.fileUrl;
     } else {
       if (!isMultipleImages) {
@@ -368,6 +344,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
       if (!downloaded || !downloaded.videoUrl) {
         throw Object.assign(new Error("Media download failed"), { code: "DOWNLOAD_FAILED" });
       }
+      delivery = downloaded?.delivery;
       videoUrl = downloaded.videoUrl;
       operationTempPath = downloaded.tempFilePath || null;
     }
@@ -376,14 +353,11 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
       await api.sendVoice(message, videoUrl, 3600000);
       return true;
     } else if (typeFile === "video") {
-      await progress?.complete();
       await api.sendVideo({
-        videoUrl: videoUrl,
+        ...videoPayload(delivery),
         videoAlreadyUploaded: true,
         threadId: message.threadId,
         threadType: message.type,
-        thumbnail: selectedMedia.thumbnail,
-        localThumbnailSource: operationTempPath || undefined,
         message: {
           text:
             `[ ${senderName} ]\n` +
@@ -395,6 +369,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
         },
         ttl: 3600000,
       });
+      await setCacheData(mediaType, uniqueId, { ...delivery, title }, quality);
       return true;
     }
     return false;
@@ -794,12 +769,14 @@ export async function categoryDownload(api, message, platform, uniqueId, selecte
         break;
     }
 
+    if (selectedMedia.type !== 'audio' && (selectedMedia.type === "video" || !/^(mp3|m4a|aac|ogg|wav|flac|opus)$/i.test(selectedMedia.extension || ''))) {
+      const delivery = await uploadPreparedVideo(api, message, tempFilePath);
+      return { videoUrl: delivery.fileUrl, tempFilePath, delivery };
+    }
     const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
-    const videoUrl = ensureUploadResult(uploadResult);
-
+    const videoUrl = uploadResult[0].fileUrl;
     const duration = await getDurationVideo(tempFilePath);
-
-    setCacheData(platform, uniqueId, { fileUrl: videoUrl, title: selectedMedia.title, duration }, qualityVideo);
+    await setCacheData(platform, uniqueId, { fileUrl: videoUrl, title: selectedMedia.title, duration }, qualityVideo);
     return { videoUrl, tempFilePath };
   } catch (error) {
     if (tempFilePath) {

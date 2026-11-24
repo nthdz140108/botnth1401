@@ -1,4 +1,7 @@
-import { runPlatformDownload, downloadFailureCaption } from "./download-job.js";
+import { appContext } from "../../../api-zalo/context.js";
+import { isOutboundMessage } from "../../../api-zalo/outbound-message-registry.js";
+import { readDownloadLink, hasCommandPrefix, messageTextParts, claimDownloadMessage } from "./download-input.js";
+import { runPlatformDownload, downloadFailureCaption, logDownloadEvent } from "./download-job.js";
 import fs from "fs";
 import path from "path";
 import {
@@ -142,34 +145,34 @@ export async function handleAutoDownloadCommand(api, message, aliasCommand, grou
 
 export { MEDIA_TYPES, getMediaType };
 
-export async function handleDownloadZalo(api, message, groupSettings, isSelf) {
-    if (isSelf || message?.isSelf) return false;
+export async function handleDownloadZalo(api, message, groupSettings, isSelf, dependencies = {}) {
     const threadId = message.threadId;
     const userId = message.data?.uidFrom;
     const prefix = getGlobalPrefix();
-  
-    const rawContent =
-      message.body?.trim() ||
-      message.data?.content?.title?.trim() ||
-      (typeof message.data?.content === "string" ? message.data.content.trim() : "");
-    if (!rawContent) return false;
-  
-    const content = removeMention(message).trim();
-    if (content.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+    const botId = appContext.uid || 'admin';
+    if (isOutboundMessage(botId, message) || hasCommandPrefix(message, prefix)) return false;
     const replyHandled =
-      (await handleHoangdevDownloadReply(api, message)) ||
-      (await handleLegacyDownloadReply(api, message));
+      (await (dependencies.handleReply || handleHoangdevDownloadReply)(api, message)) ||
+      (await (dependencies.handleLegacyReply || handleLegacyDownloadReply)(api, message));
     if (replyHandled) return true;
-  
-  const validUrl = extractValidUrl(rawContent);
-  if (!validUrl) return false;
-
-  if (!groupSettings[threadId]?.enableDownload) return false;
+    const link = readDownloadLink(message);
+    if (!link || !groupSettings[threadId]?.enableDownload) return false;
+    // Self-authored plain text must contain only a URL. A preview has its own href.
+    if (isSelf || message.isSelf) {
+      if (typeof message.data?.content === 'object') {
+        const previewLink = readDownloadLink({ data: { content: { href: message.data.content?.href } } });
+        if (!previewLink || previewLink.url !== link.url) return false;
+      } else if (messageTextParts(message).some(text => text.trim() !== link.url)) return false;
+    }
+    if (!claimDownloadMessage(botId, message)) return true;
+    logDownloadEvent({ source: link.platform, stage: 'read-link', status: 'ok' });
+    const validUrl = link.url;
+    const usageKey = JSON.stringify([botId, threadId, userId]);
 
   const cooldownCommandName = "download";
   const cooldown = getCommandCountdown(cooldownCommandName) * 1000;
   const currentTime = Date.now();
-  const lastUsage = commandUsage[userId]?.[cooldownCommandName] || 0;
+  const lastUsage = commandUsage[usageKey]?.[cooldownCommandName] || 0;
   const timeLeft = cooldown - (currentTime - lastUsage);
 
   if (timeLeft > 0) {
@@ -177,22 +180,22 @@ export async function handleDownloadZalo(api, message, groupSettings, isSelf) {
     return true;
   }
 
-  if (!commandUsage[userId]) commandUsage[userId] = {};
-  commandUsage[userId][cooldownCommandName] = currentTime;
+  if (!commandUsage[usageKey]) commandUsage[usageKey] = {};
+  commandUsage[usageKey][cooldownCommandName] = currentTime;
 
-  const tiktokUrl = extractTikTokUrl(validUrl);
+  const tiktokUrl = link.platform === "tiktok" ? validUrl : null;
   if (tiktokUrl) {
     try {
-      await sendReactionConfirmReceive(api, message, 5);
+      await (dependencies.sendReaction || sendReactionConfirmReceive)(api, message, 5);
       // Shared getTikTokMedia / sendTikTokMedia pipeline, with one failure response.
-      await runPlatformDownload(api, message, tiktokUrl, "tiktok");
+      await (dependencies.runPlatformDownload || runPlatformDownload)(api, message, tiktokUrl, "tiktok");
     } catch (error) {
       await api.sendMessage({ msg: downloadFailureCaption("TikTok", "receive", error), quote: message, ttl: 30000 }, threadId, message.type);
     }
     return true;
   }
 
-  const youtubeUrl = extractYouTubeUrl(validUrl);
+  const youtubeUrl = link.platform === "youtube" ? validUrl : null;
   if (youtubeUrl) {
     try {
       return await handleYouTubeAutoDownload(api, message, normalizeYoutubeUrl(youtubeUrl) || youtubeUrl, userId, message.data?.dName, { prefix });

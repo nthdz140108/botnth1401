@@ -1,3 +1,4 @@
+import { uploadPreparedVideo, videoPayload, isCompleteVideoCache } from "../download/video-delivery.js";
 import { createDownloadJob, logDownloadEvent } from "../download/download-job.js";
 import fs from "fs";
 import path from "path";
@@ -209,13 +210,15 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
   const { format, qualityText, timeNotify } = getVideoFormat(qualityParam);
   const cachedVideo = await getCachedMedia(PLATFORM, video.videoId, qualityText, video.title);
   let videoUrl;
+  let delivery;
   let duration = null;
   let progress = null;
   // File media tải về chỉ được xóa sau khi thao tác gửi cuối cùng kết thúc.
   let fetchedPath = null;
 
   try {
-    if (cachedVideo) {
+    if (cachedVideo && (format === audioFormat || isCompleteVideoCache(cachedVideo))) {
+      delivery = cachedVideo;
       videoUrl = cachedVideo.fileUrl;
       duration = cachedVideo.duration;
     } else {
@@ -242,14 +245,14 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
           }
         } else {
           try {
-            const uploadVideo = await api.uploadAttachment([fetchedPath], message.threadId, message.type);
-            videoUrl = ensureUploadResult(uploadVideo);
+            delivery = await uploadPreparedVideo(api, message, fetchedPath, { job });
+            videoUrl = delivery.fileUrl;
           } catch (error) {
             throw error?.stage === "upload" ? error : normalizeYoutubeWorkflowError("upload", error);
           }
         }
         duration = await getDurationVideo(fetchedPath);
-        setCacheData(PLATFORM, video.videoId, { fileUrl: videoUrl, title: video.title, duration }, qualityText);
+        if (format === audioFormat) await setCacheData(PLATFORM, video.videoId, { fileUrl: videoUrl, title: video.title, duration }, qualityText);
       } catch (error) {
         if (fetchedPath) {
           await deleteFile(fetchedPath).catch(() => {});
@@ -274,12 +277,9 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
     } else {
       try {
         await api.sendVideo({
-        videoUrl,
+        ...videoPayload(delivery),
         threadId: message.threadId,
         threadType: message.type,
-        thumbnail: video.thumbnail,
-        localThumbnailSource: fetchedPath || undefined,
-        duration,
         videoAlreadyUploaded: true,
         message: {
           text: buildYoutubeVideoCaption({
@@ -299,6 +299,7 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
       }
     }
 
+    if (format !== audioFormat) await setCacheData(PLATFORM, video.videoId, { ...delivery, title: video.title }, qualityText);
     await progress?.complete();
 
     return true;

@@ -1,3 +1,4 @@
+import { rememberOutboundMessage, nextOutboundClientId } from "../outbound-message-registry.js";
 import { Zalo } from "../zalo.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { appContext } from "../context.js";
@@ -55,7 +56,7 @@ export function sendLinkFactory(api) {
         stream_icon: linkData.data.media.stream_icon,
       }),
       ttl: ttl,
-      clientId: Date.now(),
+      clientId: nextOutboundClientId(),
       mentionInfo: linkData.data.mentions ? JSON.stringify(linkData.data.mentions) : isGroupMessage ? "[]" : "",
     };
 
@@ -70,6 +71,7 @@ export function sendLinkFactory(api) {
     const encryptedParams = encodeAES(appContext.secretKey, JSON.stringify(params));
     if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
 
+    rememberOutboundMessage(appContext.uid, threadId, { clientId: params.clientId });
     const response = await request(serviceURLs[type], {
       method: "POST",
       body: new URLSearchParams({ params: encryptedParams }),
@@ -85,6 +87,7 @@ export function sendLinkFactory(api) {
     responseData.clientId ??= outboundClientId;
     responseData.cliMsgId ??= outboundClientId;
 
+    rememberOutboundMessage(appContext.uid, threadId, responseData);
     return responseData;
   };
 } 

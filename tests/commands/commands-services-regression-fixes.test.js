@@ -330,19 +330,23 @@ test("tiktok viewtt: buffLink caps requests at MAX_BUFF_REQUESTS (<= 5) with Abo
   assert.ok(calls.every((c) => c.hasSignal));
 });
 
-test("crawl & auto-reply: auto-download ignores self messages and auto-reply caches sender names via LRUCache", async () => {
+test("crawl & auto-reply: auto-download accepts self links and auto-reply caches sender names via LRUCache", async () => {
+  let downloads = 0;
   const selfHandled = await handleDownloadZalo(
     {},
     {
       isSelf: true,
       threadId: "g_dl",
       body: "https://www.tiktok.com/@a/video/1",
-      data: { uidFrom: "bot_1", content: "https://www.tiktok.com/@a/video/1" },
+      data: { uidFrom: "bot_1", msgId: "self-link-regression", content: "https://www.tiktok.com/@a/video/1" },
     },
     { g_dl: { enableDownload: true } },
-    false
+    false,
+    { handleReply: async () => false, handleLegacyReply: async () => false,
+      sendReaction: async () => {}, runPlatformDownload: async () => { downloads++; return true; } }
   );
-  assert.equal(selfHandled, false);
+  assert.equal(selfHandled, true);
+  assert.equal(downloads, 1);
 
   senderNameCache.clear();
   let lookupCount = 0;

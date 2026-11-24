@@ -73,7 +73,7 @@ test("prepare reads real metadata and extracts a non-empty JPEG frame", async (t
   assert.equal(prepared.metadata.duration, 15000);
   assert.equal(prepared.metadata.width, 720);
   assert.equal(prepared.metadata.height, 1280);
-  assert.equal(prepared.metadata.fileSize, 2048);
+  assert.equal(prepared.metadata.fileSize, fs.statSync(videoPath).size);
   assert.match(path.basename(prepared.thumbnailPath), /^vd-thumb_.+\.jpg$/);
   assert.ok(fs.existsSync(prepared.thumbnailPath), "thumbnail must exist on disk");
 });

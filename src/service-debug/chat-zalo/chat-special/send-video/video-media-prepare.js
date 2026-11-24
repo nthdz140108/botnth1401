@@ -63,7 +63,7 @@ async function defaultRunTool(binary, args) {
   } else if (binary === "ffprobe") {
     resolvedBinary = getFfprobeExecutableSync() || binary;
   }
-  return execFileAsync(resolvedBinary, args, { timeout: 15000, windowsHide: true });
+  return execFileAsync(resolvedBinary, args, { timeout: binary === 'ffmpeg' ? 180000 : 15000, windowsHide: true });
 }
 
 /**
@@ -77,7 +77,7 @@ async function defaultRunTool(binary, args) {
  * @param {(binary: string, args: string[]) => Promise<{stdout: string, stderr: string}>} [options.runTool]
  * @param {string} [options.tempDirectory] Thư mục chứa thumbnail tạm
  */
-export async function prepareLocalVideoMedia(filePath, { fsImpl = fs, runTool = defaultRunTool, tempDirectory = tempDir } = {}) {
+export async function prepareLocalVideoMedia(filePath, { fsImpl = fs, runTool = defaultRunTool, tempDirectory = tempDir, normalize = false } = {}) {
   if (typeof filePath !== "string" || !filePath.trim()) {
     throw new VideoFileUnreadableError("Video path is empty", { stage: "stat" });
   }
@@ -116,10 +116,28 @@ export async function prepareLocalVideoMedia(filePath, { fsImpl = fs, runTool = 
   }
 
   const videoStream = Array.isArray(probed?.streams) ? probed.streams.find((s) => s?.codec_type === "video") : null;
+  const audioStreams = (probed?.streams || []).filter(s => s.codec_type === 'audio');
+  if (normalize && videoStream && (videoStream.codec_name !== 'h264' ||
+      !String(probed.format?.format_name || '').includes('mp4') ||
+      audioStreams.some(s => s.codec_name !== 'aac') ||
+      (videoStream.pix_fmt && videoStream.pix_fmt !== 'yuv420p'))) {
+    await fsImpl.promises.mkdir(tempDirectory, { recursive: true });
+    const converted = path.join(tempDirectory, `video-normalized-${randomUUID()}.mp4`);
+    try {
+      await runTool('ffmpeg', ['-v', 'error', '-y', '-i', filePath, '-map', '0:v:0', '-map', '0:a:0?',
+        '-vf', 'scale=ceil(iw/2)*2:ceil(ih/2)*2', '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-movflags', '+faststart', converted]);
+      return await prepareLocalVideoMedia(converted, { fsImpl, runTool, tempDirectory });
+    } catch (error) {
+      await fsImpl.promises.unlink(converted).catch(() => {});
+      if (isToolMissingError(error)) throw new VideoToolMissingError('ffmpeg', error);
+      throw error;
+    }
+  }
   const durationMs = Math.round(Number(probed?.format?.duration ?? videoStream?.duration ?? 0) * 1000);
   const width = Math.round(Number(videoStream?.width) || 0);
   const height = Math.round(Number(videoStream?.height) || 0);
-  const fileSize = Math.round(Number(probed?.format?.size ?? videoStream?.size ?? 0) || 0);
+  const fileSize = stat.size;
 
   if (!videoStream || durationMs <= 0 || width <= 0 || height <= 0 || fileSize <= 0) {
     throw new VideoFileUnreadableError("Video metadata is incomplete (duration/width/height/fileSize)", { stage: "probe" });

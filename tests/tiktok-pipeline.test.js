@@ -1,3 +1,6 @@
+import { prepareVideoFixture } from "./helpers/prepared-video-fixture.js";
+import { setLocalVideoMediaPreparer } from "../src/service-debug/chat-zalo/chat-special/send-video/send-video.js";
+setLocalVideoMediaPreparer(prepareVideoFixture);
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

@@ -1,3 +1,4 @@
+import { uploadPreparedVideo, videoPayload, isCompleteVideoCache } from "./video-delivery.js";
 import { randomUUID } from "crypto";
 import path from "path";
 import fs from "fs";
@@ -41,7 +42,8 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
       const videoInfo = await job.run('metadata', () => fetchVideoInfo(youtubeUrl));
     state.stage = "cache";
     const cached = await getCached("youtube", videoInfo.videoId, "720p", videoInfo.title);
-    let mediaUrl = cached?.fileUrl;
+    let delivery = isCompleteVideoCache(cached) ? cached : null;
+    let mediaUrl = delivery?.fileUrl;
     let duration = cached?.duration || null;
     let videoPath = null;
     if (!mediaUrl) {
@@ -52,19 +54,15 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
       state.files.push(videoPath);
       await job.run('download', () => downloadMedia(videoInfo.url, videoPath, YOUTUBE_FORMAT_720));
       ensureNonEmptyFile(videoPath);
-      state.stage = "upload";
-      mediaUrl = ensureUploadResult(await api.uploadAttachment([videoPath], message.threadId, message.type));
-      state.stage = "duration";
-      duration = await getDuration(videoPath);
-      await setCached("youtube", videoInfo.videoId, { fileUrl: mediaUrl, title: videoInfo.title, duration }, "720p");
+      state.stage = "prepare";
+      delivery = await uploadPreparedVideo(api, message, videoPath, { job, prepareMedia: dependencies.prepareMedia });
+      mediaUrl = delivery.fileUrl;
     }
     state.stage = "send";
-    await api.sendVideo(buildYoutubePayloadBase({
-      videoUrl: mediaUrl,
+    await api.sendVideo({
+      ...videoPayload(delivery),
       threadId: message.threadId,
       threadType: message.type,
-      thumbnail: videoInfo.thumbnail,
-      duration,
       message: {
         text: buildYoutubeVideoCaption({
           senderName: senderName || message.data?.dName,
@@ -76,8 +74,9 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
         }),
       },
       ttl: 3600000,
-      alreadyUploaded: true,
-    }));
+      videoAlreadyUploaded: true,
+    });
+    await setCached("youtube", videoInfo.videoId, { ...delivery, title: videoInfo.title }, "720p");
     return true;
   } catch (error) {
     job.event(error?.stage || state.stage, 'failed', error);

@@ -1,3 +1,5 @@
+import { readDownloadLink } from "../download/download-input.js";
+import { uploadPreparedVideo, videoPayload, isCompleteVideoCache } from "../download/video-delivery.js";
 import { runPlatformDownload, logDownloadEvent } from "../download/download-job.js";
 import { ensureUploadResult } from "../youtube/youtube-core.js";
 import axios from "axios";
@@ -124,7 +126,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
         tempFilePath = path.join(tempDir, `tiktok_audio_${uniqueId}_${Date.now()}.mp3`);
         let downloadAudioUrl = media.music?.url;
         if (!downloadAudioUrl) {
-          const original = await getDataDownloadOriginal(null, uniqueId);
+          const original = await (opts.getDataDownloadOriginal || getDataDownloadOriginal)(null, uniqueId);
           if (original?.music?.url) downloadAudioUrl = original.music.url;
         }
 
@@ -367,8 +369,10 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
   try {
     const cachedVideo = await getCachedMediaFn(PLATFORM, uniqueId, typeVideo, description);
     let videoUrl;
+    let delivery;
 
-    if (cachedVideo) {
+    if (isCompleteVideoCache(cachedVideo)) {
+      delivery = cachedVideo;
       videoUrl = cachedVideo.fileUrl;
     } else {
       if (!isRandom) {
@@ -383,7 +387,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
       try {
         tempFilePath = await downloadVideoFn(media.video.url);
       } catch (error) {
-        const original = await getDataDownloadOriginal(null, uniqueId);
+        const original = await (opts.getDataDownloadOriginal || getDataDownloadOriginal)(null, uniqueId);
         if (original?.video?.url) {
           tempFilePath = await downloadVideoFn(original.video.url);
         } else {
@@ -391,21 +395,23 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
         }
       }
 
-      const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
-      videoUrl = ensureUploadResult(uploadResult);
-
-      if (videoUrl) {
-        setCacheDataFn(PLATFORM, uniqueId, { fileUrl: videoUrl, title: description }, typeVideo);
+      try {
+        delivery = await uploadPreparedVideo(api, message, tempFilePath, { job: opts.job, prepareMedia: opts.prepareMedia });
+      } catch (error) {
+        if (error.stage !== 'prepare' || error.code === 'VIDEO_TOOL_MISSING') throw error;
+        const original = await (opts.getDataDownloadOriginal || getDataDownloadOriginal)(null, uniqueId);
+        if (!original?.video?.url || original.video.url === media.video.url) throw error;
+        await deleteFileFn(tempFilePath);
+        tempFilePath = await downloadVideoFn(original.video.url);
+        delivery = await uploadPreparedVideo(api, message, tempFilePath, { job: opts.job, prepareMedia: opts.prepareMedia });
       }
+      videoUrl = delivery.fileUrl;
     }
 
     const sentMessage = await api.sendVideo({
-      videoUrl,
-      videoAlreadyUploaded: true,
+      ...videoPayload(delivery),
       threadId: message.threadId,
       threadType: message.type,
-      thumbnail: media.video.cover,
-      localThumbnailSource: tempFilePath || undefined,
       message: {
         text:
           captionBlock +
@@ -418,6 +424,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
       ttl: 3600000,
     });
 
+    await setCacheDataFn(PLATFORM, uniqueId, { ...delivery, title: description }, typeVideo);
     await progress?.complete();
 
     try {
@@ -481,10 +488,9 @@ export async function getRandomVideoFromArray(api, message, array) {
   return videoUrl;
 }
 
-const extractTikTokUrl = (text) => {
-  const tiktokRegex = /https?:\/\/((?:vm|vt|www)\.)?tiktok\.com\/[^\s]+/i;
-  const match = text.match(tiktokRegex);
-  return match ? match[0] : null;
+const extractTikTokUrl = text => {
+  const link = readDownloadLink({ body: text });
+  return link?.platform === 'tiktok' ? link.url : null;
 };
 
 export async function consumeTikTokSelection(api, message, options = {}) {
@@ -508,7 +514,7 @@ export async function consumeTikTokSelection(api, message, options = {}) {
     const sent = await sendMedia(api, message, media, { typeVideo: qualityType });
     return { ok: sent !== false, claimed: true };
   } catch (error) {
-    console.error("Lỗi xử lý lựa chọn TikTok:", error);
+    logDownloadEvent({ source: "tiktok", stage: "send", status: "failed", code: "MEDIA_ERROR" });
     await sendMessageWarningRequest(api, message, {
       caption: `Đã xảy ra lỗi khi xử lý tin nhắn của bạn. Vui lòng thử lại sau.`,
     }, 30000);
@@ -634,7 +640,7 @@ export async function handleTikTokReply(api, message) {
     if (!canContinueReply(record, message.data.uidFrom, message.threadId)) return false;
     return await checkReplySelectionsMapData(api, message);
   } catch (error) {
-    console.error("Lỗi xử lý reply TikTok:", error);
+    logDownloadEvent({ source: "tiktok", stage: "send", status: "failed", code: "MEDIA_ERROR" });
     const object = {
       caption: `Đã xảy ra lỗi khi xử lý tin nhắn của bạn. Vui lòng thử lại sau.`,
     };
@@ -716,7 +722,7 @@ export async function handleTikTokReaction(api, reaction) {
     await sendTikTokMedia(api, reactionMessage, randomMedia, { isRandom: true, typeVideo });
     return true;
   } catch (error) {
-    console.error("Lỗi khi xử lý reaction TikTok:", error);
+    logDownloadEvent({ source: "tiktok", stage: "send", status: "failed", code: "MEDIA_ERROR" });
     return false;
   }
 }

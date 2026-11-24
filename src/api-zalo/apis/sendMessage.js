@@ -1,3 +1,4 @@
+import { rememberOutboundMessage, nextOutboundClientId } from "../outbound-message-registry.js";
 import FormData from "form-data";
 import fs from "fs";
 import sharp from "sharp";
@@ -64,6 +65,7 @@ function prepareQMSG(quote) {
             const type = each.type ?? "";
            for (let attempt = 1; attempt <= maxRetries; attempt++) {
              try {
+               rememberOutboundMessage(appContext.uid, each.threadId, { clientId: each.clientId });
                const response = await request(each.url, {
                  method: "POST",
                  body: each.body,
@@ -91,6 +93,7 @@ function prepareQMSG(quote) {
                    `[SEND RECEIPT] operation=${each.operation || "request"} threadId="${each.threadId || ""}" type=${each.type} msgId="${responseData.msgId || ""}" requestClientId="${each.clientId || ""}"`
                  );
                }
+               rememberOutboundMessage(appContext.uid, each.threadId, responseData);
                return responseData;
              } catch (error) {
                lastError = error;
@@ -164,7 +167,7 @@ export function sendMessageFactory(api) {
     }
 
     const params = {
-        clientId: Date.now(),
+        clientId: nextOutboundClientId(),
         imei: appContext.imei,
     };
     const encryptedParams = encodeAES(appContext.secretKey, JSON.stringify(params));
@@ -231,7 +234,7 @@ export function sendMessageFactory(api) {
           toid: isGroupMessage ? undefined : threadId,
           grid: isGroupMessage ? threadId : undefined,
           message: msg,
-          clientId: Date.now(),
+          clientId: nextOutboundClientId(),
           mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
           qmsgOwner: quoteData.uidFrom,
           qmsgId: quoteData.msgId,
@@ -248,7 +251,7 @@ export function sendMessageFactory(api) {
         }
       : {
           message: msg,
-          clientId: Date.now(),
+          clientId: nextOutboundClientId(),
           mentionInfo: isMentionsValid ? JSON.stringify(mentionsFinal) : undefined,
           imei: isGroupMessage ? undefined : appContext.imei,
           ttl: ttl,

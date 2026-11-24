@@ -248,6 +248,8 @@ export async function getCachedMedia(platform, id, quality = null, title = null)
 
   return {
     fileUrl: linkChoose.fileUrl,
+    thumbnail: linkChoose.thumbnail,
+    fileSize: linkChoose.fileSize,
     title: linkChoose.title || cachedData.title,
     platform: linkChoose.platform || platform,
     width: linkChoose.width || cachedData.width,

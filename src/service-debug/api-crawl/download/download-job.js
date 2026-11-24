@@ -9,7 +9,8 @@ export function downloadErrorCode(error) {
   const status = error?.response?.status;
   if (status === 401 || status === 403) return 'AUTH';
   if (Number.isInteger(status)) return `HTTP_${status}`;
-  return /^[A-Z0-9_]{1,40}$/.test(error?.code || '') ? error.code : 'PROVIDER_ERROR';
+  const code = error?.code ?? error?.error_code;
+  return /^[A-Z0-9_]{1,40}$/.test(String(code ?? '')) ? code : 'PROVIDER_ERROR';
 }
 
 export function createDownloadJob(source, log = logDownloadEvent) {

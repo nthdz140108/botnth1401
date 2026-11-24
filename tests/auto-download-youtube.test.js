@@ -1,3 +1,6 @@
+import { prepareVideoFixture } from "./helpers/prepared-video-fixture.js";
+import { setLocalVideoMediaPreparer } from "../src/service-debug/chat-zalo/chat-special/send-video/send-video.js";
+setLocalVideoMediaPreparer(prepareVideoFixture);
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -21,8 +24,8 @@ test("YouTube autodownload owns its single confirmation reaction", () => {
 test("autodownload requires a normalized upload URL before its uploaded-video send", () => {
   const source = readSource("src/service-debug/api-crawl/download/youtube-autodownload-workflow.js");
 
-  assert.match(source, /mediaUrl = ensureUploadResult\(await api\.uploadAttachment/);
-  assert.match(source, /alreadyUploaded: true/);
+  assert.match(source, /uploadPreparedVideo/);
+  assert.match(source, /videoAlreadyUploaded: true/);
   assert.match(source, /failedStage === "upload"/);
   assert.match(source, /cleanupYoutubeFiles\(\[jobDir\]\)/);
 });
