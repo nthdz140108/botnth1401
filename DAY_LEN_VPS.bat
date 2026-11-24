@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title [MYBOT V4] 1-Click Update VPS Ubuntu
+title [MYBOT V4] Incremental VPS Update
 cd /d "%~dp0"
 
 echo ================================================================
-echo           MYBOT V4 - 1-CLICK AUTO UPDATE VPS UBUNTU
+echo           MYBOT V4 - CAP NHAT VPS THEO COMMIT
 echo ================================================================
 echo.
 
@@ -18,12 +18,12 @@ if errorlevel 1 (
 )
 
 set "TARGET_DIR=%~dp0"
-if exist "%~dp0deploy\push-to-vps.mjs" (
+if exist "%~dp0deploy\incremental-vps.mjs" (
   set "TARGET_DIR=%~dp0"
-) else if exist "%~dp0HHH_MYBOT-V3MYBOTQRLOGIN-main\deploy\push-to-vps.mjs" (
+) else if exist "%~dp0HHH_MYBOT-V3MYBOTQRLOGIN-main\deploy\incremental-vps.mjs" (
   set "TARGET_DIR=%~dp0HHH_MYBOT-V3MYBOTQRLOGIN-main\"
 ) else (
-  echo [LOI] Khong tim thay deploy\push-to-vps.mjs.
+  echo [LOI] Khong tim thay deploy\incremental-vps.mjs.
   echo Vui long kiem tra lai thu muc du an.
   echo.
   pause
@@ -31,16 +31,13 @@ if exist "%~dp0deploy\push-to-vps.mjs" (
 )
 
 cd /d "%TARGET_DIR%"
-node deploy\push-to-vps.mjs %*
+node deploy\incremental-vps.mjs %*
 set "DEPLOY_EXIT=%ERRORLEVEL%"
 
 echo.
 if "%DEPLOY_EXIT%"=="0" (
   echo ================================================================
-  echo [THANH CONG] BOT DA DUOC CAP NHAT VA KHOI DONG LAI TREN VPS!
-  echo Web Admin Dashboard: http://180.93.117.140:4173
-  echo Tai khoan: admin
-  echo Mat khau:  140108
+  echo [OK] Lenh da hoan tat. Xem ket qua chi tiet o tren.
   echo ================================================================
 ) else (
   echo ================================================================
@@ -49,5 +46,5 @@ if "%DEPLOY_EXIT%"=="0" (
   echo ================================================================
 )
 echo.
-pause
+if "%~1"=="" pause
 exit /b %DEPLOY_EXIT%

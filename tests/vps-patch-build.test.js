@@ -94,3 +94,15 @@ test('dependency install never removes the previous release dependencies', { ski
     assert.equal(fs.lstatSync(path.join(stage, 'node_modules')).isSymbolicLink(), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('control CLI-only change builds only the control binary', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-ctl-build-'));
+  try {
+    const calls = [];
+    fs.writeFileSync(path.join(root, '.mybot-release.json'), JSON.stringify({ commit: 'b'.repeat(40), base: 'a'.repeat(40), status: 'staged', files: [{ path: 'rust/bins/mybot-ctl/src/main.rs' }] }));
+    fs.mkdirSync(path.join(root, 'rust', 'target', 'release'), { recursive: true }); fs.mkdirSync(path.join(root, 'bin'));
+    fs.writeFileSync(path.join(root, 'rust', 'target', 'release', 'mybot-ctl'), 'new ctl');
+    prepareRelease({ stageDir: root, run: (cmd, args) => calls.push([cmd, args]) });
+    assert.deepEqual(calls, [['cargo', ['build', '--release', '--locked', '-p', 'mybot-ctl']]]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

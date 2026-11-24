@@ -8,15 +8,11 @@ import { validateVpsConfig, setupAskpass, buildSshAuthArgs } from './vps-deploy-
 import { parseIncrementalArgs } from './incremental-args.mjs';
 import { orchestrateIncremental } from './incremental-orchestrator.mjs';
 import { createRemoteAdapter } from './remote-adapter.mjs';
+import { assertBootstrapTarget } from './bootstrap-guard.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export async function main(args = process.argv.slice(2)) {
   const options = parseIncrementalArgs(args);
-  if (options.mode === 'bootstrap') {
-    const result = spawnSync(process.execPath, [path.join(repo, 'deploy', 'push-to-vps.mjs')], { cwd: repo, stdio: 'inherit' });
-    if (result.error || result.status !== 0) throw result.error || new Error(`Full installer failed: ${result.status}`);
-    return;
-  }
   const configPath = path.join(repo, 'deploy', 'vps-deploy.local.json');
   let cfg;
   try { cfg = validateVpsConfig(JSON.parse(fs.readFileSync(configPath, 'utf8'))); }
@@ -28,6 +24,12 @@ export async function main(args = process.argv.slice(2)) {
       if (result.error || result.status !== 0) throw result.error || new Error(`SSH failed (${result.status}): ${(result.stderr || '').trim()}`);
       return result.stdout;
     };
+    if (options.mode === 'bootstrap') {
+      assertBootstrapTarget((await run('if [ -L /opt/mybot/current ] || [ -e /opt/mybot/current ]; then printf versioned; else printf legacy; fi')).trim());
+      const result = spawnSync(process.execPath, [path.join(repo, 'deploy', 'push-to-vps.mjs')], { cwd: repo, stdio: 'inherit' });
+      if (result.error || result.status !== 0) throw result.error || new Error(`Full installer failed: ${result.status}`);
+      return;
+    }
     const archive = async dir => {
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-tar-'));
       try {

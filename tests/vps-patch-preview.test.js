@@ -83,6 +83,17 @@ test('documentation-only commit needs no deployment', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('Windows launcher changes do not get deployed to Ubuntu', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-launcher-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(dir, 'DAY_LEN_VPS.bat'), '@echo off'); git('add', '.'); git('commit', '-qm', 'launcher');
+    assert.deepEqual(buildPreview({ repo: dir, base, target: 'HEAD' }).files, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('database migrations require a separate maintenance procedure', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-migration-'));
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();

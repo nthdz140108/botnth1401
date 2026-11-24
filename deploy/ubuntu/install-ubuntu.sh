@@ -9,6 +9,11 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if [[ -L /opt/mybot/current || -e /opt/mybot/current ]]; then
+  echo "[!] VPS uses versioned releases. Refusing the full installer; use the incremental updater."
+  exit 1
+fi
+
 # Accept optional --source-dir <path> or auto-detect from script location
 SOURCE_OVERRIDE=""
 while [[ $# -gt 0 ]]; do

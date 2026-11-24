@@ -16,7 +16,7 @@ export function safePath(name) {
   return allowed.test(name) && !runtimeData(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
-  return /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
+  return name === 'DAY_LEN_VPS.bat' || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
 }
 export function buildPreview({ repo, base, target }) {
   base = commit(repo, base); target = commit(repo, target);

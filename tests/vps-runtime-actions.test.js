@@ -8,4 +8,5 @@ test('selects only the components affected by a patch', () => {
   assert.deepEqual(planRuntimeActions(['rust/bins/ws-decode-worker/src/main.rs']), { restartNode: true, restartRust: false, buildDashboard: false, buildRust: true, installNodeDependencies: false });
   assert.deepEqual(planRuntimeActions(['rust/crates/mybot-dashboard/src/lib.rs']), { restartNode: false, restartRust: true, buildDashboard: false, buildRust: true, installNodeDependencies: false });
   assert.equal(planRuntimeActions(['rust/.cargo/config.toml']).restartNode, true);
+  assert.deepEqual(planRuntimeActions(['rust/bins/mybot-ctl/src/main.rs']), { restartNode: false, restartRust: false, buildDashboard: false, buildRust: true, installNodeDependencies: false });
 });

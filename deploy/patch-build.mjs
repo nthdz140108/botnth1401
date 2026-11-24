@@ -44,8 +44,11 @@ export function prepareRelease({ stageDir, run = runCommand, cargoTargetDir = pr
     const rust = path.join(stageDir, 'rust');
     assertDirectoryNotLink(rust);
     assertDirectoryNotLink(path.join(stageDir, 'bin'), true);
-    const actions = planRuntimeActions(files.filter(p => p.startsWith('rust/')));
-    const names = [...(actions.restartRust ? ['mybotd', 'mybot-ctl'] : []), ...(actions.restartNode ? ['ws-decode-worker'] : [])];
+    const rustPaths = files.filter(p => p.startsWith('rust/'));
+    const actions = planRuntimeActions(rustPaths);
+    const ctlOnly = rustPaths.every(p => p.startsWith('rust/bins/mybot-ctl/'));
+    const daemonOnly = rustPaths.every(p => p.startsWith('rust/bins/mybotd/'));
+    const names = [...(actions.restartRust ? (daemonOnly ? ['mybotd'] : ['mybotd', 'mybot-ctl']) : ctlOnly ? ['mybot-ctl'] : []), ...(actions.restartNode ? ['ws-decode-worker'] : [])];
     const targetDir = cargoTargetDir ? path.resolve(cargoTargetDir) : path.join(rust, 'target');
     run('cargo', ['build', '--release', '--locked', ...names.flatMap(name => ['-p', name])], rust, { CARGO_TARGET_DIR: targetDir });
     const bin = path.join(stageDir, 'bin'); fs.mkdirSync(bin, { recursive: true });

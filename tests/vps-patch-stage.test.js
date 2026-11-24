@@ -79,3 +79,19 @@ test('unchanged dependencies are reused without copying the package tree', { ski
     assert.equal(fs.realpathSync(path.join(stageDir, 'node_modules')), fs.realpathSync(path.join(baseDir, 'node_modules')));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('rename stages deletion and addition without changing the previous release', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-stage-rename-'));
+  try {
+    const baseDir = path.join(root, 'base'), pkg = path.join(root, 'patch'), stageDir = path.join(root, 'staged');
+    const base = 'a'.repeat(40), target = 'b'.repeat(40), data = Buffer.from('content');
+    fs.mkdirSync(path.join(baseDir, 'src'), { recursive: true }); fs.writeFileSync(path.join(baseDir, 'src', 'old.js'), data);
+    fs.writeFileSync(path.join(baseDir, '.mybot-release.json'), JSON.stringify({ commit: base, status: 'ready' }));
+    fs.mkdirSync(path.join(pkg, 'files', 'src'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'files', 'src', 'new.js'), data);
+    fs.writeFileSync(path.join(pkg, 'manifest.json'), JSON.stringify({ schema: 1, base, target, files: [{ status: 'delete', path: 'src/old.js' }, { status: 'add', path: 'src/new.js', mode: '100644', size: data.length, sha256: createHash('sha256').update(data).digest('hex') }] }));
+    stagePatch({ baseDir, packageDir: pkg, stageDir });
+    assert.equal(fs.existsSync(path.join(stageDir, 'src', 'old.js')), false);
+    assert.equal(fs.readFileSync(path.join(stageDir, 'src', 'new.js'), 'utf8'), 'content');
+    assert.equal(fs.readFileSync(path.join(baseDir, 'src', 'old.js'), 'utf8'), 'content');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
