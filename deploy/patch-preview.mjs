@@ -8,7 +8,7 @@ function git(repo, ...args) {
 function commit(repo, ref) {
   return git(repo, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`).toString().trim();
 }
-function safePath(name) {
+export function safePath(name) {
   const parts = name.split('/');
   return allowed.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }

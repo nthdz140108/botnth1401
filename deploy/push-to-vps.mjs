@@ -13,6 +13,11 @@ import {
   validateVpsConfig,
 } from "./vps-deploy-config.mjs";
 
+if (process.argv.slice(2).some(arg => arg !== '--package-only')) {
+  console.error('Incremental update is not available yet; refusing to run the full installer.');
+  process.exit(2);
+}
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const localConfigPath = path.join(scriptDir, "vps-deploy.local.json");
