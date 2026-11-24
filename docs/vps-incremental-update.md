@@ -39,6 +39,8 @@ cụ sẽ từ chối để xử lý riêng. Không phục hồi SQLite khi roll
 thường. `--bootstrap` chạy installer đầy đủ cũ cho VPS chưa dùng release;
 thao tác này cài phụ thuộc, build Rust và restart dịch vụ. Để bảo vệ release
 và binary hiện có, installer từ chối chạy khi VPS đã có `current`.
+Hai script chép trực tiếp `sync-js-to-vps.mjs` và `sync-all-to-vps.mjs` đã
+được vô hiệu hóa vì chúng ghi đè mã hoặc binary ngoài giao dịch release.
 
 Các release và bản sao legacy hiện được giữ lại để quay lui; công cụ chưa tự
 xóa release cũ vì dependency có thể được chia sẻ giữa các release. Theo dõi
