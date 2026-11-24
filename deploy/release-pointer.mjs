@@ -18,7 +18,7 @@ function readJournal(root) {
   const info = fs.lstatSync(file);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('Invalid transaction journal');
   const journal = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (!isId(journal.base) || !isId(journal.target) || !['pending', 'confirmed', 'recovered'].includes(journal.status)) throw new Error('Invalid transaction journal');
+  if (!isId(journal.base) || !isId(journal.target) || !['pending', 'recovery_pending', 'confirmed', 'recovered'].includes(journal.status)) throw new Error('Invalid transaction journal');
   return journal;
 }
 function checkRelease(root, id) {
@@ -49,7 +49,7 @@ function changeLink(root, id) {
 export function beginSwitch({ root, base, target }) {
   root = fs.realpathSync(root);
   if (!isId(base) || !isId(target) || base === target) throw new Error('Invalid release IDs');
-  if (readJournal(root)?.status === 'pending') throw new Error('A deployment is pending recovery');
+  if (['pending', 'recovery_pending'].includes(readJournal(root)?.status)) throw new Error('A deployment is pending recovery');
   checkRelease(root, base); checkRelease(root, target);
   if (currentId(root) !== base) throw new Error('Base commit mismatch');
   writeJournal(root, { status: 'pending', base, target });
@@ -58,12 +58,12 @@ export function beginSwitch({ root, base, target }) {
 export function recoverSwitch({ root }) {
   root = fs.realpathSync(root);
   const journal = readJournal(root);
-  if (!journal || journal.status !== 'pending') throw new Error('No pending transaction');
+  if (!journal || !['pending', 'recovery_pending'].includes(journal.status)) throw new Error('No pending transaction');
   checkRelease(root, journal.base);
   const current = currentId(root);
   if (current !== journal.base && current !== journal.target) throw new Error('Unexpected current release');
   if (current !== journal.base) changeLink(root, journal.base);
-  writeJournal(root, { ...journal, status: 'recovered' });
+  writeJournal(root, { ...journal, status: 'recovery_pending' });
   return journal.base;
 }
 export function confirmSwitch({ root }) {
@@ -73,4 +73,12 @@ export function confirmSwitch({ root }) {
   checkRelease(root, journal.target);
   if (currentId(root) !== journal.target) throw new Error('Unexpected current release');
   writeJournal(root, { ...journal, status: 'confirmed' });
+}
+export function confirmRecovery({ root }) {
+  root = fs.realpathSync(root);
+  const journal = readJournal(root);
+  if (!journal || journal.status !== 'recovery_pending') throw new Error('No pending recovery');
+  checkRelease(root, journal.base);
+  if (currentId(root) !== journal.base) throw new Error('Unexpected current release');
+  writeJournal(root, { ...journal, status: 'recovered' });
 }

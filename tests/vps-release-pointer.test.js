@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { beginSwitch, recoverSwitch, confirmSwitch } from '../deploy/release-pointer.mjs';
+import { beginSwitch, recoverSwitch, confirmSwitch, confirmRecovery } from '../deploy/release-pointer.mjs';
 
 test('unconfirmed switch recovers the previous release and confirmed switch stays', { skip: process.platform === 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-pointer-'));
@@ -19,6 +19,8 @@ test('unconfirmed switch recovers the previous release and confirmed switch stay
     assert.throws(() => beginSwitch({ root, base, target }), /pending/i);
     recoverSwitch({ root });
     assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${base}`);
+    assert.throws(() => beginSwitch({ root, base, target }), /pending/i);
+    confirmRecovery({ root });
     beginSwitch({ root, base, target }); confirmSwitch({ root });
     assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${target}`);
     assert.throws(() => recoverSwitch({ root }), /pending/i);
@@ -38,6 +40,7 @@ test('recovery handles interruption before link change and refuses unrelated cur
     fs.writeFileSync(journal, JSON.stringify({ status: 'pending', base, target }));
     assert.equal(recoverSwitch({ root }), base);
     assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${base}`);
+    confirmRecovery({ root });
     fs.unlinkSync(path.join(root, 'current')); fs.symlinkSync(`releases/${other}`, path.join(root, 'current'));
     fs.writeFileSync(journal, JSON.stringify({ status: 'pending', base, target }));
     assert.throws(() => recoverSwitch({ root }), /unexpected/i);
