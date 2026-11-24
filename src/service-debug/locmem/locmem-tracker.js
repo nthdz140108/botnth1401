@@ -9,6 +9,7 @@ import { checkAndRunStartupCatchUp, initializeMonthlyCleanupScheduler } from "./
 
 // Active scheduled jobs per botUid
 const rolloverJobs = new Map();
+const connectedStores = new Set();
 
 /**
  * Extracts raw member UIDs from Zalo groupInfo.
@@ -123,7 +124,7 @@ export function trackLocmemMessage(api, message, botUid = "admin") {
 
 /**
  * Tracks a valid group reaction:
- * - Ignores un-reactions (rType <= 0 or rType === -1).
+ * - Ignores un-reactions (rType < 0); HAHA has rType 0.
  * - Ignores private reactions or self reactions.
  *
  * @param {object} api
@@ -135,11 +136,12 @@ export function trackLocmemReaction(api, reaction, botUid = "admin") {
 
   const rType = reaction.data?.content?.rType;
   // Ignore un-reaction or missing rType
-  if (rType === undefined || rType === null || Number(rType) <= 0) {
+  if (rType === undefined || rType === null || !Number.isFinite(Number(rType)) || Number(rType) < 0) {
     return;
   }
 
   // Must be in group
+  if (reaction.isGroup !== true) return;
   const threadId = String(
     (reaction.isGroup ? reaction.data?.idTo : null) ??
     reaction.threadId ??
@@ -297,6 +299,7 @@ export async function takeGroupSnapshots(api, botUid = "admin", targetDateKey = 
 export async function handleDayRollover(api, botUid = "admin", options = {}) {
   const store = getLocmemStore(botUid);
   const todayKey = options.todayKey || getVietnamDateKey();
+  if (options.trackingAtStart) store.beginTrackingDay(todayKey);
 
   // Determine yesterdayKey in Asia/Ho_Chi_Minh
   let yesterdayKey = options.yesterdayKey;
@@ -305,15 +308,9 @@ export async function handleDayRollover(api, botUid = "admin", options = {}) {
     yesterdayKey = getVietnamDateKey(yesterdayDate);
   }
 
-  // 1. Mark yesterday complete (fail-closed if downtime/snapshot failed)
+  // Close saved evidence before making any Zalo calls.
   try {
-    if (api && typeof api.getAllGroups === "function") {
-      const allGroupsResult = await api.getAllGroups().catch(() => null);
-      const groupIds = Object.keys(allGroupsResult?.gridVerMap || {});
-      for (const gId of groupIds) {
-        store.markDayComplete(gId, yesterdayKey);
-      }
-    }
+    store.finalizeTrackedDays(todayKey);
   } catch (markErr) {
     console.error(`[locmem-tracker] markDayComplete error: ${markErr.message}`);
   }
@@ -340,34 +337,40 @@ export async function handleDayRollover(api, botUid = "admin", options = {}) {
 export async function onListenerReady(api, botUid = "admin", options = {}) {
   const store = getLocmemStore(botUid);
   const todayKey = getVietnamDateKey();
-
-  // Take snapshot now
-  await takeGroupSnapshots(api, botUid, todayKey);
+  const key = store.dbPath;
+  if (connectedStores.has(key)) return;
+  connectedStores.add(key);
 
   // If not started exactly at the start of the day (e.g. boot/restart mid-day),
   // record downtime so today fails-closed and cannot be considered a full 24h complete day.
   if (!options.isStartOfDay) {
     store.recordDowntime(null, todayKey, "mid_day_listener_startup");
+  } else {
+    store.beginTrackingDay(todayKey);
   }
 
+  store.finalizeTrackedDays(todayKey);
+
   // Schedule rollover job at 00:00:00 UTC+7
-  if (rolloverJobs.has(botUid)) {
+  if (rolloverJobs.has(key)) {
     try {
-      rolloverJobs.get(botUid).cancel();
+      rolloverJobs.get(key).cancel();
     } catch {}
   }
 
   const job = schedule.scheduleJob({ rule: "0 0 * * *", tz: VIETNAM_TIMEZONE }, async () => {
     try {
-      await handleDayRollover(api, botUid);
+      await handleDayRollover(api, botUid, { trackingAtStart: connectedStores.has(key) });
     } catch (err) {
       console.error(`[locmem-tracker] scheduled rollover error: ${err.message}`);
     }
   });
 
   if (job) {
-    rolloverJobs.set(botUid, job);
+    rolloverJobs.set(key, job);
   }
+
+  await takeGroupSnapshots(api, botUid, todayKey);
 
   // Schedule monthly cleanup at 03:10 (initialization automatically runs startup catch-up once)
   try {
@@ -385,6 +388,7 @@ export async function onListenerReady(api, botUid = "admin", options = {}) {
 export function markLocmemDowntime(reason = "listener_disconnected", botUid = "admin") {
   try {
     const store = getLocmemStore(botUid);
+    connectedStores.delete(store.dbPath);
     const todayKey = getVietnamDateKey();
     store.recordDowntime(null, todayKey, String(reason || "listener_disconnected"));
   } catch (err) {
@@ -398,7 +402,8 @@ export function markLocmemDowntime(reason = "listener_disconnected", botUid = "a
  */
 export function clearRolloverJob(botUid = null) {
   if (botUid) {
-    const key = typeof botUid === "string" ? botUid : (botUid?.botUid || botUid?.uid || "admin");
+    const key = getLocmemStore(botUid).dbPath;
+    connectedStores.delete(key);
     if (rolloverJobs.has(key)) {
       try {
         rolloverJobs.get(key).cancel();
@@ -412,5 +417,6 @@ export function clearRolloverJob(botUid = null) {
       } catch {}
     }
     rolloverJobs.clear();
+    connectedStores.clear();
   }
 }

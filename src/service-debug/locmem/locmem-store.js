@@ -190,7 +190,9 @@ export class LocmemStore {
         };
         this.dayPartitions.set(dKey, part);
         return part;
-      } catch {}
+      } catch (error) {
+        throw new Error(`Cannot read locmem partition ${dKey}: ${error.message}`, { cause: error });
+      }
     }
     if (!createIfMissing) return null;
     const fresh = createEmptyDayPartition(dKey);
@@ -215,7 +217,9 @@ export class LocmemStore {
       });
       partition.dirty = false;
       this.dirtyDates.delete(dKey);
-    } catch {}
+    } catch (error) {
+      throw new Error(`Cannot write locmem partition ${dKey}: ${error.message}`, { cause: error });
+    }
   }
 
   flushDirtyPartitionsSync() {
@@ -248,6 +252,29 @@ export class LocmemStore {
       }
     }
     return keys.sort();
+  }
+
+  beginTrackingDay(dateKey) {
+    const days = this.meta.tracked_days || (this.meta.tracked_days = {});
+    if (!days[dateKey]) days[dateKey] = { started: true, interrupted: false };
+    this.#saveMetaSync();
+  }
+
+  finalizeTrackedDays(todayKey) {
+    this.flushPendingActivities();
+    for (const dateKey of this.listStoredDateKeys()) {
+      if (dateKey >= todayKey) continue;
+      const evidence = this.meta.tracked_days?.[dateKey];
+      if (!evidence?.started || evidence.interrupted) continue;
+      const part = this.#getPartition(dateKey);
+      for (const groupId of Object.keys(part?.coverage || {})) {
+        const members = part.snapshots[groupId];
+        const activity = part.activities[groupId];
+        if (Array.isArray(members) && members.length && activity && members.every(id => Array.isArray(activity[id]))) {
+          this.markDayComplete(groupId, dateKey);
+        }
+      }
+    }
   }
 
   flushPendingActivities() {
@@ -435,6 +462,12 @@ export class LocmemStore {
     const statusCode = normalizeCoverageStatusCode(reason);
     const part = this.#getPartition(dKey, { createIfMissing: true });
 
+    if (!groupId) {
+      const days = this.meta.tracked_days || (this.meta.tracked_days = {});
+      days[dKey] = { ...(days[dKey] || {}), interrupted: true };
+      this.#saveMetaSync();
+    }
+
     if (groupId) {
       const gId = String(groupId);
       const prev = part.coverage[gId];
@@ -511,6 +544,7 @@ export class LocmemStore {
     if (!groupId) {
       return { qualified: false, days: [], completeDays: [], missingDays: [] };
     }
+    this.finalizeTrackedDays(todayDateKey);
     const required7Days = getConsecutiveCalendarDays(todayDateKey, 7);
     const gId = String(groupId);
     const completeSet = new Set();

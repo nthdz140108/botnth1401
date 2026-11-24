@@ -57,8 +57,10 @@ export async function fetchCandidateNames(api, uids = [], { batchSize = 20, time
 
   const nameMap = new Map();
   const chunks = chunkArray(uids, batchSize);
+  const namesDeadline = Date.now() + timeoutMs;
 
   for (const chunk of chunks) {
+    if (Date.now() >= namesDeadline) break;
     let batchProfiles = null;
     let timeoutHandle = null;
     try {
@@ -66,7 +68,7 @@ export async function fetchCandidateNames(api, uids = [], { batchSize = 20, time
         batchProfiles = await Promise.race([
           api.getUserInfo(chunk),
           new Promise((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error("fetch_timeout")), timeoutMs);
+            timeoutHandle = setTimeout(() => reject(new Error("fetch_timeout")), Math.max(1, namesDeadline - Date.now()));
             timeoutHandle.unref?.();
           }),
         ]);
@@ -141,7 +143,35 @@ export function extractGroupMeta(groupInfo, threadId) {
  * @param {object} [context={}]
  * @returns {Promise<object>}
  */
+const scans = new Set();
 export async function handleLocmemCommand(apiOrOptions, message, context = {}) {
+  const options = !message && apiOrOptions?.api ? apiOrOptions : context;
+  const rawApi = options.api || apiOrOptions;
+  const group = String(message?.threadId || options.threadId || '');
+  const key = `${options.botUid || options.runtimeContext?.botKey || 'admin'}:${group}`;
+  if (scans.has(key)) return { code: 'HANDLED', reason: 'request_already_pending' };
+  scans.add(key);
+  const expires = Date.now() + (options.scanDeadlineMs ?? 45000);
+  const api = new Proxy(rawApi, { get(target, prop) {
+    const value = target[prop];
+    if (typeof value !== 'function') return value;
+    return (...args) => new Promise((resolve, reject) => {
+      const remaining = expires - Date.now();
+      if (remaining <= 0) return reject(new Error('scan_deadline_exceeded'));
+      const timer = setTimeout(() => reject(new Error('scan_deadline_exceeded')), remaining);
+      Promise.resolve().then(() => value.apply(target, args)).then(resolve, reject).finally(() => clearTimeout(timer));
+    });
+  }});
+  try {
+    const result = await runLocmemCommand(!message && options.api ? { ...options, api } : api, message, context);
+    return Date.now() >= expires ? { code: 'TIMEOUT', reason: 'scan_deadline_exceeded' } : result;
+  } catch (error) {
+    const timeout = error.message === 'scan_deadline_exceeded' || Date.now() >= expires;
+    if (rawApi?.sendMessage) Promise.resolve().then(() => rawApi.sendMessage({ msg: timeout ? '⚠️ Quá thời gian quét. Đã hủy yêu cầu; bạn có thể chạy lại !locmem.' : '⚠️ Lỗi dữ liệu hoặc kết nối khi quét. Đã hủy yêu cầu.' }, group, MessageType.GroupMessage)).catch(() => {});
+    return { code: timeout ? 'TIMEOUT' : 'HANDLER_ERROR', reason: timeout ? 'scan_deadline_exceeded' : 'data_or_api_error' };
+  } finally { scans.delete(key); }
+}
+async function runLocmemCommand(apiOrOptions, message, context = {}) {
   let api = apiOrOptions;
   let msg = message;
   let ctx = context;
@@ -285,7 +315,8 @@ export async function handleLocmemCommand(apiOrOptions, message, context = {}) {
             `⚠️ Chưa đủ dữ liệu để lọc thành viên an toàn!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
             `• Yêu cầu: Đủ 7 ngày lịch hoàn chỉnh gần nhất không gián đoạn.\n` +
-            `• Hiện có: ${window.completeDays.length}/7 ngày hoàn chỉnh.\n\n` +
+            `• Hiện có: ${window.completeDays.length}/7 ngày hoàn chỉnh.\n` +
+            window.missingDays.map(day => `• ${day}: ${store.getDailyCoverage(threadId, day)?.status_code || "missing_record"}`).join("\n") + "\n\n" +
             `💡 Nguyên tắc an toàn dữ liệu: Bot chỉ lọc khi có đủ 7 ngày theo dõi liên tục, không downtime và có đầy đủ snapshot thành viên.`,
         },
         threadId,
