@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { safePath } from './patch-preview.mjs';
+import { planRuntimeActions } from './runtime-actions.mjs';
 
 function runCommand(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
@@ -43,9 +44,11 @@ export function prepareRelease({ stageDir, run = runCommand }) {
     const rust = path.join(stageDir, 'rust');
     assertDirectoryNotLink(rust);
     assertDirectoryNotLink(path.join(stageDir, 'bin'), true);
-    run('cargo', ['build', '--release', '--locked', '-p', 'mybotd', '-p', 'mybot-ctl', '-p', 'ws-decode-worker'], rust);
+    const actions = planRuntimeActions(files.filter(p => p.startsWith('rust/')));
+    const names = [...(actions.restartRust ? ['mybotd', 'mybot-ctl'] : []), ...(actions.restartNode ? ['ws-decode-worker'] : [])];
+    run('cargo', ['build', '--release', '--locked', ...names.flatMap(name => ['-p', name])], rust);
     const bin = path.join(stageDir, 'bin'); fs.mkdirSync(bin, { recursive: true });
-    for (const name of ['mybotd', 'mybot-ctl', 'ws-decode-worker']) {
+    for (const name of names) {
       const dest = path.join(bin, name); const temp = `${dest}.${randomBytes(8).toString('hex')}`;
       fs.copyFileSync(path.join(rust, 'target', 'release', name), temp, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(temp, 0o755); fs.renameSync(temp, dest);

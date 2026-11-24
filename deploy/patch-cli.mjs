@@ -1,5 +1,6 @@
 import { buildPreview } from './patch-preview.mjs';
 import { createPatchPackage } from './patch-package.mjs';
+import { planRuntimeActions } from './runtime-actions.mjs';
 
 try {
   const options = {};
@@ -12,12 +13,7 @@ try {
   const args = { repo: options['--repo'] || process.cwd(), base: options['--base'], target: options['--target'] };
   const preview = options['--output'] ? createPatchPackage({ ...args, output: options['--output'] }) : buildPreview(args);
   const paths = preview.files.map(file => file.path);
-  const actions = {
-    buildRust: paths.some(p => p.startsWith('rust/')),
-    buildDashboard: paths.some(p => p.startsWith('dashboard/')),
-    installNodeDependencies: paths.some(p => /^(?:dashboard\/)?package(?:-lock)?\.json$/.test(p)),
-    restartNode: paths.some(p => /^(?:src\/|scripts\/|index\.js$|bot\.js$|package(?:-lock)?\.json$)/.test(p)),
-  };
+  const actions = planRuntimeActions(paths);
   console.log(JSON.stringify({ ...preview, totalBytes: preview.files.reduce((n, f) => n + (f.size || 0), 0), actions }, null, 2));
 } catch (error) {
   console.error(error.message);
