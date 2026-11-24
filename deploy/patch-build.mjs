@@ -5,8 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { safePath } from './patch-preview.mjs';
 import { planRuntimeActions } from './runtime-actions.mjs';
 
-function runCommand(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
+function runCommand(command, args, cwd, env = {}) {
+  const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: { ...process.env, ...env } });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed: ${result.status}`);
 }
@@ -19,7 +19,7 @@ function assertDirectoryNotLink(dir, optional = false) {
   try { stat = fs.lstatSync(dir); } catch (error) { if (optional && error.code === 'ENOENT') return; throw error; }
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe build directory: ${dir}`);
 }
-export function prepareRelease({ stageDir, run = runCommand }) {
+export function prepareRelease({ stageDir, run = runCommand, cargoTargetDir = process.env.CARGO_TARGET_DIR }) {
   assertDirectoryNotLink(stageDir);
   const markerPath = path.join(stageDir, '.mybot-release.json');
   if (!fs.lstatSync(markerPath).isFile()) throw new Error('Invalid stage marker');
@@ -46,11 +46,12 @@ export function prepareRelease({ stageDir, run = runCommand }) {
     assertDirectoryNotLink(path.join(stageDir, 'bin'), true);
     const actions = planRuntimeActions(files.filter(p => p.startsWith('rust/')));
     const names = [...(actions.restartRust ? ['mybotd', 'mybot-ctl'] : []), ...(actions.restartNode ? ['ws-decode-worker'] : [])];
-    run('cargo', ['build', '--release', '--locked', ...names.flatMap(name => ['-p', name])], rust);
+    const targetDir = cargoTargetDir ? path.resolve(cargoTargetDir) : path.join(rust, 'target');
+    run('cargo', ['build', '--release', '--locked', ...names.flatMap(name => ['-p', name])], rust, { CARGO_TARGET_DIR: targetDir });
     const bin = path.join(stageDir, 'bin'); fs.mkdirSync(bin, { recursive: true });
     for (const name of names) {
       const dest = path.join(bin, name); const temp = `${dest}.${randomBytes(8).toString('hex')}`;
-      fs.copyFileSync(path.join(rust, 'target', 'release', name), temp, fs.constants.COPYFILE_EXCL);
+      fs.copyFileSync(path.join(targetDir, 'release', name), temp, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(temp, 0o755); fs.renameSync(temp, dest);
     }
   }

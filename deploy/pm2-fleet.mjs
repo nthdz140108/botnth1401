@@ -33,15 +33,17 @@ export async function restartManagedProcesses({ runtimeRoot, snapshot, target, g
   const restarted = [];
   for (const expected of snapshot) {
     const before = await getProcesses();
-    const found = before.find(item => item.pm_id === expected.id);
-    if (!found || found.name !== expected.name) throw new Error(`PM2 process identity changed: ${expected.name}`);
+    const matches = before.filter(item => item.name === expected.name && managedPath(item, runtimeRoot));
+    if (matches.length !== 1) throw new Error(`PM2 process identity changed: ${expected.name}`);
+    const found = matches[0];
+    if (!Number.isSafeInteger(found.pm_id) || found.pm_id < 0) throw new Error(`PM2 process identity changed: ${expected.name}`);
     if (found.pm2_env?.status === 'stopped') continue;
     if (!managedPath(found, runtimeRoot) || !['online', 'errored'].includes(found.pm2_env?.status) || !Number.isInteger(found.pid) || found.pid < 0) throw new Error(`PM2 process unavailable: ${expected.name}`);
     const previousPid = found.pid;
-    await restartProcess(expected.id);
+    await restartProcess(found.pm_id);
     let ready = false;
     for (let i = 0; i < maxPolls; i++) {
-      const current = (await getProcesses()).find(item => item.pm_id === expected.id);
+      const current = (await getProcesses()).find(item => item.pm_id === found.pm_id);
       if (!current || current.name !== expected.name) throw new Error(`PM2 process identity changed: ${expected.name}`);
       if (current.pm2_env?.status === 'online' && Number.isInteger(current.pid) && current.pid > 0 && current.pid !== previousPid && selectManagedProcesses([current], runtimeRoot).length && (target === 'legacy' || await markerMatches(current.pid, target, current.pm2_env.pm_uptime))) { ready = true; break; }
       await delay(250);

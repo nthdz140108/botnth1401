@@ -63,3 +63,19 @@ test('staging rejects a payload modified after validation', () => {
     assert.equal(fs.readFileSync(path.join(baseDir, 'src', 'a.js'), 'utf8'), 'old');
   } finally { fs.copyFileSync = originalCopy; fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('unchanged dependencies are reused without copying the package tree', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-stage-deps-'));
+  try {
+    const baseDir = path.join(root, 'base'), pkg = path.join(root, 'patch'), stageDir = path.join(root, 'staged');
+    const base = 'a'.repeat(40), target = 'b'.repeat(40), data = Buffer.from('new');
+    fs.mkdirSync(path.join(baseDir, 'src'), { recursive: true }); fs.mkdirSync(path.join(baseDir, 'node_modules', 'sample'), { recursive: true });
+    fs.writeFileSync(path.join(baseDir, 'src', 'a.js'), 'old'); fs.writeFileSync(path.join(baseDir, 'node_modules', 'sample', 'index.js'), 'dependency');
+    fs.writeFileSync(path.join(baseDir, '.mybot-release.json'), JSON.stringify({ commit: base, status: 'ready' }));
+    fs.mkdirSync(path.join(pkg, 'files', 'src'), { recursive: true }); fs.writeFileSync(path.join(pkg, 'files', 'src', 'a.js'), data);
+    fs.writeFileSync(path.join(pkg, 'manifest.json'), JSON.stringify({ schema: 1, base, target, files: [{ status: 'modify', path: 'src/a.js', mode: '100644', size: data.length, sha256: createHash('sha256').update(data).digest('hex') }] }));
+    stagePatch({ baseDir, packageDir: pkg, stageDir });
+    assert.equal(fs.lstatSync(path.join(stageDir, 'node_modules')).isSymbolicLink(), true);
+    assert.equal(fs.realpathSync(path.join(stageDir, 'node_modules')), fs.realpathSync(path.join(baseDir, 'node_modules')));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

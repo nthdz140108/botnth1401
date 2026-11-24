@@ -10,14 +10,16 @@ async function digestFile(file) {
   for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
 }
-export async function checkRuntimeHealth({ root, binaryPath, command = systemdInfo, hashFile = digestFile, fetchImpl = fetch }) {
+export async function checkRuntimeHealth({ root, binaryPath, dashboardUrl = 'http://127.0.0.1:4173/', bridgeUrl = 'http://127.0.0.1:4174/health', command = systemdInfo, hashFile = digestFile, fetchImpl = fetch }) {
   try {
+    const dashboard = new URL(dashboardUrl), bridgeAddress = new URL(bridgeUrl);
+    if (dashboard.protocol !== 'http:' || bridgeAddress.protocol !== 'http:' || dashboard.hostname !== '127.0.0.1' || bridgeAddress.hostname !== '127.0.0.1') return false;
     const info = Object.fromEntries((await command()).trim().split(/\r?\n/).map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
     if (info.ActiveState !== 'active' || !/^[1-9]\d*$/.test(info.MainPID)) return false;
     if (await hashFile(`/proc/${info.MainPID}/exe`) !== await hashFile(binaryPath)) return false;
     const indexFile = path.join(root, 'dashboard', 'dist', 'index.html');
     const expected = await hashFile(indexFile);
-    const page = await fetchImpl('http://127.0.0.1:4173/', { signal: AbortSignal.timeout(5000) });
+    const page = await fetchImpl(dashboardUrl, { signal: AbortSignal.timeout(5000) });
     if (page.status !== 200) return false;
     const html = Buffer.from(await page.arrayBuffer());
     const actual = createHash('sha256').update(html).digest('hex');
@@ -27,10 +29,10 @@ export async function checkRuntimeHealth({ root, binaryPath, command = systemdIn
     for (const asset of new Set(assets)) {
       if (!/^\/assets\/[A-Za-z0-9._/-]+$/.test(asset) || asset.split('/').includes('..')) return false;
       const disk = path.join(root, 'dashboard', 'dist', ...asset.split('/').filter(Boolean));
-      const response = await fetchImpl(`http://127.0.0.1:4173${asset}`, { signal: AbortSignal.timeout(5000) });
+      const response = await fetchImpl(new URL(asset, dashboard).href, { signal: AbortSignal.timeout(5000) });
       if (response.status !== 200 || createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex') !== await hashFile(disk)) return false;
     }
-    const bridge = await fetchImpl('http://127.0.0.1:4174/health', { signal: AbortSignal.timeout(5000) });
+    const bridge = await fetchImpl(bridgeUrl, { signal: AbortSignal.timeout(5000) });
     return bridge.status === 200 || bridge.status === 401;
   } catch { return false; }
 }

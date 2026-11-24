@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { applyPatchTransaction, recoverPendingTransaction } from '../deploy/patch-transaction.mjs';
+import { applyPatchTransaction, recoverPendingTransaction, rollbackReleaseTransaction } from '../deploy/patch-transaction.mjs';
 
 test('health failure restores old release and leaves data untouched', { skip: process.platform === 'win32' }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-tx-'));
@@ -47,6 +47,9 @@ test('healthy JS patch switches exactly one release and confirms journal', { ski
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.deploy-transaction.json'))).status, 'confirmed');
     const again = await applyPatchTransaction({ root, packageDir: pkg, restart: async () => { throw new Error('must not restart'); }, health: async () => true });
     assert.equal(again.status, 'already_applied');
+    const rollback = await rollbackReleaseTransaction({ root, restart: async () => {}, health: async () => true });
+    assert.equal(rollback.target, base);
+    assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${base}`);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

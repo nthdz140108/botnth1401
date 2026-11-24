@@ -36,3 +36,13 @@ test('checks dashboard asset hashes as well as index HTML', async () => {
     assert.equal(await checkRuntimeHealth({ root, binaryPath: '/bin/mybotd', command, hashFile, fetchImpl }), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('accepts explicit loopback health endpoints', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-health-urls-'));
+  try {
+    fs.mkdirSync(path.join(root, 'dashboard', 'dist'), { recursive: true }); fs.writeFileSync(path.join(root, 'dashboard', 'dist', 'index.html'), 'ok');
+    const urls = [], digest = createHash('sha256').update('ok').digest('hex');
+    const result = await checkRuntimeHealth({ root, binaryPath: '/bin/mybotd', dashboardUrl: 'http://127.0.0.1:14273/', bridgeUrl: 'http://127.0.0.1:14274/health', command: async () => 'MainPID=123\nActiveState=active\n', hashFile: async file => file.endsWith('index.html') ? digest : 'binary', fetchImpl: async url => { urls.push(url); return { status: url.includes('14274') ? 401 : 200, arrayBuffer: async () => Buffer.from('ok') }; } });
+    assert.equal(result, true); assert.deepEqual(urls, ['http://127.0.0.1:14273/', 'http://127.0.0.1:14274/health']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

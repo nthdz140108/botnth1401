@@ -25,8 +25,23 @@ export function stagePatch({ baseDir, packageDir, stageDir }) {
   if (metadata.status !== 'ready') throw new Error('Base release is not ready');
   fs.mkdirSync(stageRoot);
   try {
+    const dashboardDeps = path.join(baseRoot, 'dashboard', 'node_modules');
     for (const entry of fs.readdirSync(baseRoot)) {
-      fs.cpSync(path.join(baseRoot, entry), path.join(stageRoot, entry), { recursive: true, verbatimSymlinks: true, mode: fs.constants.COPYFILE_FICLONE });
+      if (entry === 'node_modules') continue;
+      fs.cpSync(path.join(baseRoot, entry), path.join(stageRoot, entry), { recursive: true, verbatimSymlinks: true, mode: fs.constants.COPYFILE_FICLONE, filter: source => path.resolve(source) !== dashboardDeps });
+    }
+    for (const relative of ['node_modules', 'dashboard/node_modules']) {
+      const original = path.join(baseRoot, ...relative.split('/'));
+      let stat;
+      try { stat = fs.lstatSync(original); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      if (!stat.isDirectory() && !stat.isSymbolicLink()) throw new Error(`Invalid dependencies: ${relative}`);
+      const real = fs.realpathSync(original);
+      if (!fs.statSync(real).isDirectory()) throw new Error(`Invalid dependencies: ${relative}`);
+      if (relative.startsWith('dashboard/')) {
+        const parent = fs.lstatSync(path.join(stageRoot, 'dashboard'));
+        if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error('Unsafe dashboard dependency path');
+      }
+      fs.symlinkSync(real, path.join(stageRoot, ...relative.split('/')), 'dir');
     }
     for (const file of manifest.files) {
       const dest = targetPath(stageRoot, file.path, file.status === 'add');

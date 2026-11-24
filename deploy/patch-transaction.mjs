@@ -6,6 +6,30 @@ import { validatePatchPackage } from './patch-validate.mjs';
 import { stagePatch } from './patch-stage.mjs';
 import { prepareRelease } from './patch-build.mjs';
 import { beginSwitch, recoverSwitch, confirmSwitch, confirmRecovery } from './release-pointer.mjs';
+export async function rollbackReleaseTransaction({ root, restart, health }) {
+  if (typeof restart !== 'function' || typeof health !== 'function') throw new Error('Restart and health probes are required');
+  root = fs.realpathSync(root);
+  const file = path.join(root, '.deploy-transaction.json');
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Invalid transaction journal');
+  const previous = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (previous.status !== 'confirmed' || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(previous.base) || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(previous.target)) throw new Error('No confirmed release to roll back');
+  const from = previous.target, to = previous.base;
+  try {
+    beginSwitch({ root, base: from, target: to });
+    await restart(to);
+    if (await health(to) !== true) throw new Error('Rollback target health check failed');
+    confirmSwitch({ root });
+    return { status: 'confirmed', base: from, target: to };
+  } catch (error) {
+    let journal;
+    try { journal = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    if (journal?.status !== 'pending' || journal.base !== from || journal.target !== to) throw error;
+    try { await recoverPendingTransaction({ root, restart, health }); }
+    catch (recoveryError) { throw new AggregateError([error, recoveryError], `Rollback failed and recovery was not verified: ${recoveryError.message}`); }
+    throw error;
+  }
+}
 export async function recoverPendingTransaction({ root, restart, health }) {
   if (typeof restart !== 'function' || typeof health !== 'function') throw new Error('Restart and health probes are required');
   const base = recoverSwitch({ root });

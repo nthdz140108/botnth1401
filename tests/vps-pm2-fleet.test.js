@@ -65,3 +65,10 @@ test('recovery can restart a previously running bot that crashed during deployme
   const result = await restartManagedProcesses({ runtimeRoot: root, snapshot: [{ id: 1, name: 'admin' }], target: 'legacy', getProcesses: async () => [entry], restartProcess: async () => { entry.pid = 11; entry.pm2_env.status = 'online'; }, markerMatches: async () => false, delay: async () => {} });
   assert.equal(result.length, 1);
 });
+
+test('recovery identifies a bot by name after PM2 assigns a new ID', async () => {
+  const root = '/opt/mybot', calls = [];
+  const entry = { name: 'admin', pm_id: 42, pid: 12, pm2_env: { status: 'online', pm_exec_path: `${root}/src/bootstrap.js` } };
+  await restartManagedProcesses({ runtimeRoot: root, snapshot: [{ id: 1, name: 'admin' }], target: 'legacy', getProcesses: async () => [entry], restartProcess: async id => { calls.push(id); entry.pid = 13; }, markerMatches: async () => false, delay: async () => {} });
+  assert.deepEqual(calls, [42]);
+});
