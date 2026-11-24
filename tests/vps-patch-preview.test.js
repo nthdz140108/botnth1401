@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { buildPreview } from '../deploy/patch-preview.mjs';
 
 test('preview uses committed blobs, expands renames and ignores working changes', () => {
@@ -22,6 +23,23 @@ test('preview uses committed blobs, expands renames and ignores working changes'
     const added = preview.files.find(f => f.status === 'add');
     assert.equal(added.size, Buffer.byteLength('committed\n'));
     assert.equal(added.sha256, createHash('sha256').update('committed\n').digest('hex'));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('preview CLI prints JSON and identifies a JS-only restart', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-cli-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    fs.mkdirSync(path.join(dir, 'src')); fs.writeFileSync(path.join(dir, 'src', 'command.js'), 'export default 1;');
+    git('add', '.'); git('commit', '-qm', 'target');
+    const cli = fileURLToPath(new URL('../deploy/patch-cli.mjs', import.meta.url));
+    const result = JSON.parse(execFileSync(process.execPath, [cli, '--repo', dir, '--base', base, '--target', 'HEAD'], { encoding: 'utf8' }));
+    assert.equal(result.files.length, 1);
+    assert.equal(result.actions.restartNode, true);
+    assert.equal(result.actions.buildRust, false);
+    assert.equal(result.actions.buildDashboard, false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
