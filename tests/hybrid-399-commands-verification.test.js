@@ -21,20 +21,20 @@ const manifestPath = path.join(projectRoot, "assets", "json-data", "command.json
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const manifestCommands = Array.isArray(manifest.commands) ? manifest.commands : [];
 
-test("1. Hybrid Catalog Integrity: Exactly 218 canonical commands and 181 aliases (399 keys)", () => {
-  assert.equal(commandRegistry.definitions.length, 218, "Must have exactly 218 canonical definitions");
-  assert.equal(commandRegistry.canonicalNames.size, 218, "Canonical names set size must be 218");
+test("1. Hybrid Catalog Integrity: Canonical commands and aliases agree with the manifest", () => {
+  assert.equal(commandRegistry.definitions.length, manifestCommands.length);
+  assert.equal(commandRegistry.canonicalNames.size, manifestCommands.length);
 
   let totalAliasCount = 0;
   for (const def of commandRegistry.definitions) {
     totalAliasCount += def.aliases.length;
   }
 
-  assert.equal(totalAliasCount, 181, "Must have exactly 181 aliases across all definitions");
-  assert.equal(commandRegistry.keys.length, 399, "Total dispatch keys must be 399 (218 + 181)");
+  assert.equal(totalAliasCount, manifestCommands.reduce((count, command) => count + (command.alias?.length || 0), 0));
+  assert.equal(commandRegistry.keys.length, manifestCommands.length + totalAliasCount);
 });
 
-test("2. Hybrid Dispatch: Every one of the 399 keys resolves cleanly to an active JS handler", () => {
+test("2. Hybrid Dispatch: Every key resolves cleanly to an active JS handler", () => {
   const seenCanonical = new Set();
   const seenAliases = new Set();
 
@@ -54,11 +54,11 @@ test("2. Hybrid Dispatch: Every one of the 399 keys resolves cleanly to an activ
     }
   }
 
-  assert.equal(seenCanonical.size, 218);
-  assert.equal(seenAliases.size, 181);
+  assert.equal(seenCanonical.size, manifestCommands.length);
+  assert.equal(seenAliases.size, manifestCommands.reduce((count, command) => count + (command.alias?.length || 0), 0));
 });
 
-test("3. Execution Lanes: All 218 commands belong to valid execution lanes", () => {
+test("3. Execution Lanes: All commands belong to valid execution lanes", () => {
   const laneCounts = { fast: 0, control: 0, heavy: 0, broadcast: 0 };
 
   for (const def of commandRegistry.definitions) {

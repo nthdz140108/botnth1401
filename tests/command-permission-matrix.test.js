@@ -18,7 +18,7 @@ test("inventory: every canonical command in the registry has a permission policy
     if (!hasPermissionPolicyEntry(definition.name)) missing.push(definition.name);
   }
   assert.deepEqual(missing, [], `commands without policy: ${missing.join(", ")}`);
-  assert.equal(ALL_DEFINITIONS.length, 218, `expected 218 canonical commands, got ${ALL_DEFINITIONS.length}`);
+  assert.equal(ALL_DEFINITIONS.length, 219, `expected 219 canonical commands, got ${ALL_DEFINITIONS.length}`);
 });
 
 test("policy entries are well-formed for all canonical commands", () => {

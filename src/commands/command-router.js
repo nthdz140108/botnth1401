@@ -383,7 +383,8 @@ export async function executeCommand(context = {}, definition) {
     if (lane === "heavy" && typeof broker.submitHeavy === "function") {
       job = broker.submitHeavy(definition.name, { ...context, args }, runHandler);
     } else if (lane === "broadcast" && typeof broker.submitBroadcast === "function") {
-      job = broker.submitBroadcast({ ...context, args }, runHandler);
+      job = broker.submitBroadcast({ ...context, args }, runHandler,
+        definition.timeoutMs > 0 ? { timeoutMs: definition.timeoutMs } : undefined);
     }
 
     if (job && job.jobId) {

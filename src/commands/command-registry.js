@@ -686,7 +686,7 @@ export const PHASE_11_COMMANDS = Object.freeze([
   "myheart", "checklq", "datavideo", "googlesearchai", "qrheart",
   "nhacnho", "fakecccd", "check", "admin", "mybank", "removefriend",
   "senduser", "prwelcome", "antivideo", "antistickereffect",
-  "rutgonlink", "testflight", "cmdadd", "sticker ai", "locmem",
+  "rutgonlink", "testflight", "cmdadd", "sticker ai", "locmem", "getuser",
 ]);
 
 const phase11Metadata = Object.freeze({
@@ -737,6 +737,8 @@ const phase11Metadata = Object.freeze({
   cmdadd: { permission: "adminLevelHigh", type: 1, countdown: 30, scope: "both", instanceScope: "main", executionLane: "control" },
   "sticker ai": { aliases: ["stk ai"], permission: "adminLevelHigh", type: 1, countdown: 60, scope: "both", executionLane: "heavy" },
   locmem: { permission: "adminLevelHigh", type: 1, countdown: 30, scope: "group", risk: "critical", executionLane: "control" },
+  // A roster streamed at one member/second must outlive the default 60s broadcast deadline.
+  getuser: { permission: "all", type: 1, countdown: 30, scope: "group", executionLane: "broadcast", timeoutMs: 24 * 60 * 60_000 },
 });
 
 export function createPhase11Handlers(loadModule = defaultLoader) {
@@ -788,6 +790,7 @@ export function createPhase11Handlers(loadModule = defaultLoader) {
     cmdadd: lazy("./custom-commands/cmdadd-command.js", "handleCmdaddCommand", (handler, { api, message, commandParts, root }) => handler(api, message, commandParts, { root }), loadModule),
     "sticker ai": lazy("./sticker-ai-command.js", "handleStickerAiCommand", (handler, context) => handler(context), loadModule),
     locmem: lazy("../service-debug/locmem/index.js", "handleLocmemCommand", (handler, context) => handler(context.api, context.message, context), loadModule),
+    getuser: lazy("../service-debug/info-service/get-user.js", "getUserCommand", (handler, context) => handler(context.api, context.message, context), loadModule),
   };
 }
 

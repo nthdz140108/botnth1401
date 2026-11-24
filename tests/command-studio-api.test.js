@@ -42,7 +42,7 @@ test("catalog and coverage endpoints expose full studio coverage", async () => {
   const { app } = buildApp();
   const catalog = await request(app, "GET", "/api/command-studio/catalog");
   assert.equal(catalog.status, 200);
-  assert.equal(catalog.body.data.commands.length, 218);
+  assert.equal(catalog.body.data.commands.length, 219);
   const sendtaskEntry = catalog.body.data.commands.find((c) => c.commandName === "sendtask");
   assert.equal(sendtaskEntry.adapter, "sendtask-scheduler");
 

@@ -173,7 +173,7 @@ test("Phase 3 handler failures become HANDLER_ERROR", async () => {
 });
 
 test("the combined registry includes Phases 6 through 9", async () => {
-  assert.equal(commandRegistry.definitions.length, 218);
+  assert.equal(commandRegistry.definitions.length, 219);
   for (const command of [...PHASE_6_COMMANDS, ...PHASE_7_COMMANDS, ...PHASE_8_COMMANDS, ...PHASE_9_COMMANDS]) {
     assert.equal(commandRegistry.lookup.get(command)[0].name, command);
   }

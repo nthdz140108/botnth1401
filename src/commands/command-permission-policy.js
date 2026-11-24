@@ -252,6 +252,7 @@ export const COMMAND_PERMISSION_POLICY = Object.freeze({
   cmdadd: HIGH("global", "sensitive"),
   "sticker ai": HIGH("global", "high"),
   locmem: HIGH("group", "critical"),
+  getuser: MEMBER("group", "sensitive"),
 });
 
 const ADMIN_TIER_ACTIONS = Object.freeze({

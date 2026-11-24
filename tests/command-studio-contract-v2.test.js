@@ -31,20 +31,20 @@ test("every registry definition has a valid contract with handlerRef", () => {
 
 test("coverage matrix is complete: no MISSING/PARTIAL and counts match registry", () => {
   const { summary } = buildCoverageMatrix();
-  assert.equal(summary.totalRegistry, 218);
-  assert.equal(summary.totalContracts, 218);
-  assert.equal(summary.full, 218);
+  assert.equal(summary.totalRegistry, commandRegistry.definitions.length);
+  assert.equal(summary.totalContracts, commandRegistry.definitions.length);
+  assert.equal(summary.full, commandRegistry.definitions.length);
   assert.equal(summary.partial, 0);
   assert.equal(summary.missing, 0);
   assert.equal(summary.complete, true);
 });
 
-test("catalog, registry and command.json agree at 218 commands without alias collisions", () => {
+test("catalog, registry and command.json agree without alias collisions", () => {
   const doc = JSON.parse(fs.readFileSync(new URL("../assets/json-data/command.json", import.meta.url), "utf8"));
   const jsonNames = new Set((doc.commands || []).map((c) => c.name));
   const registryNames = new Set(commandRegistry.definitions.map((d) => d.name));
-  assert.equal(registryNames.size, 218);
-  assert.equal(jsonNames.size, 218);
+  assert.equal(registryNames.size, commandRegistry.definitions.length);
+  assert.equal(jsonNames.size, registryNames.size);
   for (const name of registryNames) {
     assert.ok(jsonNames.has(name), `command.json missing ${name}`);
   }
