@@ -446,6 +446,7 @@ export async function handleDownloadCommand(api, message, aliasCommand, dependen
 
   try {
     query = content.replace(`${prefix}${aliasCommand}`, "").trim();
+    query = readDownloadLink({ body: query })?.url || query;
 
     if (!query) {
       const object = {

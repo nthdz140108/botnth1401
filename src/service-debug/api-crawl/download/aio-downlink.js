@@ -521,7 +521,8 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
   const prefix = getGlobalPrefix();
 
   try {
-    const query = content.replace(`${prefix}${aliasCommand}`, "").trim();
+    const rawQuery = content.replace(`${prefix}${aliasCommand}`, "").trim();
+    const query = readDownloadLink({ body: rawQuery })?.url || rawQuery;
     if (!query) {
       const object = {
         caption: `Vui lòng nhập link cần tải\nVí dụ:\n${prefix}${aliasCommand} <link>`,

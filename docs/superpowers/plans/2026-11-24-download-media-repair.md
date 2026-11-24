@@ -23,3 +23,4 @@ Review focus: echoes before receipts; command/selection priority; no second medi
 - Final focused run: 143 tests, 142 pass, 1 opt-in live YouTube skip, 0 fail. Includes incremental deployment and original command/service regression tests.
 - VPS preparation smoke: MP4 portrait 180x320, 400 ms, 6426 bytes; WebM normalized to MP4 portrait 180x320, 407 ms, 6506 bytes. Both produced a 584-byte JPEG. No Zalo sends or release switch performed.
 - Ruling: retain unrelated baseline dashboard/latency/ANSI test failures rather than change those production subsystems within the media repair. Full-suite results are recorded in the delivery report.
+- Final routing check selects only the first supported URL for explicit download commands. Final focused verification: 144 tests, 143 pass, 1 skip, 0 fail. Full run: 2,239 tests, 2,211 pass, 5 known baseline failures, 23 skip. See `docs/download-media-repair-2026-11-24.md` for failure names and acceptance limits.

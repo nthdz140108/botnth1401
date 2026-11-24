@@ -13,6 +13,17 @@ import { clearAllInteractionCountdowns } from '../src/utils/interaction-countdow
 
 const messageFor = url => ({ threadId: 'test-download-room', type: 1, data: { uidFrom: 'test-download-user', dName: 'Test', content: `${getGlobalPrefix()}download ${url}` } });
 
+test('download extracts only the first supported URL from command text', async () => {
+  const first = 'https://vt.tiktok.com/first/';
+  let requests = 0, fallbacks = 0;
+  await handleDownloadCommand({}, messageFor(`${first} https://youtu.be/second`), 'download', {
+    getDataDownloadVideo: async url => { requests++; assert.equal(url, first); throw Object.assign(new Error('missing key'), { code: 'MISSING_DEPENDENCY' }); },
+    runPlatformDownload: async (_api, _message, url, platform) => { fallbacks++; assert.equal(url, first); assert.equal(platform, 'tiktok'); return true; },
+  });
+  assert.equal(requests, 1);
+  assert.equal(fallbacks, 1);
+});
+
 for (const url of ['https://youtube.com/watch?v=MR6zUAk6ayk', 'https://youtube.com/shorts/MR6zUAk6ayk', 'https://vt.tiktok.com/abc/']) {
   test(`download falls back before upload for ${new URL(url).hostname}${new URL(url).pathname}`, async () => {
     let fallbacks = 0;
