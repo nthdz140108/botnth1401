@@ -36,12 +36,13 @@ Lượt kiểm thử tập trung cuối: **151 test, 145 pass, 6 skip, 0 fail**.
 
 ESLint cho các module thay đổi và `git diff --check` đều pass. Rà soát độc lập đã kiểm tra ranh giới fallback, lỗi voice, cleanup và checksum Deno.
 
-Đã chạy `npm test` toàn dự án. Hai lỗi được tái hiện riêng ở các phần không sửa trong bản này:
+Đã chạy xong `npm test` toàn dự án: **2.214 test, 2.185 pass, 6 fail, 23 skip** (khoảng 18 phút). Các lỗi ở phần không sửa trong bản này:
 
 - `tests/dashboard/runtime-status-resolver.test.js`: kỳ vọng danh sách field cũ, thiếu field `memory` đang có trong kết quả.
 - `tests/latency-tracker.test.js`: kỳ vọng phase `ws_received->preflight_started` không có trong snapshot.
+- `tests/terminal-log.test.js`: ba ca màu ANSI (`uses ansi colors only when enabled and never when NO_COLOR or redirected`, `allows managed listener pipes to color when the supervising terminal opted in`, `colors event branches and labels by field tone for easier scanning`) kỳ vọng mã màu nhưng nhận text không có ANSI trong môi trường chạy kiểm thử này.
 
-Lượt toàn dự án ban đầu cũng gặp kỳ vọng registry TikTok cũ trong `phase-4-dependency.test.js`; kỳ vọng này đã được cập nhật theo việc kiểm tra khóa ở adapter tìm kiếm và đã pass trong lượt tập trung cuối. Không coi toàn bộ suite là xanh.
+Lượt toàn dự án ban đầu cũng gặp kỳ vọng registry TikTok cũ trong `phase-4-dependency.test.js`; kỳ vọng này đã được cập nhật theo việc kiểm tra khóa ở adapter tìm kiếm và đã pass trong lượt tập trung cuối. Các test dashboard, latency và terminal được chạy riêng để xác nhận các lỗi còn lại. Không coi toàn bộ suite là xanh.
 
 ## Kiểm tra trực tiếp trên VPS
 
