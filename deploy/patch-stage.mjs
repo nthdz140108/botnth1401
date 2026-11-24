@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { validatePatchPackage } from './patch-validate.mjs';
 
 function targetPath(root, name, createParents) {
@@ -22,6 +22,7 @@ export function stagePatch({ baseDir, packageDir, stageDir }) {
   if (!fs.lstatSync(marker).isFile()) throw new Error('Invalid base marker');
   const metadata = JSON.parse(fs.readFileSync(marker, 'utf8'));
   if (metadata.commit !== manifest.base) throw new Error('Base commit mismatch');
+  if (metadata.status !== 'ready') throw new Error('Base release is not ready');
   fs.mkdirSync(stageRoot);
   try {
     for (const entry of fs.readdirSync(baseRoot)) {
@@ -35,11 +36,13 @@ export function stagePatch({ baseDir, packageDir, stageDir }) {
       if (file.status === 'delete') { fs.unlinkSync(dest); continue; }
       const temp = `${dest}.patch-${randomBytes(8).toString('hex')}`;
       fs.copyFileSync(path.join(packageDir, 'files', ...file.path.split('/')), temp, fs.constants.COPYFILE_EXCL);
+      const written = fs.readFileSync(temp);
+      if (written.length !== file.size || createHash('sha256').update(written).digest('hex') !== file.sha256) throw new Error(`Hash mismatch after copy: ${file.path}`);
       fs.chmodSync(temp, file.mode === '100755' ? 0o755 : 0o644);
       fs.renameSync(temp, dest);
     }
     const markerTemp = path.join(stageRoot, `.release-${randomBytes(8).toString('hex')}`);
-    fs.writeFileSync(markerTemp, `${JSON.stringify({ commit: manifest.target, base: manifest.base })}\n`, { flag: 'wx' });
+    fs.writeFileSync(markerTemp, `${JSON.stringify({ commit: manifest.target, base: manifest.base, status: 'staged', files: manifest.files })}\n`, { flag: 'wx' });
     fs.renameSync(markerTemp, path.join(stageRoot, '.mybot-release.json'));
     return manifest;
   } catch (error) {

@@ -5,12 +5,15 @@ const allowed = /^(src\/|scripts\/|dashboard\/(?:src\/|index\.html$|package(?:-l
 function git(repo, ...args) {
   return execFileSync('git', args, { cwd: repo, maxBuffer: 128 * 1024 * 1024 });
 }
+function runtimeData(name) {
+  return /^src\/.*\.(?:json|jsonl|txt|db|sqlite|sqlite3)$/i.test(name) || /^src\/.*\/(?:data|data-send|data-sticker|removed-links)\//i.test(name);
+}
 function commit(repo, ref) {
   return git(repo, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`).toString().trim();
 }
 export function safePath(name) {
   const parts = name.split('/');
-  return allowed.test(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
+  return allowed.test(name) && !runtimeData(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
   return /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
@@ -19,7 +22,7 @@ export function buildPreview({ repo, base, target }) {
   base = commit(repo, base); target = commit(repo, target);
   const targetPaths = git(repo, 'ls-tree', '-r', '-z', '--name-only', target).toString('utf8').split('\0').filter(Boolean);
   const names = new Map();
-  for (const name of targetPaths.filter(name => allowed.test(name) && !ignored(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name))) {
+  for (const name of targetPaths.filter(name => allowed.test(name) && !ignored(name) && !runtimeData(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name))) {
     if (!safePath(name) || name.includes('\ufffd')) throw new Error(`Path requires manual review: ${name}`);
     const parts = name.split('/');
     for (let i = 1; i <= parts.length; i++) {

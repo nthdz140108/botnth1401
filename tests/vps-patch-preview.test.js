@@ -96,6 +96,18 @@ test('database migrations require a separate maintenance procedure', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('runtime data under source directories requires manual handling', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-runtime-data-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    git('commit', '--allow-empty', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    const data = path.join(dir, 'src', 'service-debug', 'anti-service'); fs.mkdirSync(data, { recursive: true });
+    fs.writeFileSync(path.join(data, 'list.json'), '[]'); git('add', '.'); git('commit', '-qm', 'data');
+    assert.throws(() => buildPreview({ repo: dir, base, target: 'HEAD' }), /manual/i);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('preview detects collision with an unchanged target path', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-case-'));
   const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();

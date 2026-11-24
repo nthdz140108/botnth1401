@@ -11,7 +11,7 @@ test('unconfirmed switch recovers the previous release and confirmed switch stay
   try {
     for (const id of [base, target]) {
       const release = path.join(root, 'releases', id); fs.mkdirSync(release, { recursive: true });
-      fs.writeFileSync(path.join(release, '.mybot-release.json'), JSON.stringify({ commit: id }));
+      fs.writeFileSync(path.join(release, '.mybot-release.json'), JSON.stringify({ commit: id, status: 'ready' }));
     }
     fs.symlinkSync(`releases/${base}`, path.join(root, 'current'));
     beginSwitch({ root, base, target });
@@ -31,7 +31,7 @@ test('recovery handles interruption before link change and refuses unrelated cur
   try {
     for (const id of [base, target, other]) {
       const release = path.join(root, 'releases', id); fs.mkdirSync(release, { recursive: true });
-      fs.writeFileSync(path.join(release, '.mybot-release.json'), JSON.stringify({ commit: id }));
+      fs.writeFileSync(path.join(release, '.mybot-release.json'), JSON.stringify({ commit: id, status: 'ready' }));
     }
     const journal = path.join(root, '.deploy-transaction.json');
     fs.symlinkSync(`releases/${base}`, path.join(root, 'current'));
@@ -42,5 +42,19 @@ test('recovery handles interruption before link change and refuses unrelated cur
     fs.writeFileSync(journal, JSON.stringify({ status: 'pending', base, target }));
     assert.throws(() => recoverSwitch({ root }), /unexpected/i);
     assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${other}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('staged but unbuilt release cannot be activated', { skip: process.platform === 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-pointer-ready-'));
+  const base = 'a'.repeat(40), target = 'b'.repeat(40);
+  try {
+    for (const id of [base, target]) {
+      const release = path.join(root, 'releases', id); fs.mkdirSync(release, { recursive: true });
+      fs.writeFileSync(path.join(release, '.mybot-release.json'), JSON.stringify({ commit: id, status: id === base ? 'ready' : 'staged' }));
+    }
+    fs.symlinkSync(`releases/${base}`, path.join(root, 'current'));
+    assert.throws(() => beginSwitch({ root, base, target }), /ready/i);
+    assert.equal(fs.readlinkSync(path.join(root, 'current')), `releases/${base}`);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

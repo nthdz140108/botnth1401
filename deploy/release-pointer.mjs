@@ -28,7 +28,10 @@ function checkRelease(root, id) {
   const release = path.join(releaseDir, id);
   if (!fs.lstatSync(release).isDirectory() || fs.lstatSync(release).isSymbolicLink()) throw new Error('Invalid release directory');
   const marker = path.join(release, '.mybot-release.json');
-  if (!fs.lstatSync(marker).isFile() || fs.lstatSync(marker).isSymbolicLink() || JSON.parse(fs.readFileSync(marker, 'utf8')).commit !== id) throw new Error('Release marker mismatch');
+  if (!fs.lstatSync(marker).isFile() || fs.lstatSync(marker).isSymbolicLink()) throw new Error('Release marker mismatch');
+  const metadata = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  if (metadata.commit !== id) throw new Error('Release marker mismatch');
+  if (metadata.status !== 'ready') throw new Error('Release is not ready');
 }
 function currentId(root) {
   const link = path.join(root, 'current');
