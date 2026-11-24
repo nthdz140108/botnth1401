@@ -1,0 +1,42 @@
+[package]
+name = "mybot-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mybot-types.workspace = true
+zalo-sdk.workspace = true
+mybot-storage.workspace = true
+mybot-media.workspace = true
+mybot-gfx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+moka.workspace = true
+arc-swap.workspace = true
+bytes.workspace = true
+compact_str.workspace = true
+aho-corasick.workspace = true
+regex.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+uuid.workspace = true
+sysinfo.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

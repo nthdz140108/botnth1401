@@ -1,0 +1,9 @@
+[package]
+name = "ws-decode-worker"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zalo-sdk = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

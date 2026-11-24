@@ -1,0 +1,48 @@
+[Unit]
+Description=MyBot V4 Pure-Rust Multi-Bot Zalo Engine & Web Dashboard
+Documentation=https://chat.zalo.me
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mybot
+Group=mybot
+WorkingDirectory=/opt/mybot
+
+Environment=RUST_LOG=info,mybotd=info,zalo_sdk=info
+Environment=MYBOT_DB_PATH=/var/lib/mybot/mybot.db
+Environment=MYBOT_PROJECT_ROOT=/opt/mybot
+Environment=DASHBOARD_HOST=0.0.0.0
+Environment=DASHBOARD_PORT=4173
+Environment=MYBOT_NODE_HYBRID=true
+Environment=MYBOT_BRIDGE_PORT=4174
+Environment=MYBOT_BRIDGE_URL=http://127.0.0.1:4174
+Environment=DISABLE_NODE_DASHBOARD=true
+EnvironmentFile=-/etc/mybot/mybot.env
+
+# Ensure ephemeral RAM scratchpad directory exists on tmpfs before startup
+ExecStartPre=/usr/bin/mkdir -p /dev/shm/mybot
+ExecStart=/usr/local/bin/mybotd
+
+# Sub-second restart & <200ms graceful SQLite WAL flush on SIGTERM
+Restart=always
+RestartSec=2s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+
+# Resource & descriptor headroom
+LimitNOFILE=1048576
+LimitNPROC=65535
+TasksMax=32768
+OOMScoreAdjust=-500
+
+# Systemd sandboxing (allows /var/lib/mybot, /opt/mybot, and /dev/shm/mybot)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mybot /dev/shm
+
+[Install]
+WantedBy=multi-user.target

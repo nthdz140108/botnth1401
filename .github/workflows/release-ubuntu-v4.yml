@@ -1,0 +1,71 @@
+name: Release Ubuntu 24.04 Pure-Rust V4
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v4.*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ubuntu-v4-build-and-test:
+    name: Ubuntu 24.04 LTS (AVX2 + Skia + ONNX Runtime)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Ubuntu system fonts & media tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config build-essential clang lld ffmpeg \
+            fontconfig fonts-noto-core fonts-noto-color-emoji fonts-liberation2
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust dependency & build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rust -> target"
+
+      - name: Run full workspace unit & black-box integration tests
+        working-directory: rust
+        run: cargo test --workspace --all-targets
+
+      - name: Run Clippy lints across all workspace crates & binaries
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build optimized Ubuntu 24.04 release binaries (LTO=fat + ubuntu-pro-max)
+        working-directory: rust
+        env:
+          RUSTFLAGS: "-C target-cpu=x86-64-v3"
+        run: cargo build --release --features ubuntu-pro-max --bins
+
+      - name: Smoke-test mybot-ctl doctor & dry-run V3 migration on Ubuntu
+        working-directory: rust
+        run: |
+          ./target/release/mybot-ctl doctor --assets-dir ../assets
+          ./target/release/mybot-ctl migrate-v3 --source .. --dry-run
+
+      - name: Package Ubuntu 24.04 release tarball
+        run: |
+          mkdir -p dist-v4/bin dist-v4/deploy
+          cp rust/target/release/mybotd dist-v4/bin/
+          cp rust/target/release/mybot-ctl dist-v4/bin/
+          cp -r deploy/ubuntu/* dist-v4/deploy/
+          tar -czf mybot-v4-ubuntu-x86_64-avx2.tar.gz -C dist-v4 .
+
+      - name: Upload Ubuntu V4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mybot-v4-ubuntu-x86_64-avx2
+          path: mybot-v4-ubuntu-x86_64-avx2.tar.gz

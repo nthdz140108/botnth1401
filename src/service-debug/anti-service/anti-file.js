@@ -1,0 +1,151 @@
+import { LRUCache } from "lru-cache";
+import { MessageMention } from "../../api-zalo/models/index.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import { getGroupInfoData } from "../../service-debug/info-service/group-info.js";
+import { getUserInfoData } from "../../service-debug/info-service/user-info.js";
+import * as cv from "../../utils/canvas/index.js";
+import { sendMessageStateQuote, sendMessageWarning } from "../chat-zalo/chat-style/chat-style.js";
+import { isInWhiteList } from "./white-list.js";
+import { removeMention } from "../../utils/format-util.js";
+
+const WARNING_RESET_TIME = 1800000; // 30 minutes
+const userWarnings = new LRUCache({ max: 3000, ttl: WARNING_RESET_TIME * 4 });
+const kickedUsers = new Set();
+
+export async function handleAntiFile(api, message, groupSettings) {
+  const threadId = message.threadId;
+  const content = removeMention(message);
+  const parts = content.split(" ");
+
+  if (!groupSettings[threadId]) {
+    groupSettings[threadId] = {};
+  }
+
+  if (parts.length === 1) {
+    groupSettings[threadId].antiFile = !groupSettings[threadId].antiFile;
+  } else if (parts[1] === "on") {
+    groupSettings[threadId].antiFile = true;
+  } else if (parts[1] === "off") {
+    groupSettings[threadId].antiFile = false;
+  } else {
+    const caption = "Cú pháp không hợp lệ. Sử dụng antifile hoặc antifile on/off";
+    await sendMessageWarning(api, message, caption);
+    return false;
+  }
+
+  const status = groupSettings[threadId].antiFile ? "bật" : "tắt";
+  const caption = `Chế độ chống gửi file đã được ${status}!`;
+  await sendMessageStateQuote(api, message, caption, groupSettings[threadId].antiFile, 300000);
+
+  return true;
+}
+
+export async function enforceAntiFile(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf) {
+  const threadId = message.threadId;
+  const msgType = message.data.msgType;
+  const senderId = message.data.uidFrom;
+  const senderName = message.data.dName;
+
+  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(senderId) || isInWhiteList(groupSettings, threadId, senderId)) {
+    return false;
+  }
+
+  const fileMessageTypes = ["chat.file", "file", "chat.attachment", "share.file"];
+  if (groupSettings[threadId]?.antiFile && fileMessageTypes.includes(msgType)) {
+    try {
+      await api.deleteMessage(message, false);
+
+      const warningResult = await handleWarning(
+        api,
+        message,
+        threadId,
+        senderId,
+        senderName
+      );
+
+      if (warningResult.shouldBlock) {
+        await handleViolationDetected(
+          api,
+          message,
+          threadId,
+          senderId,
+          senderName
+        );
+      }
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+async function handleWarning(
+  api,
+  message,
+  threadId,
+  senderId,
+  senderName
+) {
+  if (!userWarnings.has(senderId)) {
+    userWarnings.set(senderId, {
+      count: 0,
+      lastWarningTime: Date.now(),
+    });
+  }
+
+  const warning = userWarnings.get(senderId);
+  const currentTime = Date.now();
+
+  const warningReductions = Math.floor(
+    (currentTime - warning.lastWarningTime) / WARNING_RESET_TIME
+  );
+  if (warningReductions > 0) {
+    warning.count = Math.max(0, warning.count - warningReductions);
+  }
+
+  warning.count++;
+  warning.lastWarningTime = currentTime;
+
+  if (warning.count < 5) {
+    let caption = `⚠️ Cảnh cáo ${senderName}!\nAi cho mày gửi file ở đây!!!`;
+    if (warning.count === 3) {
+      caption = `⚠️ Cảnh cáo ${senderName}!\n Tao xút Mày ra khỏi box bây giờ!!!`;
+    }
+    await api.sendMessage(
+      {
+        msg: caption,
+        mentions: [
+          MessageMention(senderId, senderName.length, "⚠️ Cảnh cáo ".length),
+        ],
+        ttl: 8000,
+      },
+      threadId,
+      MessageType.GroupMessage
+    );
+    return { shouldBlock: false };
+  } else {
+    userWarnings.delete(senderId);
+    return { shouldBlock: true };
+  }
+}
+
+async function handleViolationDetected(
+  api,
+  message,
+  threadId,
+  senderId,
+  senderName
+) {
+  kickedUsers.add(senderId);
+  try {
+    await api.blockUsers(threadId, [senderId]);
+  } catch (error) {
+    console.error("Lỗi khi xử lý kick vi phạm:", error);
+  } finally {
+    setTimeout(() => {
+      kickedUsers.delete(senderId);
+    }, 5000).unref?.();
+  }
+}

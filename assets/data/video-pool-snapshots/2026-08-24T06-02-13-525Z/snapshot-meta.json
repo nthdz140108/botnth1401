@@ -1,0 +1,46 @@
+{
+  "createdAt": "2026-08-24T06:02:13.525Z",
+  "complete": true,
+  "pools": {
+    "vdanime.txt": {
+      "before": 803,
+      "after": 796
+    },
+    "vdboy.txt": {
+      "before": 35,
+      "after": 35
+    },
+    "vdchill.txt": {
+      "before": 25,
+      "after": 25
+    },
+    "vdcos.txt": {
+      "before": 169,
+      "after": 169
+    },
+    "vdgirl.txt": {
+      "before": 1427,
+      "after": 1400
+    },
+    "vdsad.txt": {
+      "before": 103,
+      "after": 103
+    },
+    "vdsex.txt": {
+      "before": 303,
+      "after": 115
+    },
+    "vdsexy.txt": {
+      "before": 924,
+      "after": 911
+    },
+    "vdtet.txt": {
+      "before": 127,
+      "after": 127
+    },
+    "vdvuto.txt": {
+      "before": 6,
+      "after": 6
+    }
+  }
+}

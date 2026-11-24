@@ -1,0 +1,17 @@
+[package]
+name = "mybot-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+compact_str.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+bytes.workspace = true
+url.workspace = true

@@ -1,0 +1,974 @@
+{
+  "generatedAt": "2026-08-17T13:44:45.458Z",
+  "roots": {
+    "hhh": "C:/Users/Admin/Downloads/HHH_MYBOT-V3MYBOTQRLOGIN-main/HHH_MYBOT-V3MYBOTQRLOGIN-main",
+    "nqduan": "C:/Users/Admin/Downloads/Nqduan-share-zalobot-main/Nqduan-share-zalobot-main"
+  },
+  "groups": {
+    "src/service-debug/game-service/bau-cua/image": [
+      {
+        "relativePath": "bau.png",
+        "fileName": "bau.png",
+        "size": 133437,
+        "checksum": "de4fd634afbd3e6448ec63ee4c4203051cf983330900ff34504d0cf2c00873ae",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "ca.png",
+        "fileName": "ca.png",
+        "size": 140793,
+        "checksum": "8770434ea6f595aec983e3fea8fb3c51b91520677fc2a837833899d96fb91405",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "cua.png",
+        "fileName": "cua.png",
+        "size": 138519,
+        "checksum": "e796bb20f57ee571596ee958af59e72d098693b87dffe12adc1f03cc1549cd99",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "ga.png",
+        "fileName": "ga.png",
+        "size": 137853,
+        "checksum": "5fd7157b5fdbbe34103ec3844fde5721fa6342d421fc17e71977ab7231c8b629",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "nai.png",
+        "fileName": "nai.png",
+        "size": 139595,
+        "checksum": "9ee3cb9481df840c62246280e9ab86c017689e6524b30be839b8e45893528010",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "tom.png",
+        "fileName": "tom.png",
+        "size": 139186,
+        "checksum": "14f0b95a736a8d82648e79ff88c3a76d5880e217c8b02b319fe804433530f00b",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      }
+    ],
+    "assets/resources/game/taixiu": [
+      {
+        "relativePath": "dice_1.png",
+        "fileName": "dice_1.png",
+        "size": 7069,
+        "checksum": "23cc43bb4105ae0d25e3df1e9842977843d50993696dc9c563e4195fdc0d2ed6",
+        "comparison": {
+          "status": "match",
+          "otherSize": 7069,
+          "otherChecksum": "23cc43bb4105ae0d25e3df1e9842977843d50993696dc9c563e4195fdc0d2ed6"
+        }
+      },
+      {
+        "relativePath": "dice_2.png",
+        "fileName": "dice_2.png",
+        "size": 8410,
+        "checksum": "92a31859a43037e0db884b2d7e51ee06ac835b7c8d17f591578fd6015491abf4",
+        "comparison": {
+          "status": "match",
+          "otherSize": 8410,
+          "otherChecksum": "92a31859a43037e0db884b2d7e51ee06ac835b7c8d17f591578fd6015491abf4"
+        }
+      },
+      {
+        "relativePath": "dice_3.png",
+        "fileName": "dice_3.png",
+        "size": 9796,
+        "checksum": "124192a005aac3b8da8881d96ac0fedd4997fca4dd4954a69c6a90b0475a276a",
+        "comparison": {
+          "status": "match",
+          "otherSize": 9796,
+          "otherChecksum": "124192a005aac3b8da8881d96ac0fedd4997fca4dd4954a69c6a90b0475a276a"
+        }
+      },
+      {
+        "relativePath": "dice_4.png",
+        "fileName": "dice_4.png",
+        "size": 10729,
+        "checksum": "ed7ead6950d610229e5d8a90d2e1e4bf5f91780a73dc36274c24e0c3651eeec0",
+        "comparison": {
+          "status": "match",
+          "otherSize": 10729,
+          "otherChecksum": "ed7ead6950d610229e5d8a90d2e1e4bf5f91780a73dc36274c24e0c3651eeec0"
+        }
+      },
+      {
+        "relativePath": "dice_5.png",
+        "fileName": "dice_5.png",
+        "size": 11907,
+        "checksum": "517b5ff9fa66c14bfaeee44db1677e51ffb1512bbe004425b275e9218815034c",
+        "comparison": {
+          "status": "match",
+          "otherSize": 11907,
+          "otherChecksum": "517b5ff9fa66c14bfaeee44db1677e51ffb1512bbe004425b275e9218815034c"
+        }
+      },
+      {
+        "relativePath": "dice_6.png",
+        "fileName": "dice_6.png",
+        "size": 12999,
+        "checksum": "844355c43a574bab18550b0fc34e7709b658e9c9a93faa6edd3a0fb3c4857e04",
+        "comparison": {
+          "status": "match",
+          "otherSize": 12999,
+          "otherChecksum": "844355c43a574bab18550b0fc34e7709b658e9c9a93faa6edd3a0fb3c4857e04"
+        }
+      }
+    ],
+    "assets/resources/game/keobuabao": [
+      {
+        "relativePath": "bao-left.png",
+        "fileName": "bao-left.png",
+        "size": 10732,
+        "checksum": "5bdbe0324d0873fc19c458110a697512757d286cbe1af90e36eac49446fafd61",
+        "comparison": {
+          "status": "match",
+          "otherSize": 10732,
+          "otherChecksum": "5bdbe0324d0873fc19c458110a697512757d286cbe1af90e36eac49446fafd61"
+        }
+      },
+      {
+        "relativePath": "bao-right.png",
+        "fileName": "bao-right.png",
+        "size": 9674,
+        "checksum": "80556038bd86865b033d8143ec160346e70b1b35ceb0e91825dc7e8041378c6c",
+        "comparison": {
+          "status": "match",
+          "otherSize": 9674,
+          "otherChecksum": "80556038bd86865b033d8143ec160346e70b1b35ceb0e91825dc7e8041378c6c"
+        }
+      },
+      {
+        "relativePath": "bua-left.png",
+        "fileName": "bua-left.png",
+        "size": 10247,
+        "checksum": "98271380a478bb2e3870450db4f7cd739656690a988fff52e23ae2787187e5e2",
+        "comparison": {
+          "status": "match",
+          "otherSize": 10247,
+          "otherChecksum": "98271380a478bb2e3870450db4f7cd739656690a988fff52e23ae2787187e5e2"
+        }
+      },
+      {
+        "relativePath": "bua-right.png",
+        "fileName": "bua-right.png",
+        "size": 7069,
+        "checksum": "e3f57eee0407d646956d6edb65b6028cca22c8995ec4801da6b2cd0cba94872d",
+        "comparison": {
+          "status": "match",
+          "otherSize": 7069,
+          "otherChecksum": "e3f57eee0407d646956d6edb65b6028cca22c8995ec4801da6b2cd0cba94872d"
+        }
+      },
+      {
+        "relativePath": "keo-left.png",
+        "fileName": "keo-left.png",
+        "size": 8854,
+        "checksum": "68187f2787fb3f0154e751455098546c3b9c408293885bc757d662dbabc8b067",
+        "comparison": {
+          "status": "match",
+          "otherSize": 8854,
+          "otherChecksum": "68187f2787fb3f0154e751455098546c3b9c408293885bc757d662dbabc8b067"
+        }
+      },
+      {
+        "relativePath": "keo-right.png",
+        "fileName": "keo-right.png",
+        "size": 7851,
+        "checksum": "6915348a19bcade0ae76a56d7680b0f6f8eea8d7b98ae469671714b2c96426cf",
+        "comparison": {
+          "status": "match",
+          "otherSize": 7851,
+          "otherChecksum": "6915348a19bcade0ae76a56d7680b0f6f8eea8d7b98ae469671714b2c96426cf"
+        }
+      }
+    ],
+    "src/service-debug/game-service/nong-trai/res": [
+      {
+        "relativePath": "caytrong/1-chin.png",
+        "fileName": "1-chin.png",
+        "size": 586,
+        "checksum": "f31f1507f83e67450d79fd158e004072e2b48de853c421c0716986048ec11cd0",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/1-uong.png",
+        "fileName": "1-uong.png",
+        "size": 528,
+        "checksum": "e401f1141600af7b8a0c7d51a52d4388a2dd42eef08efe2536accf09124954cd",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/1.png",
+        "fileName": "1.png",
+        "size": 482,
+        "checksum": "c829120809f88fe906db006f0654329c0d73c34d5854a9aba72f6729e1c206fe",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/10-chin.png",
+        "fileName": "10-chin.png",
+        "size": 485,
+        "checksum": "3e92ca4ee6f9e1f173164f5e92562a1ef877d3b6e0c075b41593c7c7af4ff5bb",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/10-uong.png",
+        "fileName": "10-uong.png",
+        "size": 468,
+        "checksum": "7a3b48d0a19f288c4d718f5c607a943d24f443a807857cfe2f76078307751ac7",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/10.png",
+        "fileName": "10.png",
+        "size": 416,
+        "checksum": "f1fd75f9284c3ddf778d4eb0254cf71ce551851a5d6f0e6bd4ac5e766568ee98",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/11-chin.png",
+        "fileName": "11-chin.png",
+        "size": 448,
+        "checksum": "4a26f0378b4ea02c249b494d6b0d98a546c11cf6f480ed3ddbd395a54aad7469",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/11-uong.png",
+        "fileName": "11-uong.png",
+        "size": 422,
+        "checksum": "d60c96a1f93c5315b233d9be43dd3a8f638ccf16dc172c56e7138d0d122ad7da",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/11.png",
+        "fileName": "11.png",
+        "size": 403,
+        "checksum": "0bbdfda847ded0e00b0438831af6821d538b62d38076612b25869135b4516a99",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/2-chin.png",
+        "fileName": "2-chin.png",
+        "size": 522,
+        "checksum": "20457b131820ffd447b34ea6a0740a00381f8ae919b95633c19c040dcaa49c50",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/2-uong.png",
+        "fileName": "2-uong.png",
+        "size": 377,
+        "checksum": "9025ed9ec9e9362baf2cebae948b56ec9b16897d80fade59aaf500d2b01247bb",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/2.png",
+        "fileName": "2.png",
+        "size": 377,
+        "checksum": "9025ed9ec9e9362baf2cebae948b56ec9b16897d80fade59aaf500d2b01247bb",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/3-chin.png",
+        "fileName": "3-chin.png",
+        "size": 481,
+        "checksum": "c1a1ef158437b166f26e3a3e67cd91c358e208fd78472e5bb6afc573d32b5f19",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/3-uong.png",
+        "fileName": "3-uong.png",
+        "size": 461,
+        "checksum": "f20b79cb0c87d13101b085bdc2143ab19e40cb574c32ba4a82608878ce7c505c",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/3.png",
+        "fileName": "3.png",
+        "size": 353,
+        "checksum": "a6deb50d51d6521b3ba8b46220cc96dbc272484fd1f3b8f40d41aa8585f16129",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/4-chin.png",
+        "fileName": "4-chin.png",
+        "size": 518,
+        "checksum": "90fe86c90c0c839e930c8b306a24f6c10c3e3958d6ce43867eb276d6b45ef9d6",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/4-uong.png",
+        "fileName": "4-uong.png",
+        "size": 497,
+        "checksum": "ba75f0eefa241ea4d9870e1ce80fc8c7584a94c3452f5330707d74d907007c16",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/4.png",
+        "fileName": "4.png",
+        "size": 364,
+        "checksum": "5f958a20d25bc777eea8c35ed717f8d421ab298a2429d2507fef4526746fc027",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/5-chin.png",
+        "fileName": "5-chin.png",
+        "size": 489,
+        "checksum": "594b07658b6179db24017c1c42e2e6ddd148076bbb9d76ab57d7a219fe937708",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/5-uong.png",
+        "fileName": "5-uong.png",
+        "size": 469,
+        "checksum": "eb4cf20e2df1b37d47ce58dc2fbdcb3d1c924a891d80e9ffb376ca82be02c014",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/5.png",
+        "fileName": "5.png",
+        "size": 376,
+        "checksum": "d9a70a6c5ec1fe531e593bda9627c57c899bd6a63704831ab6c3f297af8624ee",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/6-chin.png",
+        "fileName": "6-chin.png",
+        "size": 473,
+        "checksum": "2d72fdb57892e670e7ec0159d92d3413e5fce4d1ef6f351b30a7a98279b06b27",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/6-uong.png",
+        "fileName": "6-uong.png",
+        "size": 480,
+        "checksum": "7199cc4be811538d6d379f741d5b366255d2b146499811809043128383a2b031",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/6.png",
+        "fileName": "6.png",
+        "size": 345,
+        "checksum": "9531528d121edf66b7b675b70f6cf9abdc76762ae34d0ee122bbde915d8781fe",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/7-chin.png",
+        "fileName": "7-chin.png",
+        "size": 383,
+        "checksum": "708712147fe6755953afd0d603e2a9faf4302be6f98576827a284e34b2a25243",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/7-uong.png",
+        "fileName": "7-uong.png",
+        "size": 445,
+        "checksum": "0d9803b2aee7d9c2a385b8ae567c941c8899113a039a8402445ab18b625ba21a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/7.png",
+        "fileName": "7.png",
+        "size": 411,
+        "checksum": "885e7e7a429b7dd3fb8c4feda2d463fbe078ce7ff48cd41be3d05ba7f0de2344",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/8-chin.png",
+        "fileName": "8-chin.png",
+        "size": 458,
+        "checksum": "0bff686d5f93ff9d1766ae7585d23d4cc27e424f939e2334200fcb07cd38dc4f",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/8-uong.png",
+        "fileName": "8-uong.png",
+        "size": 484,
+        "checksum": "f2c7b42dbec6ef41cfb7188c7b25df771dd776991d06cc76ed472aef0a75549e",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/8.png",
+        "fileName": "8.png",
+        "size": 353,
+        "checksum": "af13f9b090ee6166cce90307db5559315d6063880defe0292283fb6f9b4eafe0",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/9-chin.png",
+        "fileName": "9-chin.png",
+        "size": 553,
+        "checksum": "5b57d5fcb599b4f41f6fb957b71884329efbde79cc4b2b7755109c8d9ed69d6d",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/9-uong.png",
+        "fileName": "9-uong.png",
+        "size": 516,
+        "checksum": "1a5072a02be8230763e86e53566e0c4249845f7c47b3ce207709874857b91327",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/9.png",
+        "fileName": "9.png",
+        "size": 399,
+        "checksum": "358ddd4baa34e520eca26b3d0f4305889a650c3e63a03ae575e9007e1f6cb1e4",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "caytrong/gieohat.png",
+        "fileName": "gieohat.png",
+        "size": 332,
+        "checksum": "92a3b1837c72fb32f8b1d2e328a394eaf3f8603c47024c96ffda4641b606c692",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "dat/dat_tot.png",
+        "fileName": "dat_tot.png",
+        "size": 271,
+        "checksum": "f2c976652570a512870b116ab314bd437733f1dade585a43bf7199ac0487a424",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/1.png",
+        "fileName": "1.png",
+        "size": 510,
+        "checksum": "e6a9537f29834f0b7b344fa127ec9e0b4c2ea85baccfc6aa9f0927e289ada247",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/10.png",
+        "fileName": "10.png",
+        "size": 361,
+        "checksum": "f965fd9a76a96c5aa262bb21856336e4df9972b061b3f9e9c816a801512577e3",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/11.png",
+        "fileName": "11.png",
+        "size": 291,
+        "checksum": "b031e7707ecc52569d7f6efa9085cbf964048e6fa8f3a5af81d430f60429a397",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/2.png",
+        "fileName": "2.png",
+        "size": 438,
+        "checksum": "1befdcfd3ecefbda7631f0b3cdf7dbf1b4b8e25e59c20aa84a74f22d4cf85d5f",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/3.png",
+        "fileName": "3.png",
+        "size": 341,
+        "checksum": "07260feedcc6e613d2972f6e95efc2824c4b954afe0451eb80939e65cd4b43df",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/4.png",
+        "fileName": "4.png",
+        "size": 402,
+        "checksum": "d03a1ea72311626161fa1fc74a762ce7c7659cca03c888d105abc08c63b87050",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/5.png",
+        "fileName": "5.png",
+        "size": 434,
+        "checksum": "abe4aaf2076245098fc069ea5d4a9dba210e65cfd55463260299e052afa579c6",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/6.png",
+        "fileName": "6.png",
+        "size": 365,
+        "checksum": "b9963fadf47c9116d69f5a3f7de6f446682ed1323e3be89ef525de31a1c42558",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/7.png",
+        "fileName": "7.png",
+        "size": 293,
+        "checksum": "f9325aa87fc99be61d60ba16554b127366388134cc605b1be8e91b1cb4a0e300",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/8.png",
+        "fileName": "8.png",
+        "size": 339,
+        "checksum": "93b2e724903d98123b7add163ccf29e3fc979735f5a83902f1b79572a3baf52d",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/9.png",
+        "fileName": "9.png",
+        "size": 455,
+        "checksum": "0edfcf90c8164f31f7e433dff4e55d50ed1fcfc141304c08f4808e78c7257482",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/f1.png",
+        "fileName": "f1.png",
+        "size": 203,
+        "checksum": "423ee6b3ba0084a8db201f4731bbd5c5d9e7c29a6ead69584d6be0e2ce3de320",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/mf1.png",
+        "fileName": "mf1.png",
+        "size": 192,
+        "checksum": "b2ee3782a99715c071dbf1e482ee7341dc0208fd4d0424fe2ceee555cb3c8d81",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "shop/sf1.png",
+        "fileName": "sf1.png",
+        "size": 187,
+        "checksum": "2fcf9caef450f8d68b29b3e38d739f6b391c0258299933941e3588b20517a0d6",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "zone/atm.png",
+        "fileName": "atm.png",
+        "size": 610,
+        "checksum": "28e5b3df1e6fccd3f002db478f41b9fa0abd22c6216af2ddfa3e8c8418be7864",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "zone/bxh.png",
+        "fileName": "bxh.png",
+        "size": 549,
+        "checksum": "7a1bfb2f99f544bdc571aa57298a00a670d844266f1902592c63a2e86cf29b64",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "zone/cuahangfarm.png",
+        "fileName": "cuahangfarm.png",
+        "size": 1403,
+        "checksum": "639021df0dcb5a6a61cdaa997167728deb5f5fb0fa4d4caab0efe441b568c5b0",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "zone/farm.png",
+        "fileName": "farm.png",
+        "size": 1344,
+        "checksum": "fadeac3059a98282ff3ab2b4507cb1029ff461832179e6eb6111260db2f7dd21",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "zone/nhakho.png",
+        "fileName": "nhakho.png",
+        "size": 944,
+        "checksum": "e4b624b08c75b2b0ef7881188997c1db793bfff9c7335480a359c83bcd0c2750",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      }
+    ],
+    "src/service-debug/game-service/co-tuong/pieces": [
+      {
+        "relativePath": "bA.svg",
+        "fileName": "bA.svg",
+        "size": 1078,
+        "checksum": "2457ab961855c7c87c12fbf58356b05f2adedc033f8065cbddd6112e073d03d9",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bB.svg",
+        "fileName": "bB.svg",
+        "size": 2623,
+        "checksum": "9da86ec3e98d5783ffab2ba3003f13c0458e6fcc043eaf98ec7aac9aad5a7a65",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bC.svg",
+        "fileName": "bC.svg",
+        "size": 2334,
+        "checksum": "75a712fcad49ebbb5c6b0f327023720914601a96789a74a249358b6dd98eca81",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bK.svg",
+        "fileName": "bK.svg",
+        "size": 2890,
+        "checksum": "ab2fac4714eebfc1ab0845c5e45ed9fbf7daf77cff447e9d9ba565af1325ea42",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bN.svg",
+        "fileName": "bN.svg",
+        "size": 2433,
+        "checksum": "e466208af9c40c93efda87552ee86a808c0af50e3aecf624809b62e55bf06fcd",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bP.svg",
+        "fileName": "bP.svg",
+        "size": 2132,
+        "checksum": "ce9e9a264d51e3040f3a163364ffd6dfb1e8972404a7c80986f2204ba0096309",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "bR.svg",
+        "fileName": "bR.svg",
+        "size": 1567,
+        "checksum": "6eee60c3b1ea4a8a6bbba649ff4ff9ca0c127167feab7c135479015d6c815094",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rA.svg",
+        "fileName": "rA.svg",
+        "size": 1510,
+        "checksum": "3e2baa6cb53ba533431d1357ec7ca8d50da9a44a5c075de50da6ad83fb7fabbb",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rB.svg",
+        "fileName": "rB.svg",
+        "size": 1712,
+        "checksum": "a9b9959a93cbefd6307fbdc94e2dad44398bb1733d9d6212b2745415336bb416",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rC.svg",
+        "fileName": "rC.svg",
+        "size": 2676,
+        "checksum": "6bd7c23b6fa04a7db399a504353ac3ec71d6885ddec02bd6d48837b95549061f",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rK.svg",
+        "fileName": "rK.svg",
+        "size": 1872,
+        "checksum": "6ffc0426a7584a9de4af04c1497bb9551fd88f8d09d782d5bfa4e538789fba1f",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rN.svg",
+        "fileName": "rN.svg",
+        "size": 2639,
+        "checksum": "161487177e73702479174273985c3d0f35a8c25ae4dbe1c79ceb902863330c21",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rP.svg",
+        "fileName": "rP.svg",
+        "size": 1623,
+        "checksum": "6a4a23c350d34f14b42f880ca680f07236d6f9e30af87d5b1b1aef5262605aa6",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "rR.svg",
+        "fileName": "rR.svg",
+        "size": 1983,
+        "checksum": "6a06405369cec053ce832f66255ff59fe799dbe08906c73fed44729a8b6ce93a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      }
+    ],
+    "assets/json-data": [
+      {
+        "relativePath": "auto-reply.json",
+        "fileName": "auto-reply.json",
+        "size": 2,
+        "checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "block-list.json",
+        "fileName": "block-list.json",
+        "size": 2,
+        "checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "cache-link.json",
+        "fileName": "cache-link.json",
+        "size": 4311,
+        "checksum": "ff949487417e98c697f0d274dd16750d4ded4a622871cbbc768a0fe862f14601",
+        "comparison": {
+          "status": "different",
+          "otherSize": 175112,
+          "otherChecksum": "5e8fb59592080aa439497f8be1a57396f15a6303f9726a4a4f2584ff5d92e9fc"
+        }
+      },
+      {
+        "relativePath": "command-config.json",
+        "fileName": "command-config.json",
+        "size": 146,
+        "checksum": "33cd419c82eb5f746217b76558668762e7a6d193b17d5952b1d64c1fd44507df",
+        "comparison": {
+          "status": "different",
+          "otherSize": 145,
+          "otherChecksum": "257fa328945b06507985daefa62516b29f7f227f44edba5fb006f318ba5718c3"
+        }
+      },
+      {
+        "relativePath": "command.json",
+        "fileName": "command.json",
+        "size": 74735,
+        "checksum": "10de685df11cf6ea331ce0d6f56ff63e3cb644761545a7b93752edddf3c54846",
+        "comparison": {
+          "status": "different",
+          "otherSize": 64351,
+          "otherChecksum": "5bcba129ddff2c56ef2be7d1588bf7ad7bedb140d7a6b579fd8972d582b6bd1e"
+        }
+      },
+      {
+        "relativePath": "data-game.json",
+        "fileName": "data-game.json",
+        "size": 9561,
+        "checksum": "d13445f9678f17288f35b3735e82b4e42d2b424cfbc77c3670807707db23aa37",
+        "comparison": {
+          "status": "different",
+          "otherSize": 7619,
+          "otherChecksum": "43e5e10a53c0ade9de41ace568378255704b511b0c7d01cb14465daea5604e3f"
+        }
+      },
+      {
+        "relativePath": "data-training.json",
+        "fileName": "data-training.json",
+        "size": 775,
+        "checksum": "a067fccc444e6e80cf4d158456ccc4f2e06125017d7bafed0420a8336024947a",
+        "comparison": {
+          "status": "different",
+          "otherSize": 11800,
+          "otherChecksum": "c17734d78d2fed1bb4e6a6418bb5f4775e935b4303f489da4f8ea89f618b7486"
+        }
+      },
+      {
+        "relativePath": "database-config.json",
+        "fileName": "database-config.json",
+        "size": 228,
+        "checksum": "11802454ee921e38eb6e88147da23305283b9d03069f0a10fb077cb54e0f6be0",
+        "comparison": {
+          "status": "different",
+          "otherSize": 238,
+          "otherChecksum": "737f68d4b8a62e26249a2e8d6552b80a7879db80d435d130b84beea73e89ded9"
+        }
+      },
+      {
+        "relativePath": "manager-bot.json",
+        "fileName": "manager-bot.json",
+        "size": 5184,
+        "checksum": "be5f34b8a827be190c16570e0134a2bdee5476847d219f7e89cff401a54b286a",
+        "comparison": {
+          "status": "different",
+          "otherSize": 2,
+          "otherChecksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        }
+      },
+      {
+        "relativePath": "message-log.json",
+        "fileName": "message-log.json",
+        "size": 2,
+        "checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "mute-list.json",
+        "fileName": "mute-list.json",
+        "size": 2,
+        "checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      },
+      {
+        "relativePath": "nong-trai.json",
+        "fileName": "nong-trai.json",
+        "size": 34118,
+        "checksum": "8ca6303a4557269e2ce3c6c9fff4fd51fed925662af94cbc889b3489f6f472d8",
+        "comparison": {
+          "status": "different",
+          "otherSize": 56791,
+          "otherChecksum": "144cf10ed462bbbb85e909ff00536528ddffb29b7aebf94fa2d87478000d36d9"
+        }
+      },
+      {
+        "relativePath": "prophylactic.json",
+        "fileName": "prophylactic.json",
+        "size": 160,
+        "checksum": "08ab98106e7e457a3898ef1b2e0188d46cf3e5fc9ae259c9f438541e6d55bda9",
+        "comparison": {
+          "status": "different",
+          "otherSize": 160,
+          "otherChecksum": "932094105f08a0bc978f9a4c43c82f2ff7ad6587924918f5189f4954c26d7c83"
+        }
+      },
+      {
+        "relativePath": "rank-info.json",
+        "fileName": "rank-info.json",
+        "size": 8981,
+        "checksum": "d69621a1b508f87a3343d677b48eef1e8575a560c90cc11f6d0e6a5101dd8faa",
+        "comparison": {
+          "status": "different",
+          "otherSize": 2,
+          "otherChecksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        }
+      },
+      {
+        "relativePath": "whitelist.json",
+        "fileName": "whitelist.json",
+        "size": 2,
+        "checksum": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "comparison": {
+          "status": "missing-in-nqduan"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+[package]
+name = "mybot-commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mybot-types.workspace = true
+zalo-sdk.workspace = true
+mybot-storage.workspace = true
+mybot-core.workspace = true
+mybot-services.workspace = true
+mybot-gfx.workspace = true
+mybot-media.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+bytes.workspace = true
+regex.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+uuid.workspace = true
+sysinfo.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+urlencoding.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+hex.workspace = true
+

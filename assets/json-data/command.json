@@ -1,0 +1,3016 @@
+{
+  "prefix": "!",
+  "commands": [
+    {
+      "name": "mybot",
+      "alias": [
+        "mebot",
+        "clean"
+      ],
+      "description": "Hệ thống quản lý bot",
+      "syntax": "{p}mybot",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "main"
+    },
+    {
+      "name": "help",
+      "alias": [
+        "menu"
+      ],
+      "description": "Hiển thị danh sách và hướng dẫn sử dụng các lệnh cơ bản",
+      "syntax": "{p}help",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "📚",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "command",
+      "alias": [
+        "cmd",
+        "command-manager"
+      ],
+      "description": "Hiển thị toàn bộ danh sách lệnh bot và chi tiết các lệnh cụ thể",
+      "syntax": "{p}command [số trang] || {p}command admin [số trang] || {p}command (map/map admin/find <cmd>)...",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "🎮",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "simsimi",
+      "alias": [
+        "sim"
+      ],
+      "description": "Trò chuyện với Bot AI (Simsimi)",
+      "syntax": "{p}simsimi <nội dung>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "💬",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "data",
+      "description": "Thêm date link",
+      "syntax": "{p}data video/ảnh (để thêm link)",
+      "permission": "all",
+      "countdown": 3,
+      "icon": "💬",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "name",
+      "description": "Đổi tên bot",
+      "syntax": "{p}name <tên bot>",
+      "permission": "all",
+      "countdown": 3,
+      "icon": "💬",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "rename",
+        "myaccount",
+        "myacc",
+        "mysetting",
+        "setaccount",
+        "setavatar-account",
+        "setavatarbox",
+        "setavt",
+        "setavataraccount",
+        "setavtacc"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "gemini",
+      "alias": [
+        "gem",
+        "chat"
+      ],
+      "description": "Đặt câu hỏi cho Gemini - Trợ lý AI thông minh",
+      "syntax": "{p}gemini <nội dung câu hỏi>",
+      "permission": "all",
+      "countdown": 60,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "gemini make",
+      "description": "Tạo ảnh theo yêu cầu - Trợ lý AI thông minh",
+      "syntax": "{p}gemini make <nội dung>",
+      "permission": "adminLevelHigh",
+      "countdown": 90,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "i4tiktok",
+      "description": "Xem thông tin Acc tiktok",
+      "syntax": "{p}i4tiktok [UID]",
+      "permission": "all",
+      "countdown": 15,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "gpt",
+      "description": "Đặt câu hỏi cho ChatGPT - Trợ lý AI hơi hơi thông minh",
+      "syntax": "{p}gpt <nội dung câu hỏi>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "google",
+      "alias": [
+        "gg",
+        "search"
+      ],
+      "description": "Tìm kiếm và gửi kết quả tìm kiếm từ Google",
+      "syntax": "{p}google <từ khóa>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🖼",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "image",
+      "alias": [
+        "img"
+      ],
+      "description": "Tìm kiếm và gửi ảnh ngẫu nhiên từ kho ảnh lớn nhất thế giới",
+      "syntax": "{p}image <từ khóa>",
+      "permission": "all",
+      "countdown": 120,
+      "icon": "🖼️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "pinterest",
+      "alias": [
+        "pin"
+      ],
+      "description": "Tìm kiếm và gửi ảnh ngẫu nhiên theo từ khóa từ Pinterest",
+      "syntax": "{p}pinterest <từ khóa>",
+      "permission": "all",
+      "countdown": 120,
+      "icon": "🖼️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "girl",
+      "description": "Gửi ảnh gái xinh ngẫu nhiên từ bộ sưu tập",
+      "syntax": "{p}girl || {p}girl map || {p}girl [đối số trong girl map]",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "👧",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "boy",
+      "description": "Gửi ảnh trai đẹp ngẫu nhiên từ bộ sưu tập",
+      "syntax": "{p}boy || {p}boy map || {p}boy [đối số trong boy map]",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "👦",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "cosplay",
+      "alias": [
+        "cos"
+      ],
+      "description": "Gửi ảnh cosplay anime/game ngẫu nhiên từ bộ sưu tập",
+      "syntax": "{p}cosplay",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "👘",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "anime",
+      "description": "Gửi ảnh anime ngẫu nhiên từ bộ sưu tập",
+      "syntax": "{p}anime",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🎨",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdgirl",
+      "description": "Gửi video ngắn về gái xinh bất kỳ",
+      "syntax": "{p}vdgirl",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "vdgai"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "deepseek",
+      "alias": [
+        "deepchat"
+      ],
+      "description": "Đặt câu hỏi cho DeepSeek - Trợ lý AI thông minh",
+      "syntax": "{p}deepseek <nội dung câu hỏi>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "analysis-image",
+      "alias": [
+        "analysis"
+      ],
+      "description": "Phân tích hình ảnh bằng Gemini AI",
+      "syntax": "{p}analysis-image <nội dung>",
+      "permission": "all",
+      "countdown": 90,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "create-image",
+      "alias": [
+        "createimg"
+      ],
+      "description": "Tạo ảnh theo yêu cầu - Trợ lý AI thông minh",
+      "syntax": "{p}create-image <nội dung>",
+      "permission": "adminLevelHigh",
+      "countdown": 90,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "google-search-ai",
+      "alias": [
+        "aisearch"
+      ],
+      "description": "Tìm kiếm nâng cao bằng AI",
+      "syntax": "{p}google-search-ai <từ khóa>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🤖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdsexy",
+      "description": "Gửi video ngắn về gái sexy bất kỳ",
+      "syntax": "{p}vdsexy",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdsex",
+      "description": "Gửi video ngắn về gái sex bất kỳ",
+      "syntax": "{p}vdsex",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdcos",
+      "description": "Gửi video short về cosplay bất kỳ",
+      "syntax": "{p}vdcos",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdanime",
+      "description": "Gửi video short về anime bất kỳ",
+      "syntax": "{p}vdanime",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdboy",
+      "description": "Gửi video ngắn về tâm trạng",
+      "syntax": "{p}vdboy",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🎥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "ff",
+      "description": "Xem thông tin Acc Free Fire",
+      "syntax": "{p}ff [UID]",
+      "permission": "all",
+      "countdown": 15,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "mail10p",
+      "description": "Lấy mail 10p",
+      "syntax": "{p}mail10p",
+      "permission": "all",
+      "countdown": 60,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "les",
+      "description": "Check tỉ lệ đồng tính của nữ",
+      "syntax": "{p}les <tên người dùng>",
+      "permission": "all",
+      "countdown": 30,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "quocgia",
+      "description": "Check quốc gia",
+      "syntax": "{p}quocgia <tên quốc gia>",
+      "permission": "all",
+      "countdown": 30,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "gay",
+      "description": "Check tỉ lệ đồng tính của nam",
+      "syntax": "{p}gay <tên người dùng>",
+      "permission": "all",
+      "countdown": 30,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "dam",
+      "alias": [
+        "dâm"
+      ],
+      "description": "Kiểm tra xem người dùng có phải là một đứa dâm không",
+      "syntax": "{p}dam <tên người dùng>",
+      "permission": "all",
+      "countdown": 30,
+      "type": 1,
+      "icon": "🎮",
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "info",
+      "description": "Xem thông tin chi tiết tài khoản Zalo của bạn hoặc người được tag",
+      "syntax": "{p}info || {p}info [@người_tag]",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "📰",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "i4"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "object",
+      "description": "Xem thông tin tin nhắn",
+      "syntax": "{p}object [reply]",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "📰",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "obj"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "card",
+      "description": "Tạo danh thiếp Zalo của bạn hoặc người được tag",
+      "syntax": "{p}card || {p}card [@người_tag]",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "group",
+      "alias": [
+        "gr",
+        "create-group",
+        "creategr",
+        "invite-box",
+        "invitebox",
+        "group-autolock",
+        "kiemtra"
+      ],
+      "description": "Xem thông tin chi tiết về nhóm/cộng đồng hiện tại",
+      "syntax": "{p}group",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "📋",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "detail",
+      "alias": [
+        "uptime",
+        "xtt"
+      ],
+      "description": "Xem thông tin chi tiết về bot (phiên bản, tính năng, v.v)",
+      "syntax": "{p}detail",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔧",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "speedtest",
+      "alias": [
+        "spt",
+        "spdt"
+      ],
+      "description": "Kiểm tra tốc độ mạng của bạn",
+      "syntax": "{p}speedtest",
+      "permission": "all",
+      "countdown": 60,
+      "icon": "🔧",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "topchat",
+      "description": "Xem bảng xếp hạng tương tác của các thành viên trong nhóm",
+      "syntax": "{p}topchat",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "lamnet",
+      "description": "Làm nét ảnh",
+      "syntax": "{p}lamnet <reply ảnh>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sticker",
+      "description": "Chuyển đổi hình ảnh thành sticker Zalo",
+      "syntax": "{p}sticker <cần reply tin nhắn>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "stk"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "stkmeme",
+      "description": "Tìm kiếm ngẫu nhiên sticker theo từ khoá",
+      "syntax": "{p}stkmeme <từ khoá cần tìm>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "gifmeme",
+      "description": "Tìm kiếm ngẫu nhiên gif theo từ khoá",
+      "syntax": "{p}stkmeme <từ khoá cần tìm>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "giftxt",
+      "description": "Chuyển văn bản thành gif Zalo chữ màu",
+      "syntax": "{p}giftxt <văn bản cần chuyển>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "editvideo",
+      "description": "Edit video",
+      "syntax": "{p}editvideo <reply video>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "gifvd",
+      "description": "Chuyển video thành gif ",
+      "syntax": "{p}gifvd <reply video>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "giftext",
+      "description": "Chuyển văn bản thành gif Zalo",
+      "syntax": "{p}giftext <văn bản cần chuyển>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🏆",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "stickercustom",
+      "description": "Gửi sticker custom từ thư mục lưu trữ của Bot",
+      "syntax": "{p}stickercustom <tên tệp sticker đã lưu trữ>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🎨",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "stkc"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "phatnguoi",
+      "description": "Tra cứu thông tin phạt nguội từ cục CSGT",
+      "syntax": "{p}phatnguoi <biển số xe> [loại xe]",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🚗",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "phng"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "gif",
+      "description": "Gửi ảnh động GIF ngẫu nhiên",
+      "syntax": "{p}gif",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "⚙️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "tiktok",
+      "description": "Send 1 video TikTok cụ thể dựa vào từ khóa",
+      "syntax": "{p}tiktok <từ khóa>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📱",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "tt"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "spotify",
+      "description": "Tìm và gửi 1 bài nhạc spotify dựa vào từ khóa",
+      "syntax": "{p}spotify <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📱",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "sptf"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "youtube",
+      "description": "Tìm và gửi 1 video Youtube dựa vào từ khóa",
+      "syntax": "{p}youtube <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📱",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "yt",
+        "ytb",
+        "dutup"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "capcut",
+      "description": "Tìm và gửi 1 video CapCut dựa vào từ khóa",
+      "syntax": "{p}capcut <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📱",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "cpct"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "download",
+      "alias": [
+        "dl",
+        "down"
+      ],
+      "description": "Tải video link đa nền tảng",
+      "syntax": "{p}download <link>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📥",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "dich",
+      "description": "Dịch văn bản",
+      "syntax": "{p}dich <nội dung cần dịch>&&(ngôn ngữ cần dịch)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🌐",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "qrbank",
+      "description": "Tạo QR code thông tin chuyển khoản",
+      "syntax": "{p}qrbank <tên ngân hàng> <số tài khoản> <số tiền> <nội dung chuyển khoản>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "📱",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "qrb"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "getlink",
+      "alias": [
+        "gl"
+      ],
+      "description": "Lấy link trong tin nhắn được reply",
+      "syntax": "{p}getlink (quote tin nhắn cần lấy link)",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🌐",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "getvoice",
+      "alias": [
+        "gvc",
+        "gvoice",
+        "xuankien",
+        "vc"
+      ],
+      "description": "Lấy voice từ video",
+      "syntax": "{p}getvoice (link hoặc quote tin nhắn cần tách âm thanh)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🌐",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "checkip",
+      "description": "Kiểm tra địa chỉ ip",
+      "syntax": "{p}checkip <địa chỉ ip>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🌐",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "checkdomain",
+      "description": "Kiểm tra tên miền",
+      "syntax": "{p}checkdomain <tên miền>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🌐",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "cpus",
+      "description": "kiem tra cpu",
+      "syntax": "{p}cpus",
+      "permission": "adminLevelHigh",
+      "countdown": 60,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "thoitiet",
+      "description": "Xem thời tiết",
+      "syntax": "{p}thoitiet",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "prservice",
+      "alias": [
+        "pr"
+      ],
+      "description": "Dịch vụ quảng cáo tự động cơ bản",
+      "syntax": "{p}prservice",
+      "permission": "adminBox",
+      "countdown": 30,
+      "icon": "🌤️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "spamjoin",
+      "description": "spam join và leave nhóm",
+      "syntax": "{p}spamjoin <link> <số lần>",
+      "permission": "adminLevelHigh",
+      "countdown": 15,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "poll-service"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "ketban",
+      "description": "Kết bạn với tất cả thành viên trong nhóm",
+      "syntax": "{p}ketban",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "kb",
+      "description": "Kết bạn với người được tag tên",
+      "syntax": "{p}kb @tên",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "soundcloud",
+      "alias": [
+        "scl",
+        "music"
+      ],
+      "description": "Tìm và tải 1 bài hát (nhạc) từ SoundCloud theo yêu cầu",
+      "syntax": "{p}soundcloud <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "zingmp3",
+      "alias": [
+        "zmp3",
+        "ms3",
+        "zing"
+      ],
+      "description": "Tìm và tải 1 bài hát (nhạc) từ ZingMP3 theo yêu cầu",
+      "syntax": "{p}zingmp3 <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "zingchart",
+      "alias": [
+        "topzingmp3",
+        "zmp3c"
+      ],
+      "description": "Xem danh sách bài hát (nhạc) hot nhất trên ZingMP3 thời điểm hiện tại",
+      "syntax": "{p}zingchart",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "nhaccuatui",
+      "alias": [
+        "nct",
+        "ms2"
+      ],
+      "description": "Tìm và tải 1 bài hát (nhạc) từ NhacCuaTui theo yêu cầu",
+      "syntax": "{p}nhaccuatui <từ khóa>(&&số lượng kết quả)",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "voice",
+      "description": "Chuyển văn bản thành giọng nói",
+      "syntax": "{p}voice <nội dung cần chuyển>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "truyencuoi",
+      "description": "Kể 1 câu truyện cười",
+      "syntax": "{p}truyencuoi",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "tarrot",
+      "description": "Kể 1 câu truyện cười",
+      "syntax": "{p}tarrot",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔊",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "poststatus",
+      "alias": [
+        "ps",
+        "status",
+        "stt"
+      ],
+      "description": "Tạo ảnh bài đăng trạng thái",
+      "syntax": "{p}poststatus",
+      "permission": "adminLevelHigh",
+      "countdown": 15,
+      "icon": "🔠",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "createqr",
+      "alias": [
+        "cqr",
+        "qr",
+        "qrcode"
+      ],
+      "description": "Tạo mã QR",
+      "syntax": "{p}createqr <nội dung cần tạo QR>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "🔠",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "scanqr",
+      "alias": [
+        "sqr"
+      ],
+      "description": "Quét mã QR",
+      "syntax": "{p}scanqr <link hoặc reply tin nhắn chứa nội dung hoặc link qr cần quét>",
+      "permission": "all",
+      "countdown": 15,
+      "icon": "🔠",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "scanapi",
+      "alias": [
+        "sapi"
+      ],
+      "description": "Lọc các liên kết trong api-data",
+      "syntax": "{p}scanapi <tên_file>",
+      "permission": "adminLevelHigh",
+      "countdown": 5,
+      "icon": "🔍",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendresourcesfile",
+      "alias": [
+        "share",
+        "se",
+        "filegame",
+        "box"
+      ],
+      "description": "Chia sẻ các mã nguồn free được sưu tầm từ nhiều nơi",
+      "syntax": "{p}sendresourcesfile <tên_file/số_thứ_tự>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "📜",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendsrc",
+      "alias": [
+        "shr",
+        "sharesrc"
+      ],
+      "description": "Chia sẻ các mã nguồn free được sưu tầm từ nhiều nơi",
+      "syntax": "{p}sendsrc <tên_file/số_thứ_tự>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "📜",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendresourcesvideo",
+      "alias": [
+        "srv",
+        "sendvideo"
+      ],
+      "description": "Chia sẻ video được sưu tầm từ nhiều nơi",
+      "syntax": "{p}sendvideo <tên_file/số_thứ_tự>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "📜",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendresourcesimage",
+      "alias": [
+        "sendqr",
+        "sendimage",
+        "sendanh"
+      ],
+      "description": "Chia sẻ các ảnh được sưu tầm từ nhiều nơi",
+      "syntax": "{p}sendanh <tên_file/số_thứ_tự>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "📜",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendresourcesaudio",
+      "alias": [
+        "sra",
+        "sendvoice",
+        "sendaudio",
+        "sdv"
+      ],
+      "description": "Chia sẻ các voice được sưu tầm từ nhiều nơi",
+      "syntax": "{p}sendvoice <tên_file/số_thứ_tự>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "📜",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "lich",
+      "alias": [
+        "amlich",
+        "calendar"
+      ],
+      "description": "Hiển thị thông tin lịch âm dương hôm nay",
+      "syntax": "{p}lich || {p}lich month <tháng> <năm>",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "📅",
+      "type": 1,
+      "author": "DQT|NDQ",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "manager",
+      "description": "Xem danh sách lệnh admin",
+      "syntax": "{p}manager",
+      "permission": "adminBox",
+      "countdown": 15,
+      "icon": "🔧",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "listmute",
+      "description": "Xem danh sách mute",
+      "syntax": "{p}listmute",
+      "permission": "adminBox",
+      "countdown": 10,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "settinggroup",
+      "alias": [
+        "stg",
+        "stgr"
+      ],
+      "description": "Sửa đổi cài đặt nhóm",
+      "syntax": "{p}settinggroup <loại cài đặt> <giá trị on|off|0|1>",
+      "permission": "adminBox",
+      "countdown": 0,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "changelink",
+      "description": "Đổi link nhóm ngẫu nhiên",
+      "syntax": "{p}changelink",
+      "permission": "adminBox",
+      "countdown": 0,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "listadmin",
+      "description": "Xem danh sách quản trị viên bot",
+      "syntax": "{p}listadmin",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "add",
+      "description": "Thêm quản trị viên bot (@mention hoặc UID; thêm qtv cho toàn bot)",
+      "syntax": "{p}add [@user|UID] || {p}add qtv [@user|UID]",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "remove",
+      "description": "Xóa quản trị viên bot (@mention hoặc UID; thêm qtv cho toàn bot)",
+      "syntax": "{p}remove [@user|UID] || {p}remove qtv [@user|UID]",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "setcmd",
+      "description": "Quản lý cài đặt lệnh bot (bật/tắt, phân quyền, thời gian chờ)",
+      "syntax": "{p}setcmd [on/off/p/cd] [tên_lệnh] [đối số]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "cmdset"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "bot",
+      "description": "bật tương tác với bot trong nhóm hiện tại",
+      "syntax": "{p}bot [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🤖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "autodownload",
+      "alias": [
+        "atd"
+      ],
+      "description": "Tự động dowload video",
+      "syntax": "{p}tiktokauto [on|off]",
+      "permission": "adminBox",
+      "countdown": 3,
+      "icon": "🎮",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "mute",
+      "alias": [
+        "cam",
+        "câm"
+      ],
+      "description": "Mute thành viên (Yêu cầu bot quyền hạn phó cộng đồng trở lên)",
+      "syntax": "{p}mute <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔇",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "unmute",
+      "alias": [
+        "sua",
+        "sửa",
+        "sủa"
+      ],
+      "description": "Unmute thành viên",
+      "syntax": "{p}unmute <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔊",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "prefix",
+      "description": "Xem hoặc thay đổi prefix của bot",
+      "syntax": "prefix <prefix_mới>",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendtext",
+      "alias": [
+        "rai",
+        "rải"
+      ],
+      "description": "Gửi tin nhắn tuỳ chỉnh bật/tắt chế độ auto gửi text.",
+      "syntax": "sendtext <timei><p/h> <nội dung> | sendtext off",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendstk",
+      "alias": [
+        "sendsticker"
+      ],
+      "description": "Gửi sticker ngẫu nhiên hoặc bật/tắt chế độ auto gửi sticker.",
+      "syntax": "sendstk on | sendstk off",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendtask",
+      "alias": [
+        "autosend"
+      ],
+      "description": "Tắt bật chức năng gửi nội dung tự động sau mỗi giờ vào nhóm",
+      "syntax": "{p}sendtask [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "welcome",
+      "alias": [
+        "wl",
+        "wlc"
+      ],
+      "description": "Chào mừng thành viên mới",
+      "syntax": "{p}welcome [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "👋",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "bye",
+      "description": "Tạm biệt thành viên rời nhóm",
+      "syntax": "{p}bye [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "👋",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "updategroup",
+      "description": "Thông báo sự kiện nhóm",
+      "syntax": "{p}updategroup [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "👋",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antibadword",
+      "alias": [
+        "atbw",
+        "loctu",
+        "loctukhoa",
+        "loctk",
+        "badword",
+        "bw"
+      ],
+      "description": "Lọc từ thô tục",
+      "syntax": "{p}antibadword [on|off|list] || {p}antibadword <add|remove> <từ_cấm> || {p}antibadword <show> <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antisetup",
+      "description": "Chặn các hành vi bất thường",
+      "syntax": "{p}antisetup [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔗",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antibot",
+      "description": "Chặn bot của người dùng",
+      "syntax": "{p}antibot [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antiblockall",
+      "description": "Chặn người dùng block hàng loạt",
+      "syntax": "{p}antiblockall [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antisdt",
+      "description": "Chặn gửi số điện thoại",
+      "syntax": "{p}antisdt [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔗",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antilink",
+      "alias": [
+        "xoalink",
+        "loclink"
+      ],
+      "description": "Chặn gửi liên kết",
+      "syntax": "{p}antilink [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔗",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "autojoin",
+      "alias": [
+        "auto-join"
+      ],
+      "description": "Tự tham gia cộng đồng/nhóm thông qua liên kết được gửi",
+      "syntax": "{p}autojoin [on|off]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔗",
+      "type": 3,
+      "author": "Thanh Hung",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antijoin",
+      "description": "Chặn tham gia nhóm liên tục",
+      "syntax": "{p}antijoin [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antiforward",
+      "description": "Chặn chuyển tiếp tin nhắn",
+      "syntax": "{p}antiforward [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antitag",
+      "description": "Chống hành vi bất thường",
+      "syntax": "{p}antitag [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antistickerlag",
+      "alias": [
+        "antistklag"
+      ],
+      "description": "Chặn gửi sticker gây lag",
+      "syntax": "{p}antistickerlag [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antisticker",
+      "alias": [
+        "antistk"
+      ],
+      "description": "Chặn gửi sticker",
+      "syntax": "{p}antisticker [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antigif",
+      "description": "Bật/tắt chế độ chống gửi ảnh động GIF trong nhóm",
+      "syntax": "{p}antigif [on/off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "chonggif"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "antispam",
+      "alias": [
+        "chongspam"
+      ],
+      "description": "Chống spam tin nhắn",
+      "syntax": "{p}antispam [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antinude",
+      "alias": [
+        "chongnude"
+      ],
+      "description": "Chặn hình ảnh có nội dung nhạy cảm",
+      "syntax": "{p}antinude [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antiundo",
+      "alias": [
+        "chongundo"
+      ],
+      "description": "Chống thu hồi tin nhắn",
+      "syntax": "{p}antiundo [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antiall",
+      "description": "Bật/tắt all anti",
+      "syntax": "{p}antiall [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⚙️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antitext",
+      "description": "Chống tin nhắn văn bản",
+      "syntax": "{p}antitext [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antifile",
+      "description": "Chống gửi file",
+      "syntax": "{p}antifile [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antiphoto",
+      "description": "Chống gửi photo",
+      "syntax": "{p}antiphoto [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antivoice",
+      "description": "Chống gửi voice",
+      "syntax": "{p}antitag [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "onlytext",
+      "alias": [
+        "vanban"
+      ],
+      "description": "Chỉ nhắn tin văn bản",
+      "syntax": "{p}onlytext [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🅰",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "ban",
+      "description": "Chặn người dùng sử dụng bot trên hệ thống",
+      "syntax": "{p}ban [@mention | reply | uid]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔒",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "unban",
+      "description": "Mở khóa cho phép người dùng sử dụng lại bot",
+      "syntax": "{p}unban [@mention | reply | uid]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔓",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "tagall",
+      "alias": [
+        "all",
+        "tag-reaction"
+      ],
+      "description": "Tag tất cả thành viên trong nhóm với nội dung",
+      "syntax": "{p}tagall <nội_dung>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "📢",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "spamgroup",
+      "alias": [
+        "spamgr"
+      ],
+      "description": "Dùng để spam group",
+      "syntax": "{p}spamgroup <nội dung>",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "💬",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "scold",
+      "alias": [
+        "reo",
+        "var",
+        "chui",
+        "sold"
+      ],
+      "description": "Dùng để chửi người khác",
+      "syntax": "{p}scold <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "💬",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "approve",
+      "alias": [
+        "duyetmem"
+      ],
+      "description": "Bật/tắt tự động phê duyệt thành viên mới",
+      "syntax": "{p}approve [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "learn",
+      "description": "Bật theo dõi và học câu trả lời mới cho bot",
+      "syntax": "{p}learn [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 2,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "learnnow",
+      "description": "Học câu trả lời mới cho bot ngay lập tức",
+      "syntax": "{p}learnnow <câu hỏi>_<câu trả lời>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 2,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "unlearn",
+      "description": "Hủy bỏ câu trả lời mà bot đã học",
+      "syntax": "{p}unlearn <câu trả lời>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 2,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "reply",
+      "description": "Bật/tắt tự động trả lời tin nhắn",
+      "syntax": "{p}reply [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "autoreply",
+      "description": "Bật/tắt tự động trả lời tin nhắn AI",
+      "syntax": "{p}autoreply [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "undo",
+      "alias": [
+        "un"
+      ],
+      "description": "Thu hồi tin nhắn bot được reply",
+      "syntax": "{p}undo (Reply tin nhắn bot cần thu hồi)",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔙",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "todo",
+      "description": "Giao việc cho người khác",
+      "syntax": "{p}todo <nội_dung_việc>_[số lần]_<@người_tag>",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "sendp",
+      "alias": [
+        "sendprivate"
+      ],
+      "description": "Send message private cho người khác",
+      "syntax": "{p}sendp <nội dung>_<số lần>_<@người_tag>",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "kick",
+      "alias": [
+        "sut",
+        "cút"
+      ],
+      "description": "Kick thành viên",
+      "syntax": "{p}kick <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "👢",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "block",
+      "alias": [
+        "chan",
+        "block-user",
+        "blockmessage"
+      ],
+      "description": "Chặn thành viên",
+      "syntax": "{p}block <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "taget",
+      "description": "Chặn và target thành viên",
+      "syntax": "{p}taget <@người_tag>",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "target-manage"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "kickall",
+      "alias": [
+        "cútall"
+      ],
+      "description": "Kick tất cả thành viên",
+      "syntax": "{p}kickall <kick all thành viên nhóm>",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "blockall",
+      "alias": [
+        "biếnall"
+      ],
+      "description": "Chặn tất cả thành viên",
+      "syntax": "{p}blockall <block all thành viên nhóm>",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "keygold",
+      "alias": [
+        "keyvang"
+      ],
+      "description": "Nhường key vàng cho người được đề cập",
+      "syntax": "{p}keygold [@người_tag]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "keysilver",
+      "alias": [
+        "keybac"
+      ],
+      "description": "Phong key bạc cho người được đề cập",
+      "syntax": "{p} [@người_tag]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "unkey",
+      "alias": [
+        "xoakey"
+      ],
+      "description": "Xóa key của người được đề cập",
+      "syntax": "{p}unkey [@người_tag]",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "join",
+      "alias": [
+        "thamgianhom"
+      ],
+      "description": "Tham gia nhóm thông qua link",
+      "syntax": "{p}join [link]",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "leave",
+      "alias": [
+        "out"
+      ],
+      "description": "Ra lệnh bot rời khỏi nhóm hiện tại",
+      "syntax": "{p}leave",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "listgroups",
+      "alias": [
+        "lgr"
+      ],
+      "description": "Xem danh sách nhóm",
+      "syntax": "{p}listgroups",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "scangroups",
+      "alias": [
+        "scgr"
+      ],
+      "description": "Quét thành viên nhóm và thực hiện hành động theo yêu cầu",
+      "syntax": "{p}scangroups <hành_động> <cụm_từ_tìm_kiếm>",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "deletemessage",
+      "alias": [
+        "delmsg",
+        "del"
+      ],
+      "description": "Xóa tin nhắn nhóm theo số lượng tin nhắn",
+      "syntax": "{p}deletemessage <số_tin_nhắn> (@mention cụ thể nếu có)",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "restart",
+      "alias": [
+        "rs"
+      ],
+      "description": "Restart lại bot",
+      "syntax": "{p}restart",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔂",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "listblockbot",
+      "alias": [
+        "lsbot",
+        "list-block-group"
+      ],
+      "description": "Xem danh sách người dùng đã bị chặn tương tác với bot",
+      "syntax": "{p}listblockbot",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "blockbot",
+      "alias": [
+        "blbot"
+      ],
+      "description": "Chặn người dùng tương tác với bot",
+      "syntax": "{p}blockbot <@người_tag>",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🚫",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "unblockbot",
+      "alias": [
+        "unblbot",
+        "unblockmessage"
+      ],
+      "description": "Bỏ chặn người dùng tương tác với bot",
+      "syntax": "{p}unblockbot <@người_tag>",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "whitelist",
+      "description": "Xem, thêm hoặc xóa người dùng được bot liệt vào danh sách trắng",
+      "syntax": "{p}whitelist",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "✅",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "wls",
+        "setmute"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "alias",
+      "description": "Quản lý alias cho các lệnh",
+      "syntax": "{p}alias <add|remove> <lệnh_gốc> <lệnh_alias>",
+      "permission": "adminLevelHigh",
+      "countdown": 5,
+      "icon": "🏷️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "acp",
+        "addcmd",
+        "cmdfind",
+        "fixcmd",
+        "removecmd"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "downloadresource",
+      "alias": [
+        "dlrsrc"
+      ],
+      "description": "Tải file vào thư mục resource",
+      "syntax": "{p}downloadresource [thư mục]|[tên file]|[link (nếu Đéo reply)]",
+      "permission": "adminLevelHigh",
+      "countdown": 5,
+      "icon": "📥",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "deleteresource",
+      "alias": [
+        "delrsrc"
+      ],
+      "description": "Xóa file từ thư mục resource",
+      "syntax": "{p}deleteresource [thư mục]|[tên file]",
+      "permission": "adminLevelHigh",
+      "countdown": 5,
+      "icon": "🗑️",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "keylist",
+      "alias": [
+        "listkey"
+      ],
+      "description": "Xem danh sách key của bot",
+      "syntax": "{p}keylist",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "kickimg",
+      "description": "Bật tắt thông báo khi thành viên bị kick khỏi nhóm",
+      "syntax": "{p}kickimg",
+      "permission": "adminLevelHigh",
+      "countdown": 60,
+      "icon": "✅",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "blockimg",
+      "description": "Bật tắt thông báo khi thành viên bị block khỏi nhóm",
+      "syntax": "{p}blockimg",
+      "permission": "adminLevelHigh",
+      "countdown": 60,
+      "icon": "✅",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "kickallmember",
+      "description": "Kick toàn bộ thành viên",
+      "syntax": "{p}kickallmember",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "👢",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "blockallmember",
+      "description": "Chặn toàn bộ thành viên",
+      "syntax": "{p}blockallmember",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "👢",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "leaveallbox",
+      "description": "Out tất cả box",
+      "syntax": "{p}leaveallbox",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "leavelock",
+      "description": "Out tất cả box khóa chat",
+      "syntax": "{p}leavelock",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "dispersegroup",
+      "description": "Giải tán nhóm",
+      "syntax": "{p}dispersegroup",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "target",
+      "description": "Target member",
+      "syntax": "{p}target",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "👢",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "key",
+      "description": "Quản lý key trong box",
+      "syntax": "{p}key up|down|gold",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🔑",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "fb",
+      "description": "Check thông tin acc Facebook qua UID",
+      "syntax": "{p}fb + UID",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "🤖",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "createimageai",
+      "description": "Tạo hình ảnh AI",
+      "syntax": "{p}createimageai",
+      "permission": "adminLevelHigh",
+      "countdown": 60,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "gemv2"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "genminiv1",
+      "description": "Phân tích Hình ảnh, hỏi đáp từ genmini",
+      "syntax": "{p}genminiv1",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "gemv1"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "addfriend",
+      "description": "Kết bạn với người khác",
+      "syntax": "{p}addfriend",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "addfriendall",
+      "description": "Gửi lời mời kết bạn cho thành viên nhóm (giới hạn an toàn tối đa 20 người/lần)",
+      "syntax": "{p}addfriendall [lời nhắn]",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "🤝",
+      "type": 3,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "addfriend-all"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "undofriend",
+      "description": "Thu hồi lời mời kết bạn với người khác",
+      "syntax": "{p}undofriend",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "undo-friend"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "rejectfriend",
+      "description": "Từ chối lời mời kết bạn với người khác",
+      "syntax": "{p}rejectfriend",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "reject-friend"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "listfriend",
+      "description": "Xem danh sách bạn bè",
+      "syntax": "{p}listfriend",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "list-friends"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "waitinglist",
+      "description": "Xem danh sách lời mời kết bạn đang chờ phản hồi",
+      "syntax": "{p}waitinglist",
+      "permission": "adminLevelHigh",
+      "countdown": 15,
+      "icon": "📋",
+      "type": 1,
+      "author": "H H H",
+      "active": true,
+      "alias": [
+        "friend-waiting-list"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdvuto",
+      "description": "Gửi video ngắn về gái VUTO",
+      "syntax": "{p}vdvuto",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🎥",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdchill",
+      "description": "Gửi video ngắn về tâm trạng",
+      "syntax": "{p}vdchill",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🎥",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdsad",
+      "description": "Gửi video ngắn về tâm trạng",
+      "syntax": "{p}vdsad",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🎥",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "vdtet",
+      "description": "Gửi video Tết",
+      "syntax": "{p}vdtet",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🎥",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "stickerzalo",
+      "description": "Send sticker zalo qua UID Sticker",
+      "syntax": "{p}stickerzalo + UID",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🏆",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "stkzl"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "dinhgiasim",
+      "description": "Định giá số điện thoại",
+      "syntax": "{p}dinhgiasim + SDT",
+      "permission": "adminLevelHigh",
+      "countdown": 100,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "benchmark",
+      "description": "Kiểm tra hiệu năng CPU của bot",
+      "syntax": "{p}benchmark",
+      "permission": "adminLevelHigh",
+      "countdown": 100,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "acclq",
+      "description": "Lấy Acc Liên Quân Free",
+      "syntax": "{p}acclq + Số Lượng",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "replytag",
+      "description": "Trả Lời Tự Động Khi Ai Đó Nhắc Đến",
+      "syntax": "{p}replytag + on/off",
+      "permission": "adminBox",
+      "type": 3,
+      "author": "Nqduan",
+      "active": true,
+      "countdown": 1,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "reverse",
+      "description": "Đảo ngược nội dung",
+      "syntax": "{p}reverse + Nội dung",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "checkgiavang",
+      "description": "Xem giá vàng",
+      "syntax": "{p}checkgiavang",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "emote",
+      "description": "Dùng hành động LV7 Free Frie",
+      "syntax": "{p}emote",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "checkorder",
+      "description": "Xem thông tin chi tiết đơn hàng",
+      "syntax": "{p}checkorder + Mã SPX",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "showcode",
+      "description": "Xem danh sách folder và file",
+      "syntax": "{p}showcode",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "4k",
+      "description": "Làm nét ảnh",
+      "syntax": "{p}4k",
+      "permission": "all",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "hd"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "cardqr",
+      "description": "Tạo card qrcode",
+      "syntax": "{p}cardqr + @mention",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "call",
+      "description": "Spam call",
+      "syntax": "{p}call + @mention + số lượng",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "lovelink",
+      "description": "Tạo Love Link",
+      "syntax": "{p}lovelink + Text + Audio",
+      "permission": "all",
+      "countdown": 1,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "myheart",
+      "description": "Tạo Love Link",
+      "syntax": "{p}myheart [Text] [color] [audio]",
+      "permission": "all",
+      "countdown": 1,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "checklq",
+      "description": "Kiểm tra thông tin acc liên quân mobile",
+      "syntax": "{p}checklq + account + password",
+      "permission": "all",
+      "countdown": 1,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "datavideo",
+      "description": "Lưu trữ vào thư mục data",
+      "syntax": "{p}datavideo + Reply",
+      "permission": "adminLevelHigh",
+      "countdown": 3,
+      "type": 1,
+      "author": "TTN",
+      "active": true,
+      "alias": [
+        "dtvd"
+      ],
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "googlesearchai",
+      "description": "Tìm kiếm Google với AI",
+      "syntax": "{p}googlesearchai + Nội dung",
+      "permission": "all",
+      "countdown": 1,
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "alias": [
+        "ggsai"
+      ],
+      "icon": "⚙️",
+      "instanceScope": "any"
+    },
+    {
+      "name": "qrheart",
+      "description": "Tạo mã QR trái tim",
+      "syntax": "{p}qrheart <nội dung cần tạo QR>",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "🔠",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "nhacnho",
+      "description": "Đặt nhắc nhở",
+      "syntax": "{p}nhacnho",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "fakecccd",
+      "description": "Fake căn cước công dân",
+      "syntax": "{p}fakecccd",
+      "permission": "adminLevelHigh",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "check",
+      "description": "Check người dùng được tag",
+      "syntax": "{p}check @mention",
+      "permission": "all",
+      "countdown": 5,
+      "icon": "📰",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "admin",
+      "description": "Quản lý quản trị viên bot (list/add/remove)",
+      "syntax": "{p}admin [list|add|remove] [qtv] [@user|UID]",
+      "permission": "adminBot",
+      "countdown": 1,
+      "icon": "🔖",
+      "type": 3,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "mybank",
+      "description": "Tạo danh thiếp card ngân hàng",
+      "syntax": "{p}mybank",
+      "permission": "adminLevelHigh",
+      "countdown": 300,
+      "icon": "🔖",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "removefriend",
+      "description": "Hủy kết bạn với người khác",
+      "syntax": "{p}removefriend",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "senduser",
+      "description": "Send tin nhắn đến user được tag",
+      "syntax": "{p}senduser",
+      "permission": "adminLevelHigh",
+      "countdown": 120,
+      "icon": "✅",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "prwelcome",
+      "description": "Pr cho member join",
+      "syntax": "{p}prwelcome",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "👋",
+      "type": 3,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antivideo",
+      "description": "Chống gửi video",
+      "syntax": "{p}antivideo [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "antistickereffect",
+      "description": "Chống gửi sticker có hiệu ứng",
+      "syntax": "{p}antistickereffect [on|off]",
+      "permission": "adminBox",
+      "countdown": 1,
+      "icon": "⛔",
+      "type": 3,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "rutgonlink",
+      "description": "Tạo link rút gọn",
+      "syntax": "{p}rutgonlink + Link",
+      "permission": "all",
+      "countdown": 1,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "testflight",
+      "description": "Tìm kiếm testflight",
+      "syntax": "{p}testflight + Tên",
+      "permission": "all",
+      "countdown": 10,
+      "icon": "🌤️",
+      "type": 1,
+      "author": "Nqduan",
+      "active": true,
+      "instanceScope": "any"
+    },
+    {
+      "name": "cmdadd",
+      "description": "Tạo lệnh phản hồi động dùng chung",
+      "syntax": "{p}cmdadd <tên> | <nội dung>",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "⚡",
+      "type": 1,
+      "author": "HHH",
+      "active": true,
+      "instanceScope": "main"
+    },
+    {
+      "name": "sticker ai",
+      "description": "Tạo sticker bằng trí tuệ nhân tạo Gemini",
+      "syntax": "{p}sticker ai <mô tả>",
+      "permission": "adminLevelHigh",
+      "countdown": 60,
+      "icon": "🎨",
+      "type": 1,
+      "author": "HHH",
+      "active": true,
+      "alias": [
+        "stk ai"
+      ],
+      "instanceScope": "any"
+    },
+    {
+      "name": "locmem",
+      "description": "Lọc thành viên không tương tác trong nhóm sau 7 ngày",
+      "syntax": "{p}locmem",
+      "permission": "adminLevelHigh",
+      "countdown": 30,
+      "icon": "🧹",
+      "type": 1,
+      "author": "HHH",
+      "active": true,
+      "instanceScope": "any"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+[package]
+name = "mybot-gfx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enable Google Skia C++ AVX2 backend on Linux Ubuntu (prebuilt binary download)
+linux-skia = ["dep:skia-safe"]
+
+[dependencies]
+mybot-types.workspace = true
+tiny-skia.workspace = true
+ab_glyph.workspace = true
+image.workspace = true
+imageproc.workspace = true
+fast_image_resize.workspace = true
+gif.workspace = true
+qrcode.workspace = true
+bytes.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+moka.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+sysinfo.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+skia-safe = { workspace = true, optional = true }

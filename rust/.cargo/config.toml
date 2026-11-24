@@ -1,0 +1,5 @@
+# Optimization flags for Linux Ubuntu 22.04 / 24.04 x86_64 production builds:
+# Enables AVX2, FMA, BMI1/BMI2, LZCNT, MOVBE (x86-64-v3 microarchitecture level)
+# for hardware AES-NI, SIMD zlib-rs, image/canvas rasterization, and ONNX inference.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

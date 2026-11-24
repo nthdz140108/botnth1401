@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  verify:
+    name: Verify (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run doctor
+      - run: npm run audit:imports
+      - run: npm run audit:text
+      - run: npm run lint:runtime-contract
+      - run: npm run test:runtime
+      - run: npm test
+      - run: npm run dashboard:build

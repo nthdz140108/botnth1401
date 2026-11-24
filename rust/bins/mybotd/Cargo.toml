@@ -1,0 +1,38 @@
+[package]
+name = "mybotd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+ubuntu-pro-max = ["mybot-gfx/linux-skia", "mybot-media/ort-avx2"]
+
+[dependencies]
+mybot-types.workspace = true
+zalo-sdk.workspace = true
+mybot-storage.workspace = true
+mybot-gfx.workspace = true
+mybot-media.workspace = true
+mybot-core.workspace = true
+mybot-services.workspace = true
+mybot-commands.workspace = true
+mybot-dashboard.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+axum.workspace = true
+async-trait.workspace = true
+mimalloc.workspace = true
+rustls.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+chrono.workspace = true

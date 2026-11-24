@@ -1,0 +1,50 @@
+[package]
+name = "mybot-dashboard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mybot-types.workspace = true
+zalo-sdk.workspace = true
+mybot-storage.workspace = true
+mybot-core.workspace = true
+mybot-commands.workspace = true
+mybot-services.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+moka.workspace = true
+bytes.workspace = true
+http.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+socketioxide.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
+cookie.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+subtle.workspace = true
+hex.workspace = true
+base64.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+uuid.workspace = true
+sysinfo.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MYBOT Dashboard</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/css/style.css" />
+    <style>
+      body { margin: 0; overflow-x: hidden; }
+      .app-shell { min-height: 100vh; display: grid; grid-template-columns: 280px 1fr; }
+      .sidebar { background: #111827; color: #fff; }
+      .sidebar-nav { display: grid; gap: 4px; padding: 16px; }
+      .sidebar-nav [data-workspace] { min-height: 40px; }
+      .main { min-width: 0; padding: 24px; }
+      #welcomeBanner { display: none; }
+      #overviewTrafficPanel { max-width: 100%; }
+      #overviewTraffic { width: 100%; height: 260px; display: block; }
+      #commandPalette[hidden] { display: none; }
+      #commandPalette { position: fixed; inset: 24px auto auto 50%; transform: translateX(-50%); width: min(520px, calc(100vw - 32px)); z-index: 20; }
+      #commandPalette input { width: 100%; box-sizing: border-box; }
+      #mobileMenuButton { display: none; }
+      @media (max-width: 760px) {
+        .app-shell { display: block; }
+        .sidebar { position: fixed; inset: 0 auto 0 0; width: min(82vw, 300px); transform: translateX(-100%); z-index: 10; }
+        .sidebar.open { transform: translateX(0); }
+        #mobileMenuButton { display: inline-flex; }
+        .main { padding: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <nav class="sidebar-nav" aria-label="Dashboard">
+          <button data-workspace="overview">Overview</button>
+          <button data-workspace="bots">Bots</button>
+          <button data-workspace="messages">Messages</button>
+          <button data-workspace="groups">Groups</button>
+          <button data-workspace="automation">Automation</button>
+          <button data-workspace="system">System</button>
+        </nav>
+      </aside>
+      <main class="main">
+        <button id="mobileMenuButton" type="button" aria-label="Open menu">Menu</button>
+        <section id="welcomeBanner"></section>
+        <section id="overviewTrafficPanel">
+          <canvas id="overviewTraffic" width="960" height="260"></canvas>
+        </section>
+        <section id="overviewFleet"></section>
+      </main>
+    </div>
+    <div id="commandPalette" hidden>
+      <input aria-label="Command search" />
+    </div>
+    <script>
+      document.getElementById("mobileMenuButton").addEventListener("click", () => {
+        document.querySelector(".sidebar").classList.add("open");
+      });
+      document.addEventListener("keydown", (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+          event.preventDefault();
+          const palette = document.getElementById("commandPalette");
+          palette.hidden = false;
+          palette.querySelector("input").focus();
+        }
+      });
+    </script>
+  </body>
+</html>

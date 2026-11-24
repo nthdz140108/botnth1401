@@ -1,0 +1,35 @@
+[package]
+name = "mybot-ctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+ubuntu-pro-max = ["mybot-gfx/linux-skia", "mybot-media/ort-avx2"]
+
+[dependencies]
+mybot-types.workspace = true
+zalo-sdk.workspace = true
+mybot-storage.workspace = true
+mybot-gfx.workspace = true
+mybot-media.workspace = true
+mybot-core.workspace = true
+mybot-commands.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+rustls.workspace = true
+reqwest.workspace = true
+qrcode.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+sysinfo.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
