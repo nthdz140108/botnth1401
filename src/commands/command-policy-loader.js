@@ -5,6 +5,7 @@ import { readJsonCached, globalStudioPath, botStudioPath, groupOverridePath } fr
 import { mergeCommandLayers } from "./studio/config-resolver.js";
 import { toBehaviorProfile } from "./studio/behavior-bridge.js";
 import { getCommandStudioContract } from "./studio/contracts.js";
+import { withReleaseCommandDefaults } from "../utils/release-command-catalog.js";
 
 export const ADMIN_ONLY_MASS_COMMANDS = new Set(["spamjoin", "spamgroup", "addfriendall", "sendresourcesfile", "sendsrc", "sendresourcesvideo", "sendresourcesimage", "sendresourcesaudio", "autojoin", "sendtask", "todo", "sendp", "tagall", "kickall", "blockall", "kickallmember", "blockallmember", "leaveallbox", "leavelock", "dispersegroup", "kickimg", "blockimg", "key", "target", "setcmd", "locmem"]);
 
@@ -82,7 +83,7 @@ export function loadRuntimeCommandPolicy({ root = process.env.PROJECT_ROOT || pr
   }
 
   return {
-    commands: readJson(path.join(resolvedRoot, "assets", "json-data", "command.json"))?.commands || [],
+    commands: withReleaseCommandDefaults(readJson(path.join(resolvedRoot, "assets", "json-data", "command.json")) || {}).commands || [],
     overrides,
     studioGlobal: readStudioLayer(globalStudioPath(resolvedRoot)),
     studioBot,

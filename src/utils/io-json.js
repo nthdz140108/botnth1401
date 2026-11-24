@@ -6,6 +6,7 @@ import { readCachedJson, invalidateCachedJson } from "./cached-json.js";
 import { getTimeToString, getTimeNow } from "./format-util.js";
 import { createBotRuntimeContext, ensureRuntimeDirectories, seedRuntimeFiles, getInitialAdminList } from "./bot-runtime-context.js";
 import { composeRuntimeCommandConfig, createCommandSeedStub, toStateOnlyCommandConfig } from "./command-runtime-state.js";
+import { withReleaseCommandDefaults } from "./release-command-catalog.js";
 
 const projectRoot = getProjectRoot();
 const botInfo = getBotInfoSync() || await getBotInfo() || {};
@@ -51,10 +52,10 @@ function loadDefaultCommandConfig() {
   for (const seedPath of commandSeedCandidates) {
     const parsed = readCachedJson(seedPath, null);
     if (parsed && typeof parsed === "object") {
-      return parsed;
+      return withReleaseCommandDefaults(parsed);
     }
   }
-  return { prefix: "!", commands: [] };
+  return withReleaseCommandDefaults({ prefix: "!", commands: [] });
 }
 
 export function readConfig() {

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { isValidScope, resolveCommandPolicy } from "../commands/command-policy.js";
+import { withReleaseCommandDefaults } from "../utils/release-command-catalog.js";
 
 const PERMISSIONS = new Set(["all", "adminBot", "adminBox", "adminBotOrGroup", "adminLevelHigh"]);
 
@@ -15,7 +16,7 @@ export class CommandScanner {
 
   async scan() {
     const registryPath = path.join(this.root, "assets", "json-data", "command.json");
-    const registry = JSON.parse(await fs.readFile(registryPath, "utf8"));
+    const registry = withReleaseCommandDefaults(JSON.parse(await fs.readFile(registryPath, "utf8")), this.env);
     const commands = Array.isArray(registry.commands) ? registry.commands : [];
     const diagnostics = [];
     const aliases = new Map();

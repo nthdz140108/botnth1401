@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 const allowed = /^(src\/|scripts\/|dashboard\/(?:src\/|index\.html$|package(?:-lock)?\.json$)|rust\/|deploy\/|\.github\/workflows\/|package(?:-lock)?\.json$|index\.js$|bot\.js$)/;
 function git(repo, ...args) {
@@ -18,6 +19,32 @@ export function safePath(name) {
 function ignored(name) {
   return name === 'DAY_LEN_VPS.bat' || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
 }
+
+function releaseBackedCatalog(repo, base, target, name) {
+  const defaultsPath = 'src/utils/release-command-defaults.js';
+  try {
+    // Parse data, never execute target code on the deployment host.
+    const source = git(repo, 'show', `${target}:${defaultsPath}`).toString('utf8').trim();
+    const match = /^export default ([\s\S]+);$/.exec(source);
+    if (!match) return false;
+    const defaults = JSON.parse(match[1]);
+    if (!Array.isArray(defaults)) return false;
+    const previous = JSON.parse(git(repo, 'show', `${base}:${name}`).toString('utf8'));
+    const next = JSON.parse(git(repo, 'show', `${target}:${name}`).toString('utf8'));
+    const { commands: before, ...oldFields } = previous;
+    const { commands: after, ...newFields } = next;
+    if (!Array.isArray(before) || !Array.isArray(after) || !isDeepStrictEqual(oldFields, newFields)) return false;
+    const oldNames = new Set(before.map(command => command.name));
+    const newNames = new Set(after.map(command => command.name));
+    if (oldNames.size !== before.length || newNames.size !== after.length) return false;
+    if (!isDeepStrictEqual(before, after.filter(command => oldNames.has(command.name)))) return false;
+    const additions = after.filter(command => !oldNames.has(command.name));
+    return additions.every(command => defaults.some(entry => isDeepStrictEqual(entry, command)));
+  } catch {
+    return false;
+  }
+}
+
 export function buildPreview({ repo, base, target }) {
   base = commit(repo, base); target = commit(repo, target);
   const targetPaths = git(repo, 'ls-tree', '-r', '-z', '--name-only', target).toString('utf8').split('\0').filter(Boolean);
@@ -37,6 +64,8 @@ export function buildPreview({ repo, base, target }) {
   for (let i = 0; i < entries.length - 1; i += 2) {
     const code = entries[i], name = entries[i + 1];
     if (ignored(name)) continue;
+    if (['assets/json-data/command.json', 'mybot/defaultCommand.json'].includes(name) && code === 'M'
+      && releaseBackedCatalog(repo, base, target, name)) continue;
     if (/(?:^|\/)migrations?\/.*\.sql$/i.test(name)) throw new Error(`Migration requires separate maintenance: ${name}`);
     if (!safePath(name)) throw new Error(`Path requires manual review: ${name}`);
     if (!['A', 'M', 'D'].includes(code)) throw new Error(`Unsupported change ${code}: ${name}`);

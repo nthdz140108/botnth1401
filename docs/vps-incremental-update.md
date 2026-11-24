@@ -34,8 +34,19 @@ nhật ký giao dịch. Nếu trạng thái giao dịch là `pending` hoặc
 Nếu kiểm tra sau chuyển đổi thất bại, worker tự khôi phục bản trước; nếu không
 kiểm tra được bản khôi phục, trạng thái vẫn báo cần xử lý.
 
-Catalog, dữ liệu runtime và migration SQL không nằm trong bản vá tự động: công
-cụ sẽ từ chối để xử lý riêng. Không phục hồi SQLite khi rollback mã thông
+Catalog dùng chung và dữ liệu runtime không bị ghi đè. Lệnh mới có thể khai báo
+trong `src/utils/release-command-defaults.js`: bot và dashboard bổ sung metadata
+chỉ khi release đang chạy chưa có tên lệnh đó trong catalog dùng chung. Cấu hình
+đã có luôn được ưu tiên. Preview chỉ bỏ qua thay đổi trong hai catalog JSON khi
+chúng thuần bổ sung các khai báo khớp chính xác file defaults của commit đích;
+đổi prefix, sửa/xóa lệnh cũ hoặc đụng dữ liệu khác vẫn bị từ chối. Rollback mã
+cũng loại bỏ các khai báo ngầm bổ sung mà không sửa catalog dùng chung. Chỉnh
+một lệnh khác không ghi các khai báo ngầm này vào JSON. Nếu quản trị viên sửa
+đích danh cấu hình global của lệnh mới, cấu hình đó được lưu như lựa chọn chủ
+động và được giữ khi rollback. Muốn tắt lệnh thuộc release, đặt `active=false`
+trong cấu hình riêng của bot; không xóa khai báo mặc định của release.
+
+Migration SQL vẫn yêu cầu xử lý riêng. Không phục hồi SQLite khi rollback mã thông
 thường. `--bootstrap` chạy installer đầy đủ cũ cho VPS chưa dùng release;
 thao tác này cài phụ thuộc, build Rust và restart dịch vụ. Để bảo vệ release
 và binary hiện có, installer từ chối chạy khi VPS đã có `current`.

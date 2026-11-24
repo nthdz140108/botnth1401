@@ -3,6 +3,7 @@ import path from "node:path";
 import { validateCommandOverrides } from "./command-scanner.js";
 import { ConfigStore } from "./config-store.js";
 import { isValidScope, resolveCommandPolicy } from "../commands/command-policy.js";
+import { withReleaseCommandDefaults } from "../utils/release-command-catalog.js";
 
 const PERMISSIONS = new Set(["all", "adminBot", "adminBox", "adminBotOrGroup", "adminLevelHigh"]);
 
@@ -25,8 +26,8 @@ export class CommandService {
   }
 
   async updateGlobal(name, patch) {
-    const global = await this.#readGlobal();
-    const current = findCommand(global.commands, name);
+    const global = await this.#readGlobal(false);
+    const current = findCommand(withReleaseCommandDefaults(global).commands, name);
     if (!current) throw commandNotFound(name);
     let validated;
     try {
@@ -36,18 +37,21 @@ export class CommandService {
       error.code = "COMMAND_VALIDATION_FAILED";
       throw error;
     }
-    const commands = global.commands.map((command) => command === current ? { ...command, ...validated, active: current.active !== false } : command);
-    try { this.#validateCollection(commands); } catch (error) { throw validationError(error); }
+    const updated = { ...current, ...validated, active: current.active !== false };
+    const commands = global.commands.includes(current)
+      ? global.commands.map((command) => command === current ? updated : command)
+      : [...global.commands, updated];
+    try { this.#validateCollection(withReleaseCommandDefaults({ ...global, commands }).commands); } catch (error) { throw validationError(error); }
     const result = await this.configStore.writeJson(this.globalPath, { ...global, commands });
     return { ...result, value: { ...global, commands } };
   }
 
   async createGlobal(command) {
-    const global = await this.#readGlobal();
+    const global = await this.#readGlobal(false);
     let next;
     try {
       next = { ...global, commands: [...global.commands, this.#validateCommand(command, "new command")] };
-      this.#validateCollection(next.commands);
+      this.#validateCollection(withReleaseCommandDefaults(next).commands);
     } catch (error) {
       throw validationError(error);
     }
@@ -56,9 +60,11 @@ export class CommandService {
   }
 
   async deleteGlobal(name) {
-    const global = await this.#readGlobal();
-    const current = findCommand(global.commands, name);
+    const global = await this.#readGlobal(false);
+    const current = findCommand(withReleaseCommandDefaults(global).commands, name);
     if (!current) throw commandNotFound(name);
+    const releaseCommand = findCommand(withReleaseCommandDefaults({ commands: [] }).commands, current.name);
+    if (releaseCommand) throw validationError(new Error("Lệnh thuộc release; hãy tắt active bằng cấu hình riêng của bot thay vì xóa."));
     const next = { ...global, commands: global.commands.filter((command) => command !== current) };
     const result = await this.configStore.writeJson(this.globalPath, next);
     return { ...result, value: next };
@@ -201,12 +207,14 @@ export class CommandService {
     }
   }
 
-  async #readGlobal() {
+  async #readGlobal(includeDefaults = true) {
     try {
       const value = JSON.parse(await fs.readFile(this.globalPath, "utf8"));
-      return { prefix: value.prefix || "!", commands: Array.isArray(value.commands) ? value.commands : [] };
+      const catalog = { prefix: value.prefix || "!", commands: Array.isArray(value.commands) ? value.commands : [] };
+      return includeDefaults ? withReleaseCommandDefaults(catalog) : catalog;
     } catch {
-      return { prefix: "!", commands: [] };
+      const catalog = { prefix: "!", commands: [] };
+      return includeDefaults ? withReleaseCommandDefaults(catalog) : catalog;
     }
   }
 
