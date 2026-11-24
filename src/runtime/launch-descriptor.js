@@ -7,6 +7,8 @@
  *
  * IMPORTANT: PM2 process name is always derived from canonical botKey, never
  * from Zalo live UID. Zalo UID is only used for session identity.
+ * On VPS, the stable bootstrap launcher pins each process to one release while
+ * PROJECT_ROOT continues to identify the shared runtime data directory.
  */
 
 import path from 'node:path';
