@@ -31,7 +31,7 @@ if exist "%~dp0deploy\incremental-vps.mjs" (
 )
 
 cd /d "%TARGET_DIR%"
-node deploy\incremental-vps.mjs %*
+call node deploy\incremental-vps.mjs %*
 set "DEPLOY_EXIT=%ERRORLEVEL%"
 
 echo.
@@ -41,7 +41,7 @@ if "%DEPLOY_EXIT%"=="0" (
   echo ================================================================
 ) else (
   echo ================================================================
-  echo [THAT BAI] Qua trinh cap nhat VPS gap loi (ma loi: %DEPLOY_EXIT%).
+  echo [THAT BAI] Qua trinh cap nhat VPS gap loi, ma loi: %DEPLOY_EXIT%.
   echo Vui long kiem tra thong bao loi o tren.
   echo ================================================================
 )
