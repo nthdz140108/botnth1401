@@ -13,8 +13,8 @@ import {
   classifyYoutubeError,
 } from "../src/service-debug/api-crawl/youtube/youtube-core.js";
 
-test("resolveYoutubeDenoBinary returns the active JS runtime executable for the current platform", () => {
-  const result = resolveYoutubeDenoBinary();
+test("resolveYoutubeDenoBinary resolves the configured Deno executable", () => {
+  const result = resolveYoutubeDenoBinary({ binaryPath: process.execPath });
 
   assert.ok(result);
   assert.ok(path.isAbsolute(result));
@@ -46,11 +46,11 @@ test("resolveYoutubeDenoBinary throws a clear error when the binary is missing",
   }
 });
 
-test("getYoutubeRuntimeOptions returns an absolute node runtime and remote components", () => {
-  const options = getYoutubeRuntimeOptions();
+test("getYoutubeRuntimeOptions returns an explicit Deno runtime and remote components", () => {
+  const options = getYoutubeRuntimeOptions({ binaryPath: process.execPath });
 
-  assert.match(options.jsRuntimes, /^node:/);
-  assert.ok(path.isAbsolute(options.jsRuntimes.slice("node:".length)));
+  assert.match(options.jsRuntimes, /^deno:/);
+  assert.ok(path.isAbsolute(options.jsRuntimes.slice("deno:".length)));
   assert.equal(options.remoteComponents, "ejs:github");
 });
 

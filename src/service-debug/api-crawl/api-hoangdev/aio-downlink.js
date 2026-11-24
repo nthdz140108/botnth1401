@@ -1,3 +1,5 @@
+import { createDownloadJob, runPlatformDownload, downloadFailureCaption, logDownloadEvent } from "../download/download-job.js";
+import { ensureUploadResult } from "../youtube/youtube-core.js";
 import axios from "axios";
 import { execFile } from "node:child_process";
 import path from "path";
@@ -207,6 +209,7 @@ export const getDurationVideo = async (path) => {
 };
 
 export const getDataDownloadVideo = async (url) => {
+  if (!API_KEY_HOANGDEV) throw Object.assign(new Error("HoangDev key missing"), { code: "MISSING_DEPENDENCY" });
   try {
     const response = await axios.get(`${API_URL_DOWNAIO_HOANGDEV}?apikey=${API_KEY_HOANGDEV}&url=${encodeURIComponent(url)}`, {
       timeout: 20000,
@@ -217,10 +220,9 @@ export const getDataDownloadVideo = async (url) => {
     if (response.data && response.data.success && response.data.data) {
       return response.data.data;
     }
-    return null;
+    throw Object.assign(new Error("Invalid HoangDev response"), { code: "INVALID_RESPONSE" });
   } catch (error) {
-    console.error("Lỗi khi tải video:", error.message || error);
-    return null;
+    throw error;
   }
 };
 
@@ -270,7 +272,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
           downloadSuccess = true;
         } catch (downloadError) {
           retryCount++;
-          console.error(`Lỗi tải ảnh lần ${retryCount}:`, downloadError.message);
+          logDownloadEvent({ source: "hoangdev", stage: "media", status: "failed", code: "MEDIA_ERROR" });
           if (retryCount >= maxRetries) {
             throw downloadError;
           }
@@ -288,8 +290,8 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
       }, message.threadId, message.type);
 
       if (selectedMedia.voiceUrl) {
+        const voicePath = path.resolve(tempDir, `voice_${Date.now()}.mp3`);
         try {
-          const voicePath = path.resolve(tempDir, `voice_${Date.now()}.mp3`);
 
           let retryCount = 0;
           const maxRetries = 3;
@@ -301,7 +303,7 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
               downloadSuccess = true;
             } catch (downloadError) {
               retryCount++;
-              console.error(`Lỗi tải voice lần ${retryCount}:`, downloadError.message);
+              logDownloadEvent({ source: "hoangdev", stage: "media", status: "failed", code: "MEDIA_ERROR" });
               if (retryCount >= maxRetries) {
                 throw downloadError;
               }
@@ -318,9 +320,10 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
             }
           }
 
-          await deleteFile(voicePath);
         } catch (error) {
-          console.error("Lỗi khi tải và gửi voice:", error);
+          throw error;
+        } finally {
+          await deleteFile(voicePath).catch(() => {});
         }
       }
     } finally {
@@ -363,33 +366,20 @@ export async function processAndSendMedia(api, message, mediaData, isMultipleIma
 
       const downloaded = await categoryDownload(api, message, mediaType, uniqueId, selectedMedia, quality);
       if (!downloaded || !downloaded.videoUrl) {
-        const object = {
-          caption: `Không tải được dữ liệu...`,
-        };
-        await sendMessageWarningRequest(api, message, object, 30000);
-        return false;
+        throw Object.assign(new Error("Media download failed"), { code: "DOWNLOAD_FAILED" });
       }
       videoUrl = downloaded.videoUrl;
       operationTempPath = downloaded.tempFilePath || null;
     }
 
     if (typeFile === "audio") {
-      try {
-        await progress?.complete();
-        await api.sendVoice(message, videoUrl, 3600000);
-        return true;
-      } catch (error) {
-        console.error("Lỗi khi xử lý audio:", error);
-        await api.sendMessage({
-          msg: `Không thể tải audio từ ${capitalizeEachWord(mediaType)}`,
-          ttl: 30000,
-        }, message.threadId, message.type);
-        return false;
-      }
+      await api.sendVoice(message, videoUrl, 3600000);
+      return true;
     } else if (typeFile === "video") {
       await progress?.complete();
       await api.sendVideo({
         videoUrl: videoUrl,
+        videoAlreadyUploaded: true,
         threadId: message.threadId,
         threadType: message.type,
         thumbnail: selectedMedia.thumbnail,
@@ -426,30 +416,30 @@ export async function processAndSendMultipleImages(api, message, images, mediaDa
   } = mediaData;
 
   const imagePaths = [];
-  
+
   try {
     for (let i = 0; i < images.length; i++) {
       const image = images[i];
       const imagePath = path.resolve(tempDir, `${Date.now()}_${i}.${image.extension}`);
-      
+
       let retryCount = 0;
       const maxRetries = 3;
       let downloadSuccess = false;
-      
+
       while (retryCount < maxRetries && !downloadSuccess) {
         try {
           await downloadImageWithTimeout(image.url, imagePath, 30000);
           downloadSuccess = true;
         } catch (downloadError) {
           retryCount++;
-          console.error(`Lỗi tải ảnh lần ${retryCount}:`, downloadError.message);
+          logDownloadEvent({ source: "hoangdev", stage: "media", status: "failed", code: "MEDIA_ERROR" });
           if (retryCount >= maxRetries) {
             throw downloadError;
           }
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
-      
+
       if (downloadSuccess) {
         imagePaths.push(imagePath);
       }
@@ -469,14 +459,18 @@ export async function processAndSendMultipleImages(api, message, images, mediaDa
   }
 }
 
-export async function handleDownloadCommand(api, message, aliasCommand) {
+export async function handleDownloadCommand(api, message, aliasCommand, dependencies = {}) {
+  const originalApi = api;
+  const job = createDownloadJob("hoangdev");
+  api = job.wrapApi(api);
+  let query, mediaType;
   const content = removeMention(message);
   const senderId = message.data.uidFrom;
   const senderName = message.data.dName;
   const prefix = getGlobalPrefix();
 
   try {
-    const query = content.replace(`${prefix}${aliasCommand}`, "").trim();
+    query = content.replace(`${prefix}${aliasCommand}`, "").trim();
 
     if (!query) {
       const object = {
@@ -486,7 +480,7 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
       return;
     }
 
-    const mediaType = getMediaType(query);
+    mediaType = getMediaType(query);
     if (!mediaType) {
       const object = {
         caption: `Link này em chưa hỗ trợ tải dữ liệu.`,
@@ -494,20 +488,17 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
       await sendMessageWarningRequest(api, message, object, 30000);
       return;
     }
-    
-    let dataDownload = await getDataDownloadVideo(query);
+
+    let dataDownload = await job.run("source", () => (dependencies.getDataDownloadVideo || getDataDownloadVideo)(query));
+    job.stage = "download";
     if (!dataDownload || dataDownload.error) {
-      const object = {
-        caption: `Link Không hợp lệ hoặc Không hỗ trợ tải dữ liệu link dạng này.`,
-      };
-      await sendMessageWarningRequest(api, message, object, 30000);
-      return;
+      throw Object.assign(new Error("Invalid HoangDev response"), { code: "INVALID_RESPONSE" });
     }
 
     if (mediaType === "tiktok") {
       const normalizedTikTok = normalizeTikTokMedia(dataDownload, "hoangdev");
-      if (normalizedTikTok) {
-        await sendTikTokMedia(api, message, normalizedTikTok, { isRandom: false, typeVideo: normalizedTikTok.video?.quality || "540p" });
+      if (normalizedTikTok?.kind === "slideshow" && normalizedTikTok.images?.length) {
+        await sendTikTokMedia(api, message, normalizedTikTok, { job, isRandom: false, typeVideo: normalizedTikTok.video?.quality || "540p" });
         return;
       }
     }
@@ -649,11 +640,7 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
     uniqueId = sanitizeUniqueId(uniqueId);
 
     if (dataLink.length === 0) {
-      const object = {
-        caption: `Không tìm thấy dữ liệu tải về phù hợp cho link này!\nVui lòng thử lại với link khác.`,
-      };
-      await sendMessageWarningRequest(api, message, object, 30000);
-      return;
+      throw Object.assign(new Error("No downloadable formats"), { code: "INVALID_RESPONSE" });
     }
 
     const images = dataLink.filter(item => String(item?.type || "").toLowerCase() === 'image');
@@ -759,17 +746,24 @@ export async function handleDownloadCommand(api, message, aliasCommand) {
           });
           return { ok: sent !== false, claimed: true };
         } catch (error) {
-          console.error("Lỗi xử lý lựa chọn download:", error);
+          job.event(job.stage, "failed", error);
+          if (job.canFallback() && ["youtube", "tiktok"].includes(mediaType)) {
+            const ok = await (dependencies.runPlatformDownload || runPlatformDownload)(originalApi, replyMessage, query, mediaType);
+            return { ok, claimed: true };
+          }
+          await sendMessageWarningRequest(originalApi, replyMessage, { caption: downloadFailureCaption("HoangDev", job.stage, error) }, 30000);
           return { ok: false, claimed: true };
         }
       },
     });
   } catch (error) {
-    console.error("Lỗi khi xử lý lệnh download:", error);
-    const object = {
-      caption: `Đã xảy ra lỗi khi xử lý lệnh load data download.`,
-    };
-    await sendMessageWarningRequest(api, message, object, 30000);
+    job.event(job.stage, "failed", error);
+    if (job.canFallback() && ["youtube", "tiktok"].includes(mediaType)) {
+      return (dependencies.runPlatformDownload || runPlatformDownload)(originalApi, message, query, mediaType);
+    }
+    await sendMessageWarningRequest(originalApi, message, {
+      caption: downloadFailureCaption("HoangDev", job.stage, error),
+    }, 30000);
   }
 }
 
@@ -801,7 +795,7 @@ export async function categoryDownload(api, message, platform, uniqueId, selecte
     }
 
     const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
-    const videoUrl = uploadResult[0].fileUrl;
+    const videoUrl = ensureUploadResult(uploadResult);
 
     const duration = await getDurationVideo(tempFilePath);
 
@@ -811,8 +805,7 @@ export async function categoryDownload(api, message, platform, uniqueId, selecte
     if (tempFilePath) {
       await deleteFile(tempFilePath).catch(() => {});
     }
-    console.error("Lỗi khi tải video:", error);
-    return null;
+    throw error;
   }
 }
 
@@ -824,7 +817,7 @@ export async function handleDownloadReply(api, message) {
     if (!canContinueReply(record, message.data.uidFrom, message.threadId)) return false;
     return await checkReplySelectionsMapData(api, message);
   } catch (error) {
-    console.error("Lỗi xử lý reply download:", error);
+    logDownloadEvent({ source: "hoangdev", stage: "media", status: "failed", code: "MEDIA_ERROR" });
     const object = {
       caption: `Đã xảy ra lỗi khi xử lý tin nhắn của bạn. Vui lòng thử lại sau.`,
     };
@@ -834,67 +827,9 @@ export async function handleDownloadReply(api, message) {
 }
 
 async function downloadVoiceWithTimeout(url, filepath, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error('Download timeout'));
-    }, timeout);
-
-    const response = axios({
-      url,
-      method: "GET",
-      responseType: "stream",
-      timeout: timeout,
-    });
-
-    response.then(res => {
-      const writer = fs.createWriteStream(filepath);
-      res.data.pipe(writer);
-      
-      writer.on("finish", () => {
-        clearTimeout(timeoutId);
-        resolve(filepath);
-      });
-      
-      writer.on("error", (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-    }).catch(error => {
-      clearTimeout(timeoutId);
-      reject(error);
-    });
-  });
+  return downloadFile(url, filepath, { timeout });
 }
 
 async function downloadImageWithTimeout(url, filepath, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error('Download timeout'));
-    }, timeout);
-
-    const response = axios({
-      url,
-      method: "GET",
-      responseType: "stream",
-      timeout: timeout,
-    });
-
-    response.then(res => {
-      const writer = fs.createWriteStream(filepath);
-      res.data.pipe(writer);
-      
-      writer.on("finish", () => {
-        clearTimeout(timeoutId);
-        resolve(filepath);
-      });
-      
-      writer.on("error", (error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-    }).catch(error => {
-      clearTimeout(timeoutId);
-      reject(error);
-    });
-  });
+  return downloadFile(url, filepath, { timeout });
 }

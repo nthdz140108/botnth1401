@@ -21,8 +21,6 @@ const dispatch = (command, context = {}, handler = async () => "ok") => dispatch
 
 test("provider-backed phase 4 commands report missing configuration", async () => {
   const cases = [
-    ["tiktok", "TIKTOK_SEARCH_API_URL", ["sample"]],
-    ["tiktok", "TIKTOK_SEARCH_API_KEY", ["sample"]],
     ["spotify", "SPOTIFY_CLIENT_ID", ["sample"]],
     ["spotify", "SPOTIFY_CLIENT_SECRET", ["sample"]],
     ["spotify", "SPOTIFY_DOWNLOADER_SECRET", ["sample"]],

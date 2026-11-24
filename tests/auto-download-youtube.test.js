@@ -23,7 +23,7 @@ test("autodownload requires a normalized upload URL before its uploaded-video se
 
   assert.match(source, /mediaUrl = ensureUploadResult\(await api\.uploadAttachment/);
   assert.match(source, /alreadyUploaded: true/);
-  assert.match(source, /error\?\.stage === "upload"/);
+  assert.match(source, /failedStage === "upload"/);
   assert.match(source, /cleanupYoutubeFiles\(\[jobDir\]\)/);
 });
 
@@ -70,7 +70,7 @@ test("TikTok autodownload reacts before requesting video data", () => {
   const tiktokStart = source.lastIndexOf("const tiktokUrl");
   const tiktokBranch = source.slice(tiktokStart, source.indexOf("const youtubeUrl", tiktokStart));
 
-  assert.ok(tiktokBranch.indexOf("sendReactionConfirmReceive") < tiktokBranch.indexOf("getDataDownloadVideo"));
+  assert.ok(tiktokBranch.indexOf("sendReactionConfirmReceive") < tiktokBranch.indexOf("runPlatformDownload"));
 });
 
 test("autodownload reports an upload-stage failure, skips sending, and cleans up", async () => {

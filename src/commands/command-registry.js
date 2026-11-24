@@ -226,7 +226,7 @@ export const PHASE_4_COMMANDS = Object.freeze([
 ]);
 
 const phase4Metadata = Object.freeze({
-  tiktok: { aliases: ["tt"], permission: "all", type: 1, countdown: 30, minArgs: 1, requiredConfig: ["TIKTOK_SEARCH_API_URL", "TIKTOK_SEARCH_API_KEY"], executionLane: "heavy" },
+  tiktok: { aliases: ["tt"], permission: "all", type: 1, countdown: 30, minArgs: 1, executionLane: "heavy" },
   spotify: {
     aliases: ["sptf"],
     permission: "all",
@@ -243,7 +243,7 @@ const phase4Metadata = Object.freeze({
   },
   youtube: { permission: "all", type: 1, countdown: 30, minArgs: 1, executionLane: "heavy" },
   capcut: { aliases: ["cpct"], permission: "all", type: 1, countdown: 30, minArgs: 1, executionLane: "heavy" },
-  download: { aliases: ["dl", "down"], permission: "all", type: 1, countdown: 30, minArgs: 1, requiredConfig: ["HOANGDEV_API_KEY"], executionLane: "heavy" },
+  download: { aliases: ["dl", "down"], permission: "all", type: 1, countdown: 30, minArgs: 1, executionLane: "heavy" },
   dich: { permission: "all", type: 1, countdown: 30, minArgs: 1, requiredConfig: ["KIRA_API_KEY"], executionLane: "fast" },
   qrbank: { aliases: ["qrb"], permission: "all", type: 1, countdown: 15, minArgs: 1, executionLane: "fast" },
   getlink: { aliases: ["gl"], permission: "all", type: 1, countdown: 15, executionLane: "fast" },

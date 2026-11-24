@@ -4,6 +4,8 @@ import fs from "fs";
 
 import { buildYoutubePayloadBase, buildYoutubeProcessingCaption, buildYoutubeVideoCaption, cleanupYoutubeFiles, createYoutubeJobDir, ensureNonEmptyFile, ensureUploadResult, runYoutubeDownload, runYoutubeVideoInfo, YOUTUBE_FORMAT_720 } from "../youtube/youtube-core.js";
 import { classifyYoutubeError } from "../youtube/youtube-core.js";
+import { createDownloadJob } from './download-job.js';
+import { createDownloadProgress } from '../../../utils/interaction-countdown.js';
 
 const defaultDependencies = {
   sendReaction: async (api, message) => (await import("../../../commands/command-response.js")).sendReactionConfirmReceive(api, message, 5),
@@ -14,9 +16,12 @@ const defaultDependencies = {
 };
 
 export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, senderId, senderName, dependencies = {}) {
+  const job = createDownloadJob('youtube', dependencies.log);
+  api = job.wrapApi(api);
   const jobId = randomUUID();
   const jobDir = dependencies.jobDir || createYoutubeJobDir("autodownload", jobId);
   const state = { stage: "init", files: [] };
+  let progress;
   const qualityParam = dependencies.qualityParam || "default";
   const fetchVideoInfo = dependencies.getYoutubeVideoInfo || runYoutubeVideoInfo;
   const downloadMedia = dependencies.downloadYoutubeVideo || runYoutubeDownload;
@@ -33,7 +38,7 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
   try {
     await sendReaction(api, message);
     state.stage = "metadata";
-      const videoInfo = await fetchVideoInfo(youtubeUrl);
+      const videoInfo = await job.run('metadata', () => fetchVideoInfo(youtubeUrl));
     state.stage = "cache";
     const cached = await getCached("youtube", videoInfo.videoId, "720p", videoInfo.title);
     let mediaUrl = cached?.fileUrl;
@@ -41,11 +46,11 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
     let videoPath = null;
     if (!mediaUrl) {
       state.stage = "processing";
-      await sendProcessing(api, message, "720p");
+      progress = await createDownloadProgress({ api, message, caption: buildYoutubeProcessingCaption('720p'), sendProcessingFn: (a, m) => sendProcessing(a, m, '720p') });
       state.stage = "download";
       videoPath = path.join(jobDir, `youtube_${videoInfo.videoId}.mp4`);
       state.files.push(videoPath);
-      await downloadMedia(videoInfo.url, videoPath, YOUTUBE_FORMAT_720);
+      await job.run('download', () => downloadMedia(videoInfo.url, videoPath, YOUTUBE_FORMAT_720));
       ensureNonEmptyFile(videoPath);
       state.stage = "upload";
       mediaUrl = ensureUploadResult(await api.uploadAttachment([videoPath], message.threadId, message.type));
@@ -75,11 +80,12 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
     }));
     return true;
   } catch (error) {
-    console.error(`YouTube autodownload ${error?.stage || state.stage} failed:`, error?.message || error);
+    job.event(error?.stage || state.stage, 'failed', error);
     const kind = classifyYoutubeError(error);
-    const caption = error?.stage === "upload"
+    const failedStage = error?.stage || state.stage;
+    const caption = failedStage === "upload"
       ? "Tải lên video thất bại. Vui lòng thử lại sau."
-      : error?.stage === "send"
+      : failedStage === "send"
         ? "Không thể gửi video sau khi tải lên. Vui lòng thử lại sau."
       : kind === "unavailable"
       ? "Video này hiện không khả dụng. Hãy thử lại với video khác."
@@ -93,6 +99,7 @@ export async function runYoutubeAutoDownloadWorkflow(api, message, youtubeUrl, s
     await sendWarning(api, message, { caption });
     return false;
   } finally {
+    await progress?.complete();
     await cleanupYoutubeFiles(state.files);
     await cleanupYoutubeFiles([jobDir]);
   }

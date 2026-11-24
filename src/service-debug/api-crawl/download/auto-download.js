@@ -1,3 +1,4 @@
+import { runPlatformDownload, downloadFailureCaption } from "./download-job.js";
 import fs from "fs";
 import path from "path";
 import {
@@ -84,7 +85,7 @@ function extractValidUrl(text) {
 }
 
 function extractYouTubeUrl(text) {
-  const youtubeRegex = /https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+/i;
+  const youtubeRegex = /https?:\/\/(?:(?:www|m|music)\.)?(?:youtube\.com|youtu\.be)\/[^\s]+/i;
   const match = text.match(youtubeRegex);
   return match ? match[0] : null;
 }
@@ -183,16 +184,12 @@ export async function handleDownloadZalo(api, message, groupSettings, isSelf) {
   if (tiktokUrl) {
     try {
       await sendReactionConfirmReceive(api, message, 5);
-      const videoData = await getTikTokMedia(tiktokUrl); // alias: getDataDownloadVideo
-      if (videoData) {
-        const qualityType = videoData?.video?.quality || "540p";
-        await sendTikTokMedia(api, message, videoData, { typeVideo: qualityType });
-        return true;
-      }
+      // Shared getTikTokMedia / sendTikTokMedia pipeline, with one failure response.
+      await runPlatformDownload(api, message, tiktokUrl, "tiktok");
     } catch (error) {
-      console.error("Lỗi khi tự động tải TikTok:", error?.message || error);
-      return true;
+      await api.sendMessage({ msg: downloadFailureCaption("TikTok", "receive", error), quote: message, ttl: 30000 }, threadId, message.type);
     }
+    return true;
   }
 
   const youtubeUrl = extractYouTubeUrl(validUrl);
@@ -200,7 +197,7 @@ export async function handleDownloadZalo(api, message, groupSettings, isSelf) {
     try {
       return await handleYouTubeAutoDownload(api, message, normalizeYoutubeUrl(youtubeUrl) || youtubeUrl, userId, message.data?.dName, { prefix });
     } catch (error) {
-      console.error("Lỗi khi tự động tải YouTube:", error?.message || error);
+      await api.sendMessage({ msg: downloadFailureCaption("YouTube", "receive", error), quote: message, ttl: 30000 }, threadId, message.type);
       return true;
     }
   }

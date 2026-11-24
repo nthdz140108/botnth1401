@@ -40,6 +40,10 @@ export async function main(args = process.argv.slice(2)) {
       } finally { fs.rmSync(temp, { recursive: true, force: true }); }
     };
     const remote = createRemoteAdapter({ run, archive });
+    remote.prepareDownloadRuntime = async () => {
+      console.log('Checking Deno, FFmpeg and ffprobe before deployment...');
+      console.log(await run('bash -s', fs.readFileSync(path.join(repo, 'deploy', 'ubuntu', 'ensure-download-runtime.sh'), 'utf8').replace(/\r\n/g, '\n')));
+    };
     const result = await orchestrateIncremental({ args, repo, remote, onPreview: preview => { console.log('Patch preview:'); console.log(JSON.stringify(preview, null, 2)); } });
     console.log(JSON.stringify(result, null, 2));
   } finally { helper?.cleanup(); }

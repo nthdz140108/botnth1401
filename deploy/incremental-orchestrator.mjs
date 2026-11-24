@@ -24,6 +24,11 @@ export async function orchestrateIncremental({ args, repo, remote, onPreview = (
   if (options.mode === 'dry-run') return result;
   onPreview(result);
   if (!preview.files.length) return { status: 'no_changes', base: preview.base, target: preview.target };
+  // The VPS worker still runs code from the previous release. Prepare new media
+  // prerequisites here, before handing the patch to that worker or switching current.
+  if (preview.files.some(f => /^src\/service-debug\/api-crawl\/(?:youtube|download|tiktok)\//.test(f.path))) {
+    await remote.prepareDownloadRuntime?.();
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-patch-'));
   try {
     const dir = path.join(tmp, 'package'); createPatchPackage({ repo, base: preview.base, target: preview.target, output: dir });

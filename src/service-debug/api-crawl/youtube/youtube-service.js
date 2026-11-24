@@ -1,3 +1,4 @@
+import { createDownloadJob, logDownloadEvent } from "../download/download-job.js";
 import fs from "fs";
 import path from "path";
 import schedule from "node-schedule";
@@ -169,7 +170,7 @@ export const getYoutubeVideoInfo = async (videoUrl) => {
 };
 
 export const downloadYoutubeVideo = async (videoUrl, videoId, format) => {
-  const ext = format === audioFormat ? "aac" : "mp4";
+  const ext = format === audioFormat ? "m4a" : "mp4";
   const videoPath = path.join(tempDir, `youtube_${videoId}_${Date.now()}.${ext}`);
   await runYoutubeDownload(videoUrl, videoPath, format);
   return videoPath;
@@ -203,6 +204,8 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 export async function handleSendMediaYoutube(api, message, video, qualityParam, videoPath, isAdminLevelHigh) {
+  const job = createDownloadJob("youtube");
+  api = job.wrapApi(api);
   const { format, qualityText, timeNotify } = getVideoFormat(qualityParam);
   const cachedVideo = await getCachedMedia(PLATFORM, video.videoId, qualityText, video.title);
   let videoUrl;
@@ -225,13 +228,18 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
 
       try {
         try {
-          fetchedPath = await downloadYoutubeVideo(video.url, video.videoId, format);
+          fetchedPath = await job.run("download", () => downloadYoutubeVideo(video.url, video.videoId, format));
           ensureNonEmptyFile(fetchedPath);
         } catch (error) {
           throw normalizeYoutubeWorkflowError("download", error);
         }
         if (format === audioFormat) {
-          videoUrl = await uploadAudioFile(fetchedPath, api, message);
+          try {
+            videoUrl = await uploadAudioFile(fetchedPath, api, message);
+            if (!videoUrl) throw new Error("Missing uploaded audio URL");
+          } catch (error) {
+            throw normalizeYoutubeWorkflowError("upload", error);
+          }
         } else {
           try {
             const uploadVideo = await api.uploadAttachment([fetchedPath], message.threadId, message.type);
@@ -262,7 +270,7 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
         voiceUrl: videoUrl,
         viewCount: video.viewCount,
         publishedTime: convertPublishedTimeToVietnamese(video.publishedTime),
-      }, 1800000);
+      }, 1800000, { throwOnError: true });
     } else {
       try {
         await api.sendVideo({
@@ -364,7 +372,7 @@ export async function consumeYoutubeSelection(api, message, options = {}) {
       throw error;
     }
   } catch (error) {
-    console.error("Loi xu ly lua chon YouTube:", error);
+    logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
     await sendMessageWarningRequest(api, message, {
       caption: "Da xay ra loi khi xu ly tin nhan cua ban. Vui long thu lai sau.",
     }, 30000);
@@ -486,7 +494,7 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
     registered = true;
     return true;
   } catch (error) {
-    console.error("Loi khi xu ly lenh YouTube:", error);
+    logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
     const caption = error?.stage === "upload"
       ? "Tai len video that bai. Vui long thu lai sau."
       : error?.stage === "send"
@@ -509,7 +517,7 @@ export async function handleYoutubeReply(api, message) {
     if (!canContinueReply(record, message.data.uidFrom, message.threadId)) return false;
     return await checkReplySelectionsMapData(api, message);
   } catch (error) {
-    console.error("Loi xu ly reply YouTube:", error);
+    logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
     await sendMessageWarningRequest(api, message, {
       caption: "Da xay ra loi khi xu ly tin nhan cua ban. Vui long thu lai sau.",
     }, 30000);

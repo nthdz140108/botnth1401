@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "worker_threads";
-import { getYoutubeDlExecutor, getYoutubeDlpOptions } from "./youtube-runtime.js";
+import { getYoutubeDlExecutor, buildYoutubeDownloadOptions } from "./youtube-runtime.js";
 
 const ytdlExec = getYoutubeDlExecutor();
 
@@ -27,31 +27,7 @@ async function downloadVideo(videoUrl, videoPath, format) {
   process.once("exit", killSubprocess);
 
   try {
-    let options;
-    if (format === "bestaudio[ext=aac]/bestaudio[ext=m4a]/bestaudio" || format?.includes?.("bestaudio")) {
-      options = {
-        output: videoPath,
-        format: "bestaudio[ext=aac]/bestaudio[ext=m4a]/bestaudio/best",
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        bufferSize: "16K",
-        addHeader: ["referer:youtube.com"],
-        ...getYoutubeDlpOptions({ env: process.env }),
-      };
-    } else {
-      options = {
-        output: videoPath,
-        format: format,
-        mergeOutputFormat: "mp4",
-        noCheckCertificates: true,
-        noWarnings: true,
-        preferFreeFormats: true,
-        bufferSize: "16K",
-        addHeader: ["referer:youtube.com"],
-        ...getYoutubeDlpOptions({ env: process.env }),
-      };
-    }
+    const options = buildYoutubeDownloadOptions(videoPath, format, { env: process.env });
 
     timeoutId = setTimeout(() => {
       killSubprocess();

@@ -8,8 +8,8 @@ const readSource = (relativePath) => readFileSync(path.join(process.cwd(), relat
 test("youtube download worker uses shared auth options and local timeout handling", () => {
   const source = readSource("src/service-debug/api-crawl/youtube/youtube-download-worker.js");
 
-  assert.match(source, /getYoutubeDlpOptions/);
-  assert.match(source, /getYoutubeDlpOptions\(\{ env: process\.env \}\)/);
+  assert.match(source, /buildYoutubeDownloadOptions/);
+  assert.match(source, /buildYoutubeDownloadOptions\(videoPath, format, \{ env: process\.env \}\)/);
   assert.match(source, /download worker timeout after/);
-  assert.match(source, /mergeOutputFormat: "mp4"/);
+  assert.doesNotMatch(source, /format\?\.includes\?\.\("bestaudio"\)/);
 });

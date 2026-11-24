@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import os from 'node:os';
 
 import { getYoutubeAuthOptions } from "../src/service-debug/api-crawl/youtube/youtube-auth.js";
 
@@ -25,6 +26,16 @@ test("uses browser cookies when configured", () => {
   );
 });
 
+test('relative cookie configuration follows persistent bot data across releases', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'youtube-auth-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'state'));
+    const cookie = path.join(dir, 'state', 'youtube.txt');
+    fs.writeFileSync(cookie, '# Netscape HTTP Cookie File');
+    assert.equal(getYoutubeAuthOptions({ YOUTUBE_COOKIES_FILE: 'mybot/state/youtube.txt', MYBOT_DATA_DIR: dir }).cookies, cookie);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("prefers an explicit cookie file over browser cookies", () => {
   const options = getYoutubeAuthOptions({
     YOUTUBE_COOKIES_FILE: "youtube-cookies.txt",
@@ -45,8 +56,8 @@ test("uses the shared auth helper in metadata and download paths", () => {
   );
 
   assert.match(runtimeSource, /getYoutubeAuthOptions/);
-  assert.match(runtimeSource, /jsRuntimes:\s*`node:/);
-  assert.match(workerSource, /getYoutubeDlpOptions/);
+  assert.match(runtimeSource, /jsRuntimes:\s*`deno:/);
+  assert.match(workerSource, /buildYoutubeDownloadOptions/);
 });
 
 test("bot loads provider environment before importing the runtime", () => {
@@ -69,7 +80,7 @@ test("enables yt-dlp JavaScript challenge solving for YouTube", () => {
     "utf8",
   );
 
-  assert.match(runtimeSource, /jsRuntimes:\s*`node:/);
+  assert.match(runtimeSource, /jsRuntimes:\s*`deno:/);
   assert.match(runtimeSource, /remoteComponents:\s*"ejs:github"/);
-  assert.match(workerSource, /getYoutubeDlpOptions/);
+  assert.match(workerSource, /buildYoutubeDownloadOptions/);
 });

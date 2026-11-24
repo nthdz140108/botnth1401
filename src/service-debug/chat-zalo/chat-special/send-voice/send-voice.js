@@ -366,10 +366,11 @@ export async function handleTarrotCommand(api, message) {
   }
 }
 
-export async function sendVoiceMusic(api, message, object, ttl) {
+export async function sendVoiceMusic(api, message, object, ttl, { throwOnError = false } = {}) {
   let thumbnailPath = path.resolve(tempDir, `${Date.now()}.jpg`);
   const voiceUrl = object.voiceUrl;
   if (!voiceUrl) {
+    if (throwOnError) throw Object.assign(new Error('Missing uploaded audio URL'), { stage: 'upload' });
     sendMessageFailed(api, message, "Upload file nhạc thất bại!", true);
     return;
   }
@@ -420,6 +421,7 @@ export async function sendVoiceMusic(api, message, object, ttl) {
     // }
     await api.sendVoice(message, voiceUrl, ttl);
   } catch (error) {
+    if (throwOnError) throw Object.assign(error, { stage: error.stage || 'send' });
     console.error("Lỗi khi gửi voice music:", error);
   } finally {
     await deleteFile(thumbnailPath);

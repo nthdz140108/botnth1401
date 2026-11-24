@@ -7,6 +7,9 @@ echo ================================================================
 echo           MYBOT V4 - CAP NHAT VPS THEO COMMIT
 echo ================================================================
 echo.
+echo Cap nhat tu commit HEAD; du lieu bot duoc giu trong shared storage.
+echo Neu can quay lai release truoc: DAY_LEN_VPS.bat --rollback
+echo.
 
 where node >nul 2>nul
 if errorlevel 1 (

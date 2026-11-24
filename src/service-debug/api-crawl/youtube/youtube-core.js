@@ -167,9 +167,23 @@ export async function runYoutubeVideoInfo(videoUrl, timeoutMs = 30000, executor 
   }
 }
 
+export async function withYoutubeDownloadDirectory(videoPath, download) {
+  await fs.promises.mkdir(path.dirname(videoPath), { recursive: true });
+  const dir = await fs.promises.mkdtemp(path.join(path.dirname(videoPath), '.youtube-job-'));
+  const output = path.join(dir, path.basename(videoPath));
+  try {
+    await download(output);
+    ensureNonEmptyFile(output);
+    await fs.promises.rename(output, videoPath);
+    return videoPath;
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function runYoutubeDownload(videoUrl, videoPath, format, timeoutMs = 300000) {
   try {
-    await runYoutubeWorkerDownload({ videoUrl, videoPath, format, timeoutMs });
+    await withYoutubeDownloadDirectory(videoPath, output => runYoutubeWorkerDownload({ videoUrl, videoPath: output, format, timeoutMs }));
     ensureNonEmptyFile(videoPath);
     return videoPath;
   } catch (error) {

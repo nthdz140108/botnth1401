@@ -61,16 +61,36 @@ export function resolveYoutubeNodeBinary(runtime = {}) {
   return resolveJsBinaryPath(runtime);
 }
 
-// Backward-compatible export name used by youtube-core.js
 export function resolveYoutubeDenoBinary(runtime = {}) {
-  return resolveJsBinaryPath(runtime);
+  const env = runtime.env || process.env;
+  const explicit = runtime.binaryPath || env.DENO_BIN;
+  if (explicit) {
+    const binary = path.resolve(explicit);
+    if (!fs.existsSync(binary)) throw new Error('Deno JS runtime binary not found');
+    return binary;
+  }
+  const local = path.join(runtime.projectRoot || getProjectRoot(), '.runtime', 'bin', process.platform === 'win32' ? 'deno.exe' : 'deno');
+  return fs.existsSync(local) ? local : 'deno';
 }
 
 export function getYoutubeRuntimeOptions(runtime = {}) {
   return {
-    jsRuntimes: `node:${resolveJsBinaryPath(runtime)}`,
+    jsRuntimes: `deno:${resolveYoutubeDenoBinary(runtime)}`,
     remoteComponents: "ejs:github",
-    extractorArgs: "youtube:player_client=android,web",
+    noPlaylist: true,
+  };
+}
+
+export function buildYoutubeDownloadOptions(output, format, options = {}) {
+  const audioOnly = /^bestaudio(?:\[|\/|$)/.test(format || '') && !String(format).includes('bestvideo');
+  return {
+    output, format,
+    ...(audioOnly ? { extractAudio: true, audioFormat: path.extname(output).slice(1) || 'm4a' } : { mergeOutputFormat: 'mp4', postprocessorArgs: 'Merger+ffmpeg_o:-c:a aac' }),
+    noCheckCertificates: true,
+    noWarnings: true,
+    bufferSize: '16K',
+    addHeader: ['referer:youtube.com'],
+    ...getYoutubeDlpOptions(options),
   };
 }
 

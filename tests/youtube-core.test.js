@@ -23,7 +23,7 @@ test("runYoutubeMetadata executes youtube-dl-exec with runtime hints and timeout
   assert.equal(calls[0].flags.dumpSingleJson, true);
   assert.equal(calls[0].flags.noCallHome, undefined);
   assert.equal(calls[0].flags.youtubeSkipDashManifest, undefined);
-  assert.match(calls[0].flags.jsRuntimes, /^node:/);
+  assert.match(calls[0].flags.jsRuntimes, /^deno:/);
   assert.equal(calls[0].flags.remoteComponents, "ejs:github");
   assert.equal(result.webpage_url, calls[0].url);
 });

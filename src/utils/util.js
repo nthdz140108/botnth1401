@@ -365,7 +365,7 @@ export async function downloadFile(url, filepath, options = {}) {
       releaseTempLease(tempFilePath);
       await fs.promises.unlink(tempFilePath).catch(() => {});
     }
-    console.error("Lỗi downloadFile:", error.message);
+    console.error("Lỗi downloadFile:", /^[A-Z0-9_]+$/.test(error?.code || "") ? error.code : "DOWNLOAD_FAILED");
     throw error;
   } finally {
     clearTimeout(abortTimer);

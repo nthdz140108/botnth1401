@@ -1,3 +1,5 @@
+import { runPlatformDownload, logDownloadEvent } from "../download/download-job.js";
+import { ensureUploadResult } from "../youtube/youtube-core.js";
 import axios from "axios";
 import fs from "fs";
 import path from "path";
@@ -83,8 +85,9 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
   const senderId = message.data?.uidFrom || message.data?.idFrom || message.senderId;
   const senderName = message.data?.dName || message.senderName || "User";
 
-  const downloadFileFn = opts.downloadFile || downloadFile;
-  const downloadVideoFn = opts.downloadVideoTiktok || downloadVideoTiktok;
+  const traceDownload = action => opts.job ? opts.job.run('download', action) : action();
+  const downloadFileFn = (...args) => traceDownload(() => (opts.downloadFile || downloadFile)(...args));
+  const downloadVideoFn = (...args) => traceDownload(() => (opts.downloadVideoTiktok || downloadVideoTiktok)(...args));
   const getCachedMediaFn = opts.getCachedMedia || getCachedMedia;
   const setCacheDataFn = opts.setCacheData || setCacheData;
   const getTiktokRelatedFn = opts.getTiktokRelated || getTiktokRelated;
@@ -131,7 +134,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
 
         tempFilePath = await downloadFileFn(downloadAudioUrl, tempFilePath);
         const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
-        voiceUrl = uploadResult[0]?.fileUrl;
+        voiceUrl = ensureUploadResult(uploadResult);
 
         if (voiceUrl) {
           setCacheDataFn(PLATFORM, uniqueId, { fileUrl: voiceUrl, title: description }, "audio");
@@ -154,7 +157,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
         like: media.stat?.diggCount || 0,
         comment: media.stat?.commentCount || 0,
       };
-      await sendVoiceMusicFn(api, message, object, 1800000);
+      await sendVoiceMusicFn(api, message, object, 1800000, { throwOnError: true });
       await progress?.complete();
       return true;
     } catch (error) {
@@ -166,7 +169,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
       }
       throw error;
     } finally {
-      if (tempFilePath) deleteFileFn(tempFilePath);
+      if (tempFilePath) await deleteFileFn(tempFilePath);
       await progress?.complete();
     }
   }
@@ -210,7 +213,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
             await downloadFileFn(img.url, localPath);
             imageResults[i] = localPath;
           } catch (err) {
-            console.error(`Lỗi tải ảnh slideshow thứ ${i + 1}:`, err.message);
+            logDownloadEvent({ source: "tiktok", stage: "download", status: "failed", code: "IMAGE_DOWNLOAD" });
             failedImageCount++;
           }
         }
@@ -274,9 +277,9 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
           const voiceLocalPath = path.join(jobDir, `music_${Date.now()}.mp3`);
           await downloadFileFn(media.music.url, voiceLocalPath);
           const uploadResult = await api.uploadAttachment([voiceLocalPath], message.threadId, message.type);
-          voiceUrl = uploadResult[0]?.fileUrl;
+          voiceUrl = ensureUploadResult(uploadResult);
         } catch (err) {
-          console.error("Lỗi khi tải hoặc gửi voice slideshow:", err.message);
+          logDownloadEvent({ source: "tiktok", stage: "upload", status: "failed", code: "SLIDESHOW_VOICE" });
           voiceErrorOccurred = true;
         }
       }
@@ -299,10 +302,10 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
             like: media.stat?.diggCount || 0,
             comment: media.stat?.commentCount || 0,
           };
-          await sendVoiceMusicFn(api, message, object, 1800000);
+          await sendVoiceMusicFn(api, message, object, 1800000, { throwOnError: true });
           voiceSent = true;
         } catch (err) {
-          console.error("Lỗi khi gửi voice slideshow:", err.message);
+          logDownloadEvent({ source: "tiktok", stage: "send", status: "failed", code: "SLIDESHOW_VOICE" });
           voiceErrorOccurred = true;
         }
       }
@@ -389,7 +392,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
       }
 
       const uploadResult = await api.uploadAttachment([tempFilePath], message.threadId, message.type);
-      videoUrl = uploadResult[0]?.fileUrl;
+      videoUrl = ensureUploadResult(uploadResult);
 
       if (videoUrl) {
         setCacheDataFn(PLATFORM, uniqueId, { fileUrl: videoUrl, title: description }, typeVideo);
@@ -398,6 +401,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
 
     const sentMessage = await api.sendVideo({
       videoUrl,
+      videoAlreadyUploaded: true,
       threadId: message.threadId,
       threadType: message.type,
       thumbnail: media.video.cover,
@@ -441,7 +445,7 @@ export async function sendTikTokMedia(api, message, media, options = {}) {
     }
     throw error;
   } finally {
-    if (tempFilePath) deleteFileFn(tempFilePath);
+    if (tempFilePath) await deleteFileFn(tempFilePath);
     await progress?.complete();
   }
 }
@@ -534,19 +538,7 @@ export async function handleTikTokCommand(api, message, command) {
 
     const tiktokUrl = extractTikTokUrl(query);
     if (tiktokUrl) {
-      const mediaData = await getTikTokMedia(tiktokUrl);
-      if (mediaData) {
-        if (typeVideo === "audio") {
-          await sendTikTokMedia(api, message, mediaData, { typeVideo: "audio" });
-        } else {
-          await sendTikTokMedia(api, message, mediaData, { typeVideo: mediaData.video?.quality || "540p" });
-        }
-      } else {
-        const object = {
-          caption: `Không thể tải dữ liệu từ link này. Vui lòng kiểm tra lại link hoặc thử link khác.`,
-        };
-        await sendMessageWarningRequest(api, message, object, 30000);
-      }
+      await runPlatformDownload(api, message, tiktokUrl, "tiktok", { typeVideo });
       return;
     }
 
@@ -620,13 +612,13 @@ export async function handleTikTokCommand(api, message, command) {
     } else if (code === "TIMEOUT") {
       caption = "Hết thời gian chờ phản hồi từ máy chủ tìm kiếm TikTok. Vui lòng thử lại sau.";
     } else if (code === "PROVIDER") {
-      caption = `Máy chủ cung cấp dịch vụ tìm kiếm TikTok gặp sự cố (${error.message || "Provider Error"}). Vui lòng thử lại sau.`;
+      caption = "Máy chủ cung cấp dịch vụ tìm kiếm TikTok gặp sự cố. Vui lòng thử lại sau.";
     } else if (code === "INVALID_RESPONSE") {
       caption = "Dữ liệu trả về từ dịch vụ tìm kiếm TikTok không đúng định dạng.";
     } else if (String(error?.message).includes("canvas") || String(error?.stack).includes("createSearchResultImage")) {
       caption = "Lỗi khi tạo hình ảnh danh sách kết quả tìm kiếm.";
     }
-    console.error(`[tiktok:search:${code || "UNKNOWN"}]`, error?.message || error);
+    logDownloadEvent({ source: "tiktok-search", stage: "source", status: "failed", code: /^[A-Z_]+$/.test(code) ? code : "UNKNOWN" });
     const object = { caption };
     await sendMessageWarningRequest(api, message, object, 30000);
   } finally {

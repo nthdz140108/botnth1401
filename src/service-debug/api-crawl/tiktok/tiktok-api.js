@@ -1,3 +1,4 @@
+import { tryDownloadProviders } from "../download/download-job.js";
 import axios from "axios";
 import HttpsProxyAgent from "https-proxy-agent";
 import { SocksProxyAgent } from "socks-proxy-agent";
@@ -730,12 +731,13 @@ export const getDataDownloadSubHatDe = async (url) => {
 		}
 		return null;
 	} catch (error) {
-		return null;
+		throw error;
 	}
 };
 
 export const getDataDownloadHoangDev = async (url) => {
 	const apiKey = process.env.HOANGDEV_API_KEY || "";
+	if (!apiKey) throw Object.assign(new Error("HoangDev key missing"), { code: "MISSING_DEPENDENCY" });
 	const apiUrl = "https://hoangdev.io.vn/Aio/aio-download";
 	try {
 		const response = await retry(async () => {
@@ -756,7 +758,7 @@ export const getDataDownloadHoangDev = async (url) => {
 		}
 		return null;
 	} catch (error) {
-		return null;
+		throw error;
 	}
 };
 
@@ -770,31 +772,13 @@ export const getDataDownloadOriginal = async (url, id = null) => {
 	return getTiktokVideoByID(data, idVideo);
 };
 
-export const getTikTokMedia = async (url) => {
+export const getTikTokMedia = async (url, options = {}) => {
 	if (!url || typeof url !== "string") return null;
-
-	try {
-		const subHatDeData = await getDataDownloadSubHatDe(url);
-		if (subHatDeData && (subHatDeData.video?.url || (Array.isArray(subHatDeData.images) && subHatDeData.images.length > 0))) {
-			return subHatDeData;
-		}
-	} catch (err) {}
-
-	try {
-		const hoangDevData = await getDataDownloadHoangDev(url);
-		if (hoangDevData && (hoangDevData.video?.url || (Array.isArray(hoangDevData.images) && hoangDevData.images.length > 0))) {
-			return hoangDevData;
-		}
-	} catch (err) {}
-
-	try {
-		const originalData = await getDataDownloadOriginal(url);
-		if (originalData && (originalData.video?.url || (Array.isArray(originalData.images) && originalData.images.length > 0))) {
-			return originalData;
-		}
-	} catch (err) {}
-
-	return null;
+	return tryDownloadProviders(url, options.providers || [
+		["subhatde", getDataDownloadSubHatDe],
+		["hoangdev", getDataDownloadHoangDev],
+		["original", getDataDownloadOriginal],
+	], options.log);
 };
 
 export const getDataDownloadVideo = async (url) => {
