@@ -551,11 +551,15 @@ export class LocmemStore {
   }
 
   getQualified7DayWindow(groupId, todayDateKey = getVietnamDateKey()) {
+    return this.getQualifiedWindow(groupId, todayDateKey, 7);
+  }
+
+  getQualifiedWindow(groupId, todayDateKey = getVietnamDateKey(), dayCount = 30) {
     if (!groupId) {
       return { qualified: false, days: [], completeDays: [], missingDays: [] };
     }
     this.finalizeTrackedDays(todayDateKey);
-    const required7Days = getConsecutiveCalendarDays(todayDateKey, 7);
+    const required7Days = getConsecutiveCalendarDays(todayDateKey, dayCount);
     const gId = String(groupId);
     const completeSet = new Set();
 
@@ -567,7 +571,7 @@ export class LocmemStore {
     }
 
     const missingDays = required7Days.filter((d) => !completeSet.has(d));
-    const qualified = completeSet.size === 7 && missingDays.length === 0;
+    const qualified = completeSet.size === dayCount && missingDays.length === 0;
 
     return {
       qualified,
@@ -586,15 +590,15 @@ export class LocmemStore {
     return window.completeDays.slice(0, Number(limit) || 7);
   }
 
-  getInactiveCandidates({ groupId, completeDays, todayDateKey, excludeMemberIds = [] }) {
-    if (!groupId || !Array.isArray(completeDays) || completeDays.length < 7 || !todayDateKey) {
+  getInactiveCandidates({ groupId, completeDays, todayDateKey, excludeMemberIds = [], requiredDays = 7 }) {
+    if (!groupId || !Array.isArray(completeDays) || completeDays.length < requiredDays || !todayDateKey) {
       return [];
     }
     this.flushPendingActivities();
 
     const gId = String(groupId);
     const uniqueDays = Array.from(new Set(completeDays.map(String)));
-    if (uniqueDays.length < 7) return [];
+    if (uniqueDays.length < requiredDays) return [];
 
     const excludeSet = new Set(excludeMemberIds.map(String));
     const snapshotCounts = new Map();

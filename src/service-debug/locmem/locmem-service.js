@@ -1,3 +1,4 @@
+import { sendLocmemMessage } from "./locmem-send.js";
 import { MessageType } from "../../api-zalo/models/Message.js";
 import { getBotId, getInstanceKind } from "../../utils/env.js";
 import { resolveInstanceAuthorization } from "../../utils/instance-authorization.js";
@@ -130,9 +131,9 @@ export function extractGroupMeta(groupInfo, threadId) {
  * 3. Checks pending: rejects if group already has a pending confirmation request.
  * 4. Immediate ACK to group for background scanning task with internal deadline.
  * 5. Fresh group check: bot must be owner or group admin in this group.
- * 6. Uses exact 7 calendar days immediately preceding today in Asia/Ho_Chi_Minh. Fails closed if not complete.
+ * 6. Uses exact 30 calendar days immediately preceding today in Asia/Ho_Chi_Minh. Fails closed if not complete.
  * 7. Excludes: owner, group admins, adminBot, adminLevelHigh, current bot, managed bots.
- * 8. Queries inactive members (7 snapshots, sum of 7-day activity == 0, today activity == 0).
+ * 8. Queries inactive members (30 snapshots, sum of 30-day activity == 0, today activity == 0).
  * 9. Fetches candidate names with bounded timeout and no sequential fallback.
  * 10. Does NOT create confirmation if internal deadline was exceeded.
  * 11. Sends preview message(s) in chunks.
@@ -151,23 +152,25 @@ export async function handleLocmemCommand(apiOrOptions, message, context = {}) {
   const key = `${options.botUid || options.runtimeContext?.botKey || 'admin'}:${group}`;
   if (scans.has(key)) return { code: 'HANDLED', reason: 'request_already_pending' };
   scans.add(key);
-  const expires = Date.now() + (options.scanDeadlineMs ?? 45000);
+  let expires = Date.now() + (options.scanDeadlineMs ?? 45000);
   const api = new Proxy(rawApi, { get(target, prop) {
     const value = target[prop];
     if (typeof value !== 'function') return value;
-    return (...args) => new Promise((resolve, reject) => {
+    const call = (...args) => new Promise((resolve, reject) => {
       const remaining = expires - Date.now();
       if (remaining <= 0) return reject(new Error('scan_deadline_exceeded'));
       const timer = setTimeout(() => reject(new Error('scan_deadline_exceeded')), remaining);
       Promise.resolve().then(() => value.apply(target, args)).then(resolve, reject).finally(() => clearTimeout(timer));
     });
+    if (prop === 'sendMessage') return (...args) => sendLocmemMessage(rawApi, args, wait => { expires += wait; }, call);
+    return call;
   }});
   try {
-    const result = await runLocmemCommand(!message && options.api ? { ...options, api } : api, message, context);
+    const result = await runLocmemCommand(!message && options.api ? { ...options, api, isScanDeadlineExceeded: () => Date.now() >= expires } : api, message, { ...context, isScanDeadlineExceeded: () => Date.now() >= expires });
     return Date.now() >= expires ? { code: 'TIMEOUT', reason: 'scan_deadline_exceeded' } : result;
   } catch (error) {
     const timeout = error.message === 'scan_deadline_exceeded' || Date.now() >= expires;
-    if (rawApi?.sendMessage) Promise.resolve().then(() => rawApi.sendMessage({ msg: timeout ? '⚠️ Quá thời gian quét. Đã hủy yêu cầu; bạn có thể chạy lại !locmem.' : '⚠️ Lỗi dữ liệu hoặc kết nối khi quét. Đã hủy yêu cầu.' }, group, MessageType.GroupMessage)).catch(() => {});
+    if (rawApi?.sendMessage) Promise.resolve().then(() => sendLocmemMessage(rawApi, [{ msg: timeout ? '⚠️ Quá thời gian quét. Đã hủy yêu cầu; bạn có thể chạy lại !locmem.' : '⚠️ Lỗi dữ liệu hoặc kết nối khi quét. Đã hủy yêu cầu.' }, group, MessageType.GroupMessage])).catch(() => {});
     return { code: timeout ? 'TIMEOUT' : 'HANDLER_ERROR', reason: timeout ? 'scan_deadline_exceeded' : 'data_or_api_error' };
   } finally { scans.delete(key); }
 }
@@ -175,7 +178,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   let api = apiOrOptions;
   let msg = message;
   let ctx = context;
-  if (apiOrOptions && !message && Object.keys(context).length === 0 && apiOrOptions.api) {
+  if (apiOrOptions && !message && apiOrOptions.api) {
     api = apiOrOptions.api;
     msg = apiOrOptions.message || {
       threadId: apiOrOptions.threadId,
@@ -242,7 +245,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   if (api && typeof api.sendMessage === "function") {
     await api.sendMessage(
       {
-        msg: "🔍 Đang bắt đầu quét thành viên không tương tác (7 ngày)... Vui lòng đợi trong giây lát!",
+        msg: "🔍 Đang bắt đầu quét thành viên không tương tác (30 ngày)... Vui lòng đợi trong giây lát!",
       },
       threadId,
       MessageType.GroupMessage
@@ -252,7 +255,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   // Internal deadline enforcement
   const scanDeadlineMs = ctx.scanDeadlineMs !== undefined ? Number(ctx.scanDeadlineMs) : 45000;
   const scanStartTime = Date.now();
-  const isDeadlineExceeded = () => (Date.now() - scanStartTime) >= scanDeadlineMs;
+  const isDeadlineExceeded = ctx.isScanDeadlineExceeded || (() => (Date.now() - scanStartTime) >= scanDeadlineMs);
 
   if (isDeadlineExceeded()) {
     if (api && typeof api.sendMessage === "function") {
@@ -270,7 +273,8 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   if (!groupInfo && api && typeof api.getGroupInfo === "function") {
     try {
       groupInfo = await api.getGroupInfo(threadId);
-    } catch {
+    } catch (error) {
+      if (error.message === 'scan_deadline_exceeded') throw error;
       groupInfo = null;
     }
   }
@@ -302,10 +306,10 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     return { code: "HANDLED", reason: "bot_not_admin" };
   }
 
-  // 6. Query exact 7 calendar days immediately preceding today in Asia/Ho_Chi_Minh
+  // 6. Query exact 30 calendar days immediately preceding today in Asia/Ho_Chi_Minh
   const store = ctx.storeOverride || ctx.store || getLocmemStore(botUid);
   const todayKey = ctx.todayKey || getVietnamDateKey();
-  const window = store.getQualified7DayWindow(threadId, todayKey);
+  const window = store.getQualifiedWindow(threadId, todayKey);
 
   if (!window.qualified) {
     if (api && typeof api.sendMessage === "function") {
@@ -314,8 +318,8 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
           msg:
             `⚠️ Chưa đủ dữ liệu để lọc thành viên an toàn!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `• Yêu cầu: Đủ dữ liệu 7 ngày lịch liền trước hôm nay (chốt 00:00 giờ Việt Nam).\n` +
-            `• Hiện có: ${window.completeDays.length}/7 ngày hoàn chỉnh.\n` +
+            `• Yêu cầu: Đủ dữ liệu 30 ngày lịch liền trước hôm nay (chốt 00:00 giờ Việt Nam).\n` +
+            `• Hiện có: ${window.completeDays.length}/30 ngày hoàn chỉnh.\n` +
             window.missingDays.map(day => `• ${day}: ${store.getDailyCoverage(threadId, day)?.status_code || "missing_record"}`).join("\n") + "\n\n" +
             `💡 Nguyên tắc an toàn dữ liệu: Khởi động lại giữa ngày vẫn được tính; mỗi ngày cần có snapshot và dữ liệu tương tác đã lưu hợp lệ.`,
         },
@@ -374,6 +378,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   const candidateUids = store.getInactiveCandidates({
     groupId: threadId,
     completeDays,
+    requiredDays: 30,
     todayDateKey: todayKey,
     excludeMemberIds: Array.from(excludeSet),
   });
@@ -388,7 +393,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
           msg:
             `✅ Không có thành viên nào không tương tác đủ điều kiện lọc!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `• Kỳ thống kê: 7 ngày hoàn chỉnh (${completeDays[completeDays.length - 1]} ➜ ${completeDays[0]})\n` +
+            `• Kỳ thống kê: 30 ngày hoàn chỉnh (${completeDays[completeDays.length - 1]} ➜ ${completeDays[0]})\n` +
             `• Kiểm tra hôm nay (${todayKey}): Hoàn tất\n` +
             `• Mọi thành viên đều có tương tác hoặc thuộc danh sách bảo vệ (chủ nhóm, phó nhóm, admin, bot, thành viên mới).`,
         },
@@ -448,7 +453,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `• Nhóm: ${groupInfo?.name || "Nhóm"}\n` +
     `• Số lượng lọc: ${eligibleCandidates.length} thành viên\n` +
-    `• Khoảng ngày: 7 ngày hoàn chỉnh (${dateRangeStr})\n` +
+    `• Khoảng ngày: 30 ngày hoàn chỉnh (${dateRangeStr})\n` +
     `• Thời hạn xác nhận: 120 giây\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👉 Bất kỳ Quản trị viên cấp cao (adminLevelHigh) nào hãy thả reaction TIM (❤️) vào tin nhắn này trong 120 giây để kích hoạt lọc!`;
@@ -484,6 +489,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     candidates: eligibleCandidates,
     serverMsgId: String(serverMsgId),
     completeDays,
+    requiredDays: 30,
   };
 }
 
@@ -506,6 +512,12 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
  * @returns {Promise<boolean>} Whether reaction was processed
  */
 export async function handleLocmemReaction(api, reaction, context = {}) {
+  const rawApi = api;
+  api = new Proxy(rawApi, { get(target, prop) {
+    if (prop === 'sendMessage') return (...args) => sendLocmemMessage(rawApi, args);
+    const value = target[prop];
+    return typeof value === 'function' ? value.bind(target) : value;
+  }});
   try {
     const rType = reaction?.data?.content?.rType;
     if (Number(rType) !== 5) {
@@ -661,11 +673,18 @@ export async function handleLocmemReaction(api, reaction, context = {}) {
     const todayKey = context.todayKey || getVietnamDateKey();
     const completeDays = request.dateRange?.days || request.dateRange?.qualifiedDays || [];
 
+    const currentWindow = store.getQualifiedWindow(threadId, todayKey);
+    if (!currentWindow.qualified || completeDays.length !== 30 ||
+        !currentWindow.days.every(day => completeDays.includes(day))) {
+      await api.sendMessage({ msg: '⚠️ Cửa sổ 30 ngày đã thay đổi hoặc chưa đủ dữ liệu. Hãy chạy lại !locmem.' }, threadId, MessageType.GroupMessage);
+      return false;
+    }
     let recheckedSet = null;
-    if (Array.isArray(completeDays) && completeDays.length >= 7) {
+    if (Array.isArray(completeDays) && completeDays.length >= 30) {
       const recheckedCandidates = store.getInactiveCandidates({
         groupId: threadId,
         completeDays,
+    requiredDays: 30,
         todayDateKey: todayKey,
         excludeMemberIds: [],
       });

@@ -6,7 +6,7 @@ const cleanupJobs = new Map();
 
 /**
  * Runs the monthly cleanup for locmem:
- * - Keeps only today and the exact 7 calendar days immediately preceding today (at most 8 dates).
+ * - Keeps only today and the exact 35 calendar days immediately preceding today (at most 36 dates).
  * - Deletes all older activity, snapshots, and coverage.
  * - Runs WAL checkpoint & VACUUM.
  * - Saves last_monthly_cleanup = monthKey.
@@ -29,8 +29,8 @@ export function runMonthlyCleanup(botUid = "admin", options = {}) {
     }
   }
 
-  // Keep today plus exact 7 consecutive calendar days immediately preceding today (up to 8 dates)
-  const preceding7Days = getConsecutiveCalendarDays(todayKey, 7);
+  // Keep today plus exact 35 consecutive calendar days immediately preceding today (up to 36 dates)
+  const preceding7Days = getConsecutiveCalendarDays(todayKey, 35);
   const keepDateKeys = Array.from(new Set([todayKey, ...preceding7Days]));
 
   store.cleanupMonthly({ keepDateKeys, monthKey });

@@ -14,7 +14,7 @@ import {
   trackLocmemReaction,
   trackLocmemGroupAction,
   handleLocmemCommand,
-  handleLocmemReaction,
+  handleLocmemReaction as rawHandleLocmemReaction,
   runMonthlyCleanup,
   runDailyLocmemRetentionPrune,
   checkAndRunStartupCatchUp,
@@ -31,6 +31,32 @@ import { commandRegistry } from "../src/commands/command-registry.js";
 import { COMMAND_PERMISSION_POLICY } from "../src/commands/command-permission-policy.js";
 import { HIGH_RISK_COMMANDS } from "../src/commands/high-risk-policy.js";
 import { ADMIN_ONLY_MASS_COMMANDS } from "../src/commands/command-policy-loader.js";
+
+// Reaction fixtures must have thirty real stored days rather than a one-day pending stub.
+async function handleLocmemReaction(api, reaction, context = {}) {
+  const manager = context.pendingManager;
+  const group = reaction.threadId || reaction.data?.idTo;
+  const pending = manager?.getPending(group);
+  let temp;
+  let store = context.storeOverride || context.store;
+  if (pending) {
+    if (!store) {
+      temp = createTempDir();
+      store = new LocmemStore({ dbPath: path.join(temp, 'reaction') });
+    }
+    const today = context.todayKey || getVietnamDateKey();
+    const days = getConsecutiveCalendarDays(today, 30);
+    for (const day of days) {
+      store.recordSnapshot(group, pending.candidates, day);
+      store.recordDailyCoverageSnapshot(group, day, true);
+    }
+    store.finalizeTrackedDays(today);
+    pending.dateRange.days = days;
+    context = { ...context, storeOverride: store };
+  }
+  try { return await rawHandleLocmemReaction(api, reaction, context); }
+  finally { if (temp) { store.close(); fs.rmSync(temp, { recursive: true, force: true }); } }
+}
 
 // Helper to make a clean temporary directory
 function createTempDir(prefix = "locmem-test-") {
@@ -598,15 +624,7 @@ test("LocmemService: protected identities (creator, admins, adminBot, adminLevel
   const store = new LocmemStore({ dbPath, botUid: "bot_protect" });
 
   const groupId = "g_protect";
-  const dates = [
-    "2026-10-01",
-    "2026-10-02",
-    "2026-10-03",
-    "2026-10-04",
-    "2026-10-05",
-    "2026-10-06",
-    "2026-10-07",
-  ];
+  const dates = getConsecutiveCalendarDays('2026-10-08', 30);
   const todayKey = "2026-10-08";
 
   for (const d of dates) {
@@ -684,7 +702,7 @@ test("LocmemService: protected identities (creator, admins, adminBot, adminLevel
   assert.ok(!pending.candidateUids.includes("current_bot_id"));
 });
 
-test("Monthly cleanup: preserves at most today + 7 complete days (<= 8 dates), records month key", async () => {
+test("Monthly cleanup: preserves at most today + 35 calendar days (<= 36 dates), records month key", async () => {
   const tmpDir = createTempDir();
   const dbPath = path.join(tmpDir, "cleanup.sqlite");
   const store = new LocmemStore({ dbPath, botUid: "bot_clean" });
@@ -715,11 +733,11 @@ test("Monthly cleanup: preserves at most today + 7 complete days (<= 8 dates), r
   });
 
   assert.equal(result.cleaned, true);
-  assert.ok(result.keptDatesCount <= 8);
+  assert.ok(result.keptDatesCount === 36);
 
   // Check how many coverage dates remain
   const remainingCoverage = store.listStoredDateKeys(groupId);
-  assert.ok(remainingCoverage.length <= 8);
+  assert.ok(remainingCoverage.length === 16);
 
   // Subsequent cleanup in same month is skipped
   const secondRun = runMonthlyCleanup("bot_clean", {
