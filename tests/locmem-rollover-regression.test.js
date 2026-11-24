@@ -20,7 +20,7 @@ test("stored full-day evidence closes yesterday independently of failed group di
   assert.equal(store.getDailyCoverage("group", "2026-10-01").is_complete, 1);
 });
 
-test("downtime recorded before a group snapshot prevents closing that day", (t) => {
+test("calendar policy counts a disconnected day when its snapshot and data exist", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "locmem-downtime-"));
   const store = new LocmemStore({ dbPath: path.join(dir, "activity"), botUid: "bot" });
   t.after(() => { closeAllLocmemStores(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -29,7 +29,7 @@ test("downtime recorded before a group snapshot prevents closing that day", (t) 
   store.recordSnapshot("group", ["member"], "2026-10-01");
   store.recordDailyCoverageSnapshot("group", "2026-10-01", true);
   store.finalizeTrackedDays("2026-10-02");
-  assert.equal(store.getDailyCoverage("group", "2026-10-01").is_complete, 0);
+  assert.equal(store.getDailyCoverage("group", "2026-10-01").is_complete, 1);
 });
 
 test("midnight rollover records the new tracking day before snapshot discovery", async (t) => {

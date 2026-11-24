@@ -326,7 +326,7 @@ export async function handleDayRollover(api, botUid = "admin", options = {}) {
 /**
  * Initializes tracking when the bot listener connects:
  * - Takes snapshots for today.
- * - If starting mid-day, marks downtime on today so today cannot be marked complete at midnight.
+ * - Restarts preserve calendar-day eligibility when snapshot/data exist.
  * - Schedules midnight rollover cron job at 00:00:00 Asia/Ho_Chi_Minh.
  *
  * @param {object} api
@@ -341,13 +341,7 @@ export async function onListenerReady(api, botUid = "admin", options = {}) {
   if (connectedStores.has(key)) return;
   connectedStores.add(key);
 
-  // If not started exactly at the start of the day (e.g. boot/restart mid-day),
-  // record downtime so today fails-closed and cannot be considered a full 24h complete day.
-  if (!options.isStartOfDay) {
-    store.recordDowntime(null, todayKey, "mid_day_listener_startup");
-  } else {
-    store.beginTrackingDay(todayKey);
-  }
+  store.beginTrackingDay(todayKey);
 
   store.finalizeTrackedDays(todayKey);
 

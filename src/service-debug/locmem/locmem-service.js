@@ -314,10 +314,10 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
           msg:
             `⚠️ Chưa đủ dữ liệu để lọc thành viên an toàn!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `• Yêu cầu: Đủ 7 ngày lịch hoàn chỉnh gần nhất không gián đoạn.\n` +
+            `• Yêu cầu: Đủ dữ liệu 7 ngày lịch liền trước hôm nay (chốt 00:00 giờ Việt Nam).\n` +
             `• Hiện có: ${window.completeDays.length}/7 ngày hoàn chỉnh.\n` +
             window.missingDays.map(day => `• ${day}: ${store.getDailyCoverage(threadId, day)?.status_code || "missing_record"}`).join("\n") + "\n\n" +
-            `💡 Nguyên tắc an toàn dữ liệu: Bot chỉ lọc khi có đủ 7 ngày theo dõi liên tục, không downtime và có đầy đủ snapshot thành viên.`,
+            `💡 Nguyên tắc an toàn dữ liệu: Khởi động lại giữa ngày vẫn được tính; mỗi ngày cần có snapshot và dữ liệu tương tác đã lưu hợp lệ.`,
         },
         threadId,
         MessageType.GroupMessage

@@ -264,13 +264,22 @@ export class LocmemStore {
     this.flushPendingActivities();
     for (const dateKey of this.listStoredDateKeys()) {
       if (dateKey >= todayKey) continue;
-      const evidence = this.meta.tracked_days?.[dateKey];
-      if (!evidence?.started || evidence.interrupted) continue;
       const part = this.#getPartition(dateKey);
       for (const groupId of Object.keys(part?.coverage || {})) {
         const members = part.snapshots[groupId];
         const activity = part.activities[groupId];
-        if (Array.isArray(members) && members.length && activity && members.every(id => Array.isArray(activity[id]))) {
+        const cov = part.coverage[groupId];
+        const calendarStatuses = [COVERAGE_STATUS.INCOMPLETE, COVERAGE_STATUS.COMPLETE,
+          COVERAGE_STATUS.MID_DAY_STARTUP, COVERAGE_STATUS.LISTENER_DISCONNECTED, COVERAGE_STATUS.DOWNTIME];
+        if (cov.snapshot_taken === 1 && calendarStatuses.includes(cov.status_code) &&
+            Array.isArray(members) && members.length && activity && members.every(id => Array.isArray(activity[id]))) {
+          // Calendar policy: restart/disconnection does not discard a stored day.
+          // Preserve the former record for diagnostics before clearing its gate.
+          if (cov.downtime_detected) {
+            cov.calendar_previous_coverage ||= { ...cov };
+            cov.downtime_detected = 0;
+            this.#markDirty(dateKey, part);
+          }
           this.markDayComplete(groupId, dateKey);
         }
       }
@@ -415,6 +424,7 @@ export class LocmemStore {
     const part = this.#getPartition(dKey, { createIfMissing: true });
     const prev = part.coverage[gId];
     part.coverage[gId] = {
+      ...prev,
       is_complete: isComplete ? 1 : 0,
       snapshot_taken: Math.max(prev?.snapshot_taken || 0, snapshotTaken ? 1 : 0),
       downtime_detected: Math.max(prev?.downtime_detected || 0, downtimeDetected ? 1 : 0),
