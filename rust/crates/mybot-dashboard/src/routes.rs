@@ -424,9 +424,12 @@ pub fn build_api_and_spa_router(state: DashboardState) -> Router {
 }
 
 fn resolve_spa_asset_dir(project_root: &std::path::Path, test_mode: bool) -> PathBuf {
+    let current_dist = project_root.join("current/dashboard/dist");
     let dist = project_root.join("dashboard/dist");
     let public = project_root.join("dashboard/public");
-    if !test_mode && dist.is_dir() {
+    if !test_mode && current_dist.is_dir() {
+        current_dist
+    } else if !test_mode && dist.is_dir() {
         dist
     } else if public.is_dir() {
         public
