@@ -1,11 +1,13 @@
-import { removeMention } from "../../utils/format-util.js";
+import crypto from "node:crypto";
+import { extractCommandBody } from "../../commands/shared/command-input-utils.js";
 import { sendMessageFromSQL } from "../chat-zalo/chat-style/chat-style.js";
 import { getGlobalPrefix } from "../service.js";
 import { createCanvas, loadImage } from "canvas";
-import axios from "axios";
 import fs from "fs";
 import path from "path";
 import { deleteFile } from "../../utils/util.js";
+import { tempDir } from "../../utils/io-json.js";
+import { ensureCanvasFontsRegistered } from "../../utils/canvas/register-fonts.js";
 import { MessageMention } from "../../api-zalo/index.js";
 import { getUserInfoData } from "./user-info.js";
 
@@ -122,25 +124,91 @@ function normalizeString(name) {
         .replace(/[ĐĐ]/g, m => vietnameseMap[m] || m);
 }
 
-function generateVietQRLink(bankInfo, accountNumber, accountName, amount = 0, addInfo = "") {
+export function generateVietQRLink(bankInfo, accountNumber, accountName, amount = 0, addInfo = "") {
     const baseUrl = "https://img.vietqr.io/image";
     const template = "qr_only";
-
-    const encodedAccountName = encodeURIComponent(accountName);
-    return `${baseUrl}/${bankInfo.bin}-${accountNumber}-${template}.jpg?accountName=${encodedAccountName}&amount=${amount}&addInfo=${addInfo}`;
+    const numericAmount = Number(amount) > 0 ? Math.floor(Number(amount)) : 0;
+    const encodedAccountName = encodeURIComponent(accountName && accountName !== "---" ? accountName : "");
+    const encodedAddInfo = encodeURIComponent(addInfo || "");
+    return `${baseUrl}/${bankInfo.bin}-${encodeURIComponent(accountNumber)}-${template}.jpg?accountName=${encodedAccountName}&amount=${numericAmount}&addInfo=${encodedAddInfo}`;
 }
 
-function findAmount(text, accountNumber) {
-    const numbers = text.match(/\d+/g) || [];
-    return numbers.find(num => num !== accountNumber && num.length > 3) || 0;
+function matchBankPrefix(tokens, startIndex = 0) {
+    if (startIndex + 1 < tokens.length) {
+        const twoWord = `${tokens[startIndex]} ${tokens[startIndex + 1]}`.toLowerCase();
+        if (BANK_CODES[twoWord]) {
+            return { bankInfo: { ...BANK_CODES[twoWord], word: twoWord }, consumed: 2 };
+        }
+    }
+    if (startIndex < tokens.length) {
+        const oneWord = tokens[startIndex].toLowerCase().replace(/^[,.-]+|[,.-]+$/g, "");
+        if (BANK_CODES[oneWord]) {
+            return { bankInfo: { ...BANK_CODES[oneWord], word: oneWord }, consumed: 1 };
+        }
+    }
+    return null;
 }
 
-function findTransferInfo(text, bankCode, accountNumber, amount) {
-    return text
-        .replace(bankCode, '')
-        .replace(accountNumber, '')
-        .replace(amount, '')
-        .trim();
+export function parseBankTransferInput(rawInput) {
+    const pipeIndex = rawInput.indexOf("|");
+    const mainSegment = (pipeIndex >= 0 ? rawInput.slice(0, pipeIndex) : rawInput).trim();
+    const rawAccountName = pipeIndex >= 0 ? rawInput.slice(pipeIndex + 1).trim() : "";
+    const accountName = rawAccountName ? normalizeAccountName(rawAccountName) : "---";
+
+    const tokens = mainSegment.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) {
+        return { bankInfo: null, accountNumber: null, amount: 0, description: "", accountName };
+    }
+
+    let bankInfo = null;
+    let accountNumber = null;
+    let restStartIndex = 0;
+
+    // 1. Positional <bank> <account> [amount] [addInfo]
+    const bankFirst = matchBankPrefix(tokens, 0);
+    if (bankFirst) {
+        bankInfo = bankFirst.bankInfo;
+        const candidateAccount = tokens[bankFirst.consumed] || "";
+        if (/^\d{4,25}$/.test(candidateAccount)) {
+            accountNumber = candidateAccount;
+            restStartIndex = bankFirst.consumed + 1;
+        } else {
+            return { bankInfo, accountNumber: null, amount: 0, description: "", accountName };
+        }
+    } else if (/^\d{4,25}$/.test(tokens[0])) {
+        // 2. Fallback <account> <bank> [amount] [addInfo]
+        accountNumber = tokens[0];
+        const bankSecond = matchBankPrefix(tokens, 1);
+        if (bankSecond) {
+            bankInfo = bankSecond.bankInfo;
+            restStartIndex = 1 + bankSecond.consumed;
+        } else {
+            return { bankInfo: null, accountNumber, amount: 0, description: "", accountName };
+        }
+    } else {
+        const fallbackAcc = findAccountNumber(mainSegment);
+        const fallbackBank = findBankCode(mainSegment);
+        return { bankInfo: fallbackBank, accountNumber: fallbackAcc, amount: 0, description: "", accountName };
+    }
+
+    let amount = 0;
+    let descStartIndex = restStartIndex;
+    const maybeAmountToken = tokens[restStartIndex];
+    if (maybeAmountToken !== undefined && /^\d+$/.test(maybeAmountToken)) {
+        amount = Number(maybeAmountToken);
+        descStartIndex = restStartIndex + 1;
+    }
+
+    const rawDescription = tokens.slice(descStartIndex).join(" ").trim();
+    const description = rawDescription ? normalizeDescription(rawDescription) : "";
+
+    return {
+        bankInfo,
+        accountNumber,
+        amount: Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : 0,
+        description,
+        accountName,
+    };
 }
 
 async function loadImageWithRetry(url, maxRetries = 3, timeout = 10000) {
@@ -171,6 +239,7 @@ async function loadImageWithRetry(url, maxRetries = 3, timeout = 10000) {
 }
 
 async function createBankCardImage(bankInfo, accountNumber, accountName, amount, description, qrCodeUrl, userInfo) {
+    ensureCanvasFontsRegistered();
     const width = 1000;
     const height = 400;
     const canvas = createCanvas(width, height);
@@ -246,12 +315,17 @@ async function createBankCardImage(bankInfo, accountNumber, accountName, amount,
         ctx.font = "bold 28px BeVietnamPro";
         ctx.fillStyle = "#ffffff";
 
+        const numericAmount = Number(amount);
+        const formattedAmount = Number.isFinite(numericAmount) && numericAmount > 0
+            ? `${numericAmount.toLocaleString("vi-VN")} VNĐ`
+            : "Không có";
+
         const fields = [
             { label: "Ngân hàng:", value: bankInfo.name },
             { label: "Số tài khoản:", value: accountNumber },
             { label: "Chủ tài khoản:", value: accountName },
-            { label: "Số tiền:", value: amount ? amount.toLocaleString('vi-VN') + ' VNĐ' : 'Không có' },
-            { label: "Nội dung:", value: description ? (description.length > 20 ? description.substring(0, 20) + '...' : description) : 'Không có' }
+            { label: "Số tiền:", value: formattedAmount },
+            { label: "Nội dung:", value: description ? (description.length > 24 ? description.substring(0, 24) + "..." : description) : "Không có" }
         ];
 
         fields.forEach(field => {
@@ -266,7 +340,7 @@ async function createBankCardImage(bankInfo, accountNumber, accountName, amount,
         });
 
         // Lưu canvas thành file ảnh
-        const filePath = path.resolve(`./assets/temp/bank_card_${Date.now()}.png`);
+        const filePath = path.join(tempDir, `bank_card_${crypto.randomUUID()}.png`);
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         const out = fs.createWriteStream(filePath);
         const stream = canvas.createPNGStream();
@@ -284,41 +358,38 @@ async function createBankCardImage(bankInfo, accountNumber, accountName, amount,
 
 export async function handleBankInfoCommand(api, message, aliasCommand) {
     const prefixGlobal = getGlobalPrefix();
-    const content = removeMention(message);
     const senderName = message.data.dName;
     const senderId = message.data.uidFrom;
-    let stringCommand = content.replace(`${prefixGlobal}${aliasCommand}`, "").trim();
+    const stringCommand = extractCommandBody(message, prefixGlobal, aliasCommand || "qrbank");
     let imagePath = "";
     try {
 
         if (!stringCommand) {
             const result = {
                 success: false,
-                message: `Vui lòng nhập thông tin ngân hàng theo định dạng:\n!bankinfo [Số tài khoản] [Tên ngân hàng] [Số Tiền Chuyển Khoản] (Nội Dung Chuyển Khoản)`
+                message: `Vui lòng nhập thông tin ngân hàng theo định dạng:\n${prefixGlobal}qrbank <Tên ngân hàng> <Số tài khoản> [Số tiền] [Nội dung chuyển khoản | Chủ TK]`
             };
             await sendMessageFromSQL(api, message, result, false, 15000);
             return;
         }
 
-        const accountNumber = findAccountNumber(stringCommand);
-        if (!accountNumber) {
+        const parsed = parseBankTransferInput(stringCommand);
+        if (!parsed.accountNumber) {
             const result = {
                 success: false,
-                message: `Không tìm thấy số tài khoản trong nội dung.`
+                message: `Không tìm thấy số tài khoản hợp lệ. Cú pháp: ${prefixGlobal}qrbank <Tên ngân hàng> <Số tài khoản> [Số tiền] [Nội dung]`
             };
             await sendMessageFromSQL(api, message, result, false, 15000);
             return;
         }
-        stringCommand = stringCommand.replace(accountNumber, "").trim();
 
-        const bankInfo = findBankCode(stringCommand);
-        if (!bankInfo) {
+        if (!parsed.bankInfo) {
             const words = stringCommand.toLowerCase().split(/\s+/);
             const suggestions = Object.entries(BANK_CODES)
                 .filter(([key]) => {
                     const bankName = key.toLowerCase();
                     return words.some(word =>
-                        bankName.includes(word) || word.includes(bankName)
+                        word && !/^\d+$/.test(word) && (bankName.includes(word) || word.includes(bankName))
                     );
                 })
                 .map(([_, info]) => info.name)
@@ -331,28 +402,15 @@ export async function handleBankInfoCommand(api, message, aliasCommand) {
 
             const result = {
                 success: false,
-                message: `Không tìm thấy tên ngân hàng hợp lệ trong nội dung.${suggestionText}`
+                message: `Không tìm thấy tên ngân hàng hợp lệ trong nội dung.${suggestionText}\nVí dụ: ${prefixGlobal}qrbank mb 0123456789 500000 thanh toan don 2026`
             };
             await sendMessageFromSQL(api, message, result, false, 15000);
             return;
         }
 
-        stringCommand = normalizeString(stringCommand);
-        stringCommand = stringCommand
-            .replace(bankInfo.name.toUpperCase(), "")
-            .replace(bankInfo.word.toUpperCase(), "")
-            .trim();
-
-        const amount = findAmount(stringCommand, accountNumber);
-
-        const transferInfo = findTransferInfo(stringCommand, bankInfo.word, accountNumber, amount);
-
-        let [description = "", accountName = "---"] = transferInfo.split("|");
-        description = description || "";
-        accountName = accountName !== "---" ? normalizeAccountName(accountName) : "---";
-
+        const { bankInfo, accountNumber, amount, description, accountName } = parsed;
         const vietQRLink = generateVietQRLink(bankInfo, accountNumber, accountName, amount, description);
-        const userInfo = await getUserInfoData(api, senderId);
+        const userInfo = (await getUserInfoData(api, senderId)) || { name: senderName, avatar: "" };
 
         imagePath = await createBankCardImage(bankInfo, accountNumber, accountName, amount, description, vietQRLink, userInfo);
 

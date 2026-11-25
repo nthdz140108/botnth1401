@@ -5,10 +5,16 @@ import path from "path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { tempDir } from "./io-json.js";
-import { getProjectRoot } from "./env.js";
+import { getBotName, getProjectRoot } from "./env.js";
 import { acquireTempLease, releaseTempLease } from "./temp-lease-manager.js";
-import { markRestartRequestNotified, readRestartRequest, writeRestartRequest } from "./restart-request.js";
-import { exec } from "child_process";
+import {
+  consumeRestartRequest,
+  markRestartRequestNotified,
+  readRestartRequest,
+  RESTART_EXIT_CODE,
+  writeRestartRequest,
+} from "./restart-request.js";
+import { exec, spawn } from "child_process";
 import { promisify } from "util";
 
 let _sharp = null;
@@ -63,13 +69,92 @@ export function resolveAdminBotIdSync({ root = getProjectRoot(), fallback = "adm
   }
 }
 
+export function hasExternalSupervisor(env = process.env) {
+  return Boolean(
+    env?.pm_id !== undefined ||
+    env?.pm_exec_path ||
+    env?.PM2_USAGE ||
+    env?.MYBOT_SUPERVISOR
+  );
+}
+
+function spawnStandaloneReplacementProcess(delayMs = 1200) {
+  if (
+    process.env.NODE_TEST_CONTEXT ||
+    process.env.NODE_ENV === "test" ||
+    process.env.SKIP_ENV_VALIDATION
+  ) {
+    return false;
+  }
+  const entryScript = process.argv[1];
+  if (!entryScript) return false;
+  const args = process.argv.slice(2);
+  const waitMs = Math.max(400, Number(delayMs) || 1200);
+  const relaunchCode = `
+    const { spawn } = require("node:child_process");
+    const targetPid = Number(process.env.MYBOT_OLD_PID || 0);
+    const startChild = () => {
+      const nextEnv = { ...process.env };
+      delete nextEnv.MYBOT_OLD_PID;
+      delete nextEnv.MYBOT_ENTRY_SCRIPT;
+      delete nextEnv.MYBOT_ENTRY_ARGS;
+      const child = spawn(
+        process.execPath,
+        [process.env.MYBOT_ENTRY_SCRIPT, ...JSON.parse(process.env.MYBOT_ENTRY_ARGS || "[]")],
+        {
+          cwd: process.cwd(),
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          env: nextEnv,
+        }
+      );
+      child.unref();
+      process.exit(0);
+    };
+    let checks = 0;
+    const poll = () => {
+      checks += 1;
+      if (targetPid > 0 && checks < 30) {
+        try {
+          process.kill(targetPid, 0);
+          setTimeout(poll, 250);
+          return;
+        } catch {}
+      }
+      startChild();
+    };
+    setTimeout(poll, ${waitMs});
+  `;
+  try {
+    const helper = spawn(process.execPath, ["-e", relaunchCode], {
+      cwd: getProjectRoot(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        MYBOT_OLD_PID: String(process.pid),
+        MYBOT_ENTRY_SCRIPT: path.resolve(entryScript),
+        MYBOT_ENTRY_ARGS: JSON.stringify(args),
+      },
+    });
+    helper.unref?.();
+    return true;
+  } catch (error) {
+    console.error("[restartSelf] Không thể tạo tiến trình khởi động lại độc lập:", error?.message || error);
+    return false;
+  }
+}
+
 export function requestRestartForBot(botId, context = {}, { root = getProjectRoot() } = {}) {
   const descriptor = getRuntimeInstanceDescriptor();
   const uid = String(botId || (descriptor.isMain ? "admin" : descriptor.botKey));
+  const hasValidType = context.type !== undefined && context.type !== null && context.type !== "";
   if (uid === "admin") {
     const resolvedRoot = path.resolve(root);
     fs.writeFileSync(path.join(resolvedRoot, ".bot-action"), "restart", "utf8");
-    if (context.threadId && context.type) {
+    if (context.threadId && hasValidType) {
       const logsDir = path.join(resolvedRoot, "logs");
       fs.mkdirSync(logsDir, { recursive: true });
       fs.writeFileSync(
@@ -84,74 +169,131 @@ export function requestRestartForBot(botId, context = {}, { root = getProjectRoo
   return { uid, mode: "managed-process" };
 }
 
-export function restartSelf(api, message, aliasCommand, options = {}) {
-  const { threadId, type } = message;
+export async function restartSelf(api, message, aliasCommand, options = {}) {
+  const threadId = message?.threadId;
+  const type = message?.type !== undefined && message?.type !== null ? message.type : 1;
   try {
-    api.sendMessage({ msg:' 🤖 Bot đang khởi động lại 🔂', quote: message, ttl: 60000 }, threadId, type);
-    const descriptor = getRuntimeInstanceDescriptor();
-    const botId = options.botId || (descriptor.isMain ? "admin" : descriptor.botKey);
+    if (!options.suppressNotifyBeforeExit && api && typeof api.sendMessage === "function" && threadId) {
+      await api.sendMessage({ msg: " 🤖 Bot đang khởi động lại 🔂", quote: message, ttl: 60000 }, threadId, type);
+    }
+    const botId = options.botId || resolveRestartBotId(api);
     requestRestartForBot(botId, { threadId, type }, options);
-    const exitCode = descriptor.isChild ? 10 : 0;
+    const exitCode = options.exitCode ?? RESTART_EXIT_CODE;
     const scheduleExit = options.scheduleExit || ((callback, delay) => setTimeout(callback, delay));
-    if (options.exit !== false) scheduleExit(() => process.exit(exitCode), options.exitDelayMs ?? 1000);
-
+    if (options.exit !== false) {
+      const delayMs = options.exitDelayMs ?? 1000;
+      if (!options.scheduleExit && !hasExternalSupervisor(process.env)) {
+        spawnStandaloneReplacementProcess(delayMs + 400);
+      }
+      scheduleExit(() => process.exit(exitCode), delayMs);
+    }
   } catch (err) {
     console.error("Lỗi khi restart:", err);
   }
 }
-// Hàm kiểm tra file restart.txt
-export function checkRestartFile(api) {
+
+// Hàm kiểm tra file restart.txt và trạng thái restart của bot con
+export async function checkRestartFile(api, { root = getProjectRoot() } = {}) {
   try {
+    const resolvedRoot = path.resolve(root);
+    const descriptor = getRuntimeInstanceDescriptor();
     const botId = resolveRestartBotId(api);
-    const restartRequest = readRestartRequest(botId);
-    if (restartRequest?.status === "consumed" && restartRequest.threadId && restartRequest.type && !restartRequest.notifiedAt) {
-      const startedAt = new Date(restartRequest.requestedAt || Date.now());
-      const diffSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-      api.sendMessage({ msg: `🤖Bot đã khởi động lại ✔️\n🕛Thời gian khởi động lại: ${diffSeconds} giây`, ttl: 60000 }, restartRequest.threadId, restartRequest.type);
-      markRestartRequestNotified(botId);
-      return;
+    const candidateIds = Array.from(
+      new Set(
+        [
+          botId,
+          descriptor?.botKey,
+          getBotName(),
+          api?.getBotId?.() ? String(api.getBotId()) : null,
+        ]
+          .filter(Boolean)
+          .map((val) => String(val).trim())
+          .filter((val) => val && val !== "-1")
+      )
+    );
+
+    for (const candidateId of candidateIds) {
+      if (candidateId === "admin") continue;
+      let restartRequest = readRestartRequest(candidateId, resolvedRoot);
+      if (restartRequest?.status === "requested") {
+        restartRequest =
+          consumeRestartRequest(candidateId, resolvedRoot, { maxAgeMs: 120_000 }) ||
+          readRestartRequest(candidateId, resolvedRoot);
+      }
+      const hasValidReqType =
+        restartRequest?.type !== undefined &&
+        restartRequest?.type !== null &&
+        restartRequest?.type !== "";
+      if (
+        restartRequest?.status === "consumed" &&
+        restartRequest.threadId &&
+        hasValidReqType &&
+        !restartRequest.notifiedAt
+      ) {
+        const startedAt = new Date(restartRequest.requestedAt || Date.now());
+        const diffSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+        const parsedReqType = !Number.isNaN(Number(restartRequest.type))
+          ? Number(restartRequest.type)
+          : restartRequest.type;
+        await api.sendMessage(
+          {
+            msg: `🤖Bot đã khởi động lại ✔️\n🕛Thời gian khởi động lại: ${diffSeconds} giây`,
+            ttl: 60000,
+          },
+          restartRequest.threadId,
+          parsedReqType
+        );
+        markRestartRequestNotified(candidateId, resolvedRoot);
+        return true;
+      }
     }
 
-    const restartFile = path.join(getProjectRoot(), "logs", "restart.txt");
+    if (!descriptor.isMain && botId !== "admin") {
+      return false;
+    }
+
+    const restartFile = path.join(resolvedRoot, "logs", "restart.txt");
 
     if (!fs.existsSync(restartFile)) {
-      // console.log("Không tìm thấy file restart.txt, bỏ qua.");
-      return;
+      return false;
     }
 
-    const content = fs.readFileSync(restartFile, 'utf8');
-    const lines = content.split('\n');
-    const timeLine = lines.find(line => line.startsWith('time:'));
+    const content = fs.readFileSync(restartFile, "utf8");
+    const lines = content.split(/\r?\n/);
+    const timeLine = lines.find((line) => line.startsWith("time:"));
 
     if (!timeLine) {
       console.log("File restart.txt không đúng định dạng.");
-      return;
+      return false;
     }
 
-    const startTimeStr = timeLine.replace('time: ', '').trim();
+    const startTimeStr = timeLine.replace("time:", "").trim();
     const startTime = new Date(startTimeStr);
     const now = new Date();
-    const diffSeconds = Math.floor((now - startTime) / 1000);
+    const diffSeconds = Math.max(0, Math.floor((now - startTime) / 1000));
 
     // Lấy threadId và type từ file
-    const threadIdLine = lines.find(line => line.startsWith('threadId:'));
-    const typeLine = lines.find(line => line.startsWith('type:'));
-    const threadId = threadIdLine ? threadIdLine.replace('threadId: ', '').trim() : null;
-    const type = typeLine ? typeLine.replace('type: ', '').trim() : null;
+    const threadIdLine = lines.find((line) => line.startsWith("threadId:"));
+    const typeLine = lines.find((line) => line.startsWith("type:"));
+    const threadId = threadIdLine ? threadIdLine.replace("threadId:", "").trim() : null;
+    const rawType = typeLine ? typeLine.replace("type:", "").trim() : null;
 
-    if (!threadId || !type) {
+    if (!threadId || rawType === null || rawType === "") {
       console.log("Không tìm thấy threadId hoặc type trong file restart.txt.");
-      return;
+      try { fs.unlinkSync(restartFile); } catch {}
+      return false;
     }
 
+    const parsedType = !Number.isNaN(Number(rawType)) ? Number(rawType) : rawType;
     const msg = `🤖Bot đã khởi động lại ✔️\n🕛Thời gian khởi động lại: ${diffSeconds} giây`;
-    api.sendMessage({ msg, ttl: 60000 }, threadId, type);
 
-    // Xóa file restart.txt
+    // Xóa file restart.txt trước khi gửi để tránh gửi trùng nếu gọi lại
     fs.unlinkSync(restartFile);
-    // console.log("Đã gửi tin nhắn thông báo và xoá restart.txt");
+    await api.sendMessage({ msg, ttl: 60000 }, threadId, parsedType);
+    return true;
   } catch (error) {
     console.error("Lỗi khi kiểm tra file restart.txt:", error);
+    return false;
   }
 }
 

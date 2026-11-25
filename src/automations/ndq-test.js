@@ -180,147 +180,214 @@ async function handleEncryptedMessage(api, message, threadId) {
 export const ketbanCommand = {
   name: "ketban",
   description: "Gửi yêu cầu kết bạn đến tất cả thành viên trong nhóm",
-  execute: async function(api, message, groupInfo) {
+  execute: async function (api, message, groupInfo) {
     const threadId = message.threadId;
-    const idBot = getBotId();
-    
+    const idBot = String(getBotId() || appContext?.uid || "");
+
     try {
-      const count = await this.sendFriendRequestToGroupMembers(api, groupInfo, idBot, message); // Sử dụng this
+      const count = await this.sendFriendRequestToGroupMembers(api, groupInfo, idBot, message);
       return count;
     } catch (error) {
       await api.sendMessage(
         {
           msg: `Lỗi khi thực hiện lệnh ketban: ${error.message}`,
           quote: message,
-          ttl: 60000
+          ttl: 60000,
         },
         threadId,
-        message.type
+        message.type ?? 1
       );
       return 0;
     }
   },
 
-  sendFriendRequestToGroupMembers: async function(api, groupInfo, idBot, message) {
-    let count = 0;
+  sendFriendRequestToGroupMembers: async function (api, groupInfo, idBot, message) {
     const threadId = message.threadId;
+    const msgType = message.type ?? 1;
+    const botStr = String(idBot || getBotId() || appContext?.uid || "").trim();
 
-    // Tạo mảng chứa toàn bộ id từ groupInfo.memVerList và loại bỏ '_0' ở cuối
-    const memberIds = groupInfo.memVerList.map((member) => member.replace(/_0$/, ""));
-
-    // Lặp qua từng id và gửi yêu cầu kết bạn
-    for (const id of memberIds) {
-      if (id == idBot) continue;
+    let resolvedGroup = groupInfo?.gridInfoMap?.[threadId] || groupInfo;
+    if (!Array.isArray(resolvedGroup?.memVerList) && typeof api?.getGroupInfo === "function" && threadId) {
       try {
-        await api.sendFriendRequest(id, "Xin Chào, Mình quen biết bạn qua nhóm chung, xin phép được kết bạn nhé");
-        //console.log(`Đã gửi yêu cầu kết bạn đến ${id}`);
+        const fetched = await api.getGroupInfo(threadId);
+        resolvedGroup = fetched?.gridInfoMap?.[threadId] || fetched || resolvedGroup;
+      } catch {}
+    }
+
+    const rawMemberList = Array.isArray(resolvedGroup?.memVerList)
+      ? resolvedGroup.memVerList
+      : Array.isArray(resolvedGroup?.memberIds)
+        ? resolvedGroup.memberIds
+        : [];
+
+    const memberIds = [
+      ...new Set(
+        rawMemberList
+          .map((member) => String(member ?? "").trim().replace(/_\d+$/, ""))
+          .filter(Boolean)
+      ),
+    ];
+
+    const friendSet = new Set();
+    if (typeof api?.getAllFriends === "function") {
+      try {
+        const res = await api.getAllFriends(30000, 1);
+        const list = Array.isArray(res)
+          ? res
+          : Array.isArray(res?.data)
+            ? res.data
+            : Array.isArray(res?.data?.friends)
+              ? res.data.friends
+              : [];
+        for (const f of list) {
+          const fid = String(f?.userId || f?.uid || f?.id || "").trim();
+          if (fid) friendSet.add(fid);
+        }
+      } catch {}
+    }
+
+    const candidates = memberIds.filter((id) => id !== botStr && !friendSet.has(id));
+    const cappedTargets = candidates.slice(0, 20);
+
+    if (cappedTargets.length === 0) {
+      await api.sendMessage(
+        {
+          msg: "Không có thành viên mới nào trong nhóm cần gửi lời mời kết bạn!",
+          quote: message,
+          ttl: 60000,
+        },
+        threadId,
+        msgType
+      );
+      return 0;
+    }
+
+    let count = 0;
+    for (let idx = 0; idx < cappedTargets.length; idx++) {
+      const id = cappedTargets[idx];
+      try {
+        await api.sendFriendRequest(
+          id,
+          "Xin chào, mình quen biết bạn qua nhóm chung, xin phép được kết bạn nhé!"
+        );
         count++;
-      } catch (error) {
-        //console.error(`Lỗi khi gửi yêu cầu kết bạn đến ${id}:`, error.message);
+      } catch {}
+      if (idx + 1 < cappedTargets.length) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
       }
     }
 
-    // Gửi thông báo kết quả
     await api.sendMessage(
       {
-        msg: `Đã gửi yêu cầu kết bạn đến ${count}/${memberIds.length - 1}`,
+        msg:
+          `Đã gửi yêu cầu kết bạn đến ${count}/${cappedTargets.length} thành viên` +
+          (candidates.length > 20 ? ` (giới hạn an toàn 20 người/lần, còn ${candidates.length - 20} thành viên).` : "."),
         quote: message,
-        ttl: 60000        
+        ttl: 60000,
       },
       threadId,
-      message.type
+      msgType
     );
 
     return count;
-  }
+  },
 };
 
 export const ketbanTagCommand = {
   name: "kb",
   description: "Gửi yêu cầu kết bạn đến những người được tag trong tin nhắn",
-  execute: async function(api, message, groupInfo) {
+  execute: async function (api, message, groupInfo) {
     const threadId = message.threadId;
-    const idBot = getBotId();
-    
+    const idBot = String(getBotId() || appContext?.uid || "");
+
     try {
       const count = await this.sendFriendRequestToTaggedUsers(api, message, idBot);
       return count;
     } catch (error) {
       await api.sendMessage(
         {
-          msg: `Lỗi khi thực hiện lệnh ketbanTag: ${error.message}`,
+          msg: `Lỗi khi thực hiện lệnh kb: ${error.message}`,
           quote: message,
-          ttl: 60000
+          ttl: 60000,
         },
         threadId,
-        message.type
+        message.type ?? 1
       );
       return 0;
     }
   },
 
-  sendFriendRequestToTaggedUsers: async function(api, message, idBot) {
+  sendFriendRequestToTaggedUsers: async function (api, message, idBot) {
     const threadId = message.threadId;
-    const mentions = message.data?.mentions || [];
-    
-    // Log cấu trúc mentions để kiểm tra
-    console.log("Mentions:", JSON.stringify(mentions, null, 2));
+    const msgType = message.type ?? 1;
+    const rawMentions = message?.data?.mentions;
+    const mentions = Array.isArray(rawMentions)
+      ? rawMentions
+      : rawMentions && typeof rawMentions === "object"
+        ? Object.values(rawMentions)
+        : [];
+    const rawContent = typeof message?.data?.content === "string" ? message.data.content : "";
+    const botStr = String(idBot || getBotId() || appContext?.uid || "").trim();
 
     if (!mentions.length) {
       await api.sendMessage(
         {
-          msg: "Vui lòng tag ít nhất một người để gửi yêu cầu kết bạn!",
+          msg: "Vui lòng @tag ít nhất một người để gửi yêu cầu kết bạn!",
           quote: message,
-          ttl: 60000
+          ttl: 60000,
         },
         threadId,
-        message.type
+        msgType
       );
       return 0;
     }
 
     let count = 0;
-    const failedUsers = [];
+    const validMentions = mentions
+      .filter((m) => m && m.uid && String(m.uid).trim() !== botStr)
+      .slice(0, 20);
 
-    // Lặp qua từng người được tag
-    for (const mention of mentions) {
-      const userId = mention.uid;
-      const userName = mention.name || "Người dùng không xác định";
+    for (let idx = 0; idx < validMentions.length; idx++) {
+      const mention = validMentions[idx];
+      const userId = String(mention.uid).trim();
 
-      // Kiểm tra userId có hợp lệ không
-      if (!userId || typeof userId !== "string" || userId === idBot) {
-        //console.log(`Bỏ qua userId: ${userId || "không xác định"} (không hợp lệ hoặc là bot)`);
-        //failedUsers.push(`${userName} (ID: ${userId || "không xác định"}) - Lỗi: ID không hợp lệ`);
-        continue;
+      let userName = "";
+      if (
+        typeof mention.pos === "number" &&
+        typeof mention.len === "number" &&
+        mention.pos >= 0 &&
+        mention.pos + mention.len <= rawContent.length
+      ) {
+        userName = rawContent.slice(mention.pos, mention.pos + mention.len).replace(/^@+/, "").trim();
+      }
+      if (!userName) {
+        userName = mention.dName || mention.name || "";
+      }
+      if (!userName) {
+        const info = await getUserInfoData(api, userId).catch(() => null);
+        userName = info?.name || "bạn";
       }
 
       try {
         await api.sendFriendRequest(userId, `Xin chào ${userName}, mình muốn kết bạn với bạn!`);
-        
         count++;
-        // Thêm độ trễ 1 giây để tránh rate limit
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (error) {
-   
-        //failedUsers.push(`${userName} (ID: ${userId}) - Lỗi: ${error.message}`);
-      }
-    }
+      } catch {}
 
-    // Tạo thông báo kết quả
-    let resultMessage = `Đã gửi yêu cầu kết bạn đến ${count}/${mentions.length} người được tag.`;
-    if (failedUsers.length > 0) {
-      //resultMessage += `\nKhông thể gửi đến:\n- ${failedUsers.join("\n- ")}`;
+      if (idx + 1 < validMentions.length) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
     }
 
     await api.sendMessage(
       {
-        msg: resultMessage,
+        msg: `Đã gửi yêu cầu kết bạn đến ${count}/${validMentions.length} người được tag.`,
         quote: message,
+        ttl: 60000,
       },
       threadId,
-      message.type
+      msgType
     );
 
     return count;
-  }
+  },
 };

@@ -1,16 +1,17 @@
+import crypto from "node:crypto";
 import fs from "fs";
 import path from "path";
-import fetch from "node-fetch";
 import { createCanvas, loadImage } from "canvas";
 import { getUserInfoData } from "./user-info.js";
-import { getQRLinkFactory } from "../../api-zalo/apis/getQRZalo.js";
 import {
   sendMessageCompleteRequest,
   sendMessageWarningRequest,
 } from "../chat-zalo/chat-style/chat-style.js";
 import { tempDir } from "../../utils/io-json.js";
 import { deleteFile } from "../../utils/util.js";
+import { ensureCanvasFontsRegistered } from "../../utils/canvas/register-fonts.js";
 
+const MAX_CARDQR_MENTIONS = 5;
 
 async function ensureTempDir() {
   if (!tempDir) throw new Error("tempDir is not defined");
@@ -19,9 +20,9 @@ async function ensureTempDir() {
 
 async function downloadImageTemp(url, prefix, uid) {
   await ensureTempDir();
-  const filePath = path.join(tempDir, `${prefix}_${uid}_${Date.now()}.png`);
+  const filePath = path.join(tempDir, `${prefix}_${uid}_${crypto.randomUUID()}.png`);
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Không tải được ảnh (${res.status})`);
 
   const buffer = Buffer.from(await res.arrayBuffer());
@@ -30,6 +31,7 @@ async function downloadImageTemp(url, prefix, uid) {
 }
 
 async function drawBusinessCardQR(userInfo, qrPath, uid) {
+  ensureCanvasFontsRegistered();
   await ensureTempDir();
 
   const width = 700;
@@ -138,7 +140,7 @@ async function drawBusinessCardQR(userInfo, qrPath, uid) {
   ctx.font = "29px sans-serif";
   ctx.fillText("Bấm nút quét mã QR để kết bạn", width / 2, height - 110);
 
-  const filePath = path.join(tempDir, `business_card_${uid}_${Date.now()}.png`);
+  const filePath = path.join(tempDir, `business_card_${uid}_${crypto.randomUUID()}.png`);
   const buffer = canvas.toBuffer("image/png");
   await fs.promises.writeFile(filePath, buffer);
 
@@ -178,6 +180,8 @@ export async function userBussinessCardQrCommand(api, message) {
     if (senderId) targetUserIds.push(senderId);
   }
 
+  targetUserIds = [...new Set(targetUserIds)];
+
   if (targetUserIds.length === 0) {
     await sendMessageWarningRequest(api, message, {
       caption: "❌ Không xác định được ID người gửi/tag!",
@@ -185,20 +189,29 @@ export async function userBussinessCardQrCommand(api, message) {
     return;
   }
 
+  if (targetUserIds.length > MAX_CARDQR_MENTIONS) {
+    await sendMessageWarningRequest(api, message, {
+      caption: `⚠️ Mỗi lần chỉ tạo tối đa ${MAX_CARDQR_MENTIONS} thẻ QR (đang xử lý ${MAX_CARDQR_MENTIONS} người đầu tiên).`,
+    }, 30000);
+    targetUserIds = targetUserIds.slice(0, MAX_CARDQR_MENTIONS);
+  }
+
   for (const userId of targetUserIds) {
     let qrPath = null;
     let cardPath = null;
     try {
-      const getQRLink = getQRLinkFactory(api);
-      const qrData = await getQRLink(userId);
+      if (typeof api?.getQRLink !== "function") {
+        throw new Error("API getQRLink không khả dụng");
+      }
+      const qrData = await api.getQRLink(userId);
       const qrCodeUrl = qrData?.[userId] || qrData?.url || null;
-      if (!qrCodeUrl) throw new Error(`Không lấy được QR cho user ${userId}`);
+      if (!qrCodeUrl) throw new Error("Người dùng đã tắt mã QR Zalo hoặc không lấy được QR");
 
       qrPath = await downloadImageTemp(qrCodeUrl, "qrzalo", userId);
-      const userInfo = await getUserInfoData(api, userId);
+      const userInfo = (await getUserInfoData(api, userId)) || { name: "Người dùng", avatar: "" };
       cardPath = await drawBusinessCardQR(userInfo, qrPath, userId);
 
-      await sendMessageCompleteRequest(api, message, { caption: ``, imagePath: cardPath }, 3600000);
+      await sendMessageCompleteRequest(api, message, { caption: "", imagePath: cardPath }, 3600000);
     } catch (err) {
       console.error("Lỗi gửi Business Card QR:", err);
       await sendMessageWarningRequest(api, message, {

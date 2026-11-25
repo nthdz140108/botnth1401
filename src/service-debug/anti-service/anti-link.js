@@ -164,7 +164,7 @@ export async function handleAntiLinkCommand(
   const threadId = message.threadId;
   let isChangeSetting = false;
   const content = removeMention(message);
-  const parts = content.split(" ");
+  const parts = content.trim().split(/\s+/);
   const subcommand = parts[1]?.toLowerCase();
   const linkSettings = await readLinkSettings();
   if (!linkSettings[threadId]) {
@@ -280,7 +280,11 @@ async function handleLinkMessage(
   }
 
   if (!isDeleteLink && isImage) {
-    const linkImage = message.data?.content?.href;
+    const linkImage =
+      message.data?.content?.hdUrl ||
+      message.data?.content?.oriUrl ||
+      message.data?.content?.href ||
+      message.data?.content?.normalUrl;
     if (linkImage) {
       const qrScanFn = mockQrScanner || scanQRCode;
       const result = await Promise.resolve()

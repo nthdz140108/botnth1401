@@ -319,7 +319,8 @@ export async function executeCommand(context = {}, definition) {
       requiredRole: permissionPolicy.requiredRole,
     };
   }
-  const definitionPermissionName = definition.permission === "adminBotOrGroup" ? "adminBox" : definition.permission;
+  const effectiveConfiguredPerm = context.runtimePermission || definition.permission;
+  const definitionPermissionName = effectiveConfiguredPerm === "adminBotOrGroup" ? "adminBox" : effectiveConfiguredPerm;
   const requiredRole = roleSatisfies(permissionPolicy.requiredRole, definitionPermissionName)
     ? permissionPolicy.requiredRole
     : definitionPermissionName === "all" ? "member" : definitionPermissionName;

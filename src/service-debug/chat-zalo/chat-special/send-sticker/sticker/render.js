@@ -1,5 +1,10 @@
 import fs from "node:fs";
 import sharp from "sharp";
+import { createCanvas, registerFont } from "canvas";
+import {
+  ensureCanvasFontsRegistered,
+  resolveCanvasFontPath,
+} from "../../../../../utils/canvas/register-fonts.js";
 
 export const STICKER_SIZE = 512;
 export const MAX_DURATION_SEC = 8;
@@ -14,22 +19,29 @@ const VIETNAMESE_FONT_CANDIDATES = [
 ];
 
 function pickFontPath(svgFontPath) {
-  if (svgFontPath) return svgFontPath;
-  for (const candidate of VIETNAMESE_FONT_CANDIDATES) {
+  const resolved = resolveCanvasFontPath([
+    svgFontPath,
+    ...VIETNAMESE_FONT_CANDIDATES,
+  ]);
+  if (resolved) return resolved;
+  if (svgFontPath) {
     try {
-      if (fs.existsSync(candidate)) return candidate;
+      if (fs.existsSync(svgFontPath)) return svgFontPath;
     } catch {}
   }
   return null;
 }
 
-function escapeXml(text) {
-  return String(text ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+function resolveStickerFontFamily(fontPath) {
+  ensureCanvasFontsRegistered();
+  const chosenPath = pickFontPath(fontPath);
+  if (fontPath && chosenPath === fontPath) {
+    try {
+      registerFont(chosenPath, { family: "StickerCustomFont", weight: "bold" });
+      return '"StickerCustomFont", "BeVietnamPro", "NotoSans", "Arial", sans-serif';
+    } catch {}
+  }
+  return '"BeVietnamPro", "UTMAvoBold", "NotoSans", "Arial", sans-serif';
 }
 
 function wrapText(text, maxChars) {
@@ -53,83 +65,103 @@ function wrapText(text, maxChars) {
 }
 
 export async function renderTextSticker({ text, fontPath, width = STICKER_SIZE, height = STICKER_SIZE }) {
+  const fontFamily = resolveStickerFontFamily(fontPath);
   const lines = wrapText(text, 18);
   if (lines.length === 0) lines.push("");
-  const fontSize = Math.max(18, Math.floor((width / Math.max(lines.length, 1)) * 0.6));
-  const svgLines = lines
-    .map((line, index) => {
-      const yOffset = (index + 0.7) * fontSize * 1.1;
-      return (
-        `<text x="50%" y="${yOffset}" text-anchor="middle" ` +
-        `font-family="sans-serif" font-size="${fontSize}" font-weight="700" ` +
-        `fill="#ffffff" stroke="#101010" stroke-width="3" paint-order="stroke">` +
-        escapeXml(line) +
-        `</text>`
-      );
-    })
-    .join("");
 
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <defs>
-    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="3" />
-      <feOffset dx="0" dy="2" result="offset" />
-      <feComponentTransfer><feFuncA type="linear" slope="0.55" /></feComponentTransfer>
-      <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
-    </filter>
-  </defs>
-  <g filter="url(#shadow)">${svgLines}</g>
-</svg>`;
+  const fontSize = Math.max(18, Math.min(96, Math.floor((width / Math.max(lines.length, 1)) * 0.55)));
+  const lineHeight = fontSize * 1.18;
+  const totalBlockHeight = lines.length * lineHeight;
+  const startY = Math.max(fontSize * 0.75, (height - totalBlockHeight) / 2 + fontSize * 0.55);
 
-  return sharp(Buffer.from(svg))
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = `bold ${fontSize}px ${fontFamily}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const y = startY + index * lineHeight;
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 3;
+    ctx.strokeStyle = "#101010";
+    ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.12));
+    ctx.strokeText(line, width / 2, y, width - 24);
+    ctx.restore();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(line, width / 2, y, width - 24);
+  }
+
+  return sharp(canvas.toBuffer("image/png"))
     .ensureAlpha()
     .png()
     .toBuffer();
 }
 
-export async function renderTextVideoFrames({ text, color, frames }) {
+export async function renderTextVideoFrames({ text, color, frames, fontPath }) {
+  const fontFamily = resolveStickerFontFamily(fontPath);
   const lines = wrapText(text, 18);
   if (lines.length === 0) lines.push("");
-  const fontSize = Math.max(20, Math.floor((STICKER_SIZE / Math.max(lines.length, 1)) * 0.7));
+
+  const fontSize = Math.max(20, Math.min(96, Math.floor((STICKER_SIZE / Math.max(lines.length, 1)) * 0.6)));
   const width = STICKER_SIZE;
-  const height = Math.max(STICKER_SIZE, lines.length * fontSize * 1.2);
+  const height = Math.max(STICKER_SIZE, Math.ceil(lines.length * fontSize * 1.25));
+  const lineHeight = fontSize * 1.18;
+  const startY = Math.max(fontSize * 0.75, (height - lines.length * lineHeight) / 2 + fontSize * 0.55);
+
   const out = [];
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+
   for (let frameIndex = 0; frameIndex < frames; frameIndex += 1) {
+    if (frameIndex > 0 && frameIndex % 10 === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     const t = frameIndex / Math.max(frames - 1, 1);
-    const offsetX = Math.floor((width * 0.6) - width * t);
+    const offsetX = Math.floor(width * 0.6 - width * t);
     let fill = "#ffffff";
     if (color === "rainbow") {
-      const hue = Math.floor((t + frameIndex / frames) * 360) % 360;
-      fill = `hsl(${hue},85%,60%)`;
-    } else {
+      const hue = Math.floor((t + frameIndex / Math.max(frames, 1)) * 360) % 360;
+      fill = `hsl(${hue}, 85%, 60%)`;
+    } else if (color) {
       fill = color;
     }
-    const svgLines = lines
-      .map((line, index) => {
-        const yOffset = (index + 0.7) * fontSize * 1.1;
-        return (
-          `<text x="${(offsetX + width) % width}" y="${yOffset}" text-anchor="start" ` +
-          `font-family="sans-serif" font-size="${fontSize}" font-weight="700" ` +
-          `fill="${fill}" stroke="#101010" stroke-width="3" paint-order="stroke">` +
-          escapeXml(line) +
-          `</text>`
-        );
-      })
-      .join("");
-    const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <defs>
-    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="3" />
-      <feOffset dx="0" dy="2" result="offset" />
-      <feComponentTransfer><feFuncA type="linear" slope="0.55" /></feComponentTransfer>
-      <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
-    </filter>
-  </defs>
-  <g filter="url(#shadow)">${svgLines}</g>
-</svg>`;
-    out.push(await sharp(Buffer.from(svg)).ensureAlpha().png().toBuffer());
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.font = `bold ${fontSize}px ${fontFamily}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+
+    const x = ((offsetX % width) + width) % width;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const y = startY + index * lineHeight;
+
+      ctx.save();
+      ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+      ctx.shadowBlur = 5;
+      ctx.shadowOffsetY = 2;
+      ctx.strokeStyle = "#101010";
+      ctx.lineWidth = Math.max(4, Math.round(fontSize * 0.12));
+      ctx.strokeText(line, x, y);
+      ctx.restore();
+
+      ctx.fillStyle = fill;
+      ctx.fillText(line, x, y);
+    }
+
+    out.push(await sharp(canvas.toBuffer("image/png")).ensureAlpha().png().toBuffer());
   }
   return out;
 }

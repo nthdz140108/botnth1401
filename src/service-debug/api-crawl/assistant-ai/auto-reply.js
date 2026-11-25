@@ -3,47 +3,79 @@ import path from "path";
 import { LRUCache } from "lru-cache";
 import { removeMention } from "../../../utils/format-util.js";
 import { getGlobalPrefix } from "../../service.js";
+import { getBotId } from "../../../utils/env.js";
 import { sendMessageStateQuote } from "../../chat-zalo/chat-style/chat-style.js";
 import { chatGeminiHandle } from "./gemini.js";
 import { appContext } from "../../../api-zalo/context.js";
 import { showCooldownClock } from "../../../utils/interaction-countdown.js";
+import { getActiveRuntimeContext } from "../../../utils/io-json.js";
+import {
+  extractCleanArgs,
+  safeThreadType,
+} from "../../../commands/shared/command-input-utils.js";
 
-const configPath = path.join(process.cwd(), "assets/json-data/command-config.json");
-const commandUsage = {};
+const legacyConfigPath = path.join(process.cwd(), "assets/json-data/command-config.json");
+const commandUsage = new Map();
 export const senderNameCache = new LRUCache({
   max: 200,
   ttl: 10 * 60 * 1000,
 });
-let cachedCommandConfig = null;
-let cachedCommandConfigAt = 0;
+const cachedConfigsByPath = new Map();
+
+function resolveConfigPath() {
+  try {
+    const ctx = getActiveRuntimeContext();
+    if (ctx?.dataDir) {
+      return path.join(ctx.dataDir, "command-config.json");
+    }
+  } catch {
+    // fallback to legacy path
+  }
+  return legacyConfigPath;
+}
+
+function normalizeConfigData(raw) {
+  if (raw && typeof raw === "object" && Array.isArray(raw.commands)) {
+    return raw;
+  }
+  return { commands: [] };
+}
 
 function loadCommandJson() {
+  const targetPath = resolveConfigPath();
   const now = Date.now();
-  if (cachedCommandConfig && now - cachedCommandConfigAt < 30000) {
-    return cachedCommandConfig;
+  const cached = cachedConfigsByPath.get(targetPath);
+  if (cached && now - cached.at < 30000) {
+    return cached.data;
   }
   try {
-    if (!fs.existsSync(configPath)) {
+    const readCandidate = fs.existsSync(targetPath)
+      ? targetPath
+      : fs.existsSync(legacyConfigPath)
+        ? legacyConfigPath
+        : null;
+    if (!readCandidate) {
       const initial = { commands: [] };
-      fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify(initial, null, 2));
-      cachedCommandConfig = initial;
-      cachedCommandConfigAt = now;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.writeFileSync(targetPath, JSON.stringify(initial, null, 2));
+      cachedConfigsByPath.set(targetPath, { data: initial, at: now });
       return initial;
     }
-    cachedCommandConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    cachedCommandConfigAt = now;
-    return cachedCommandConfig;
+    const parsed = normalizeConfigData(JSON.parse(fs.readFileSync(readCandidate, "utf8")));
+    cachedConfigsByPath.set(targetPath, { data: parsed, at: now });
+    return parsed;
   } catch {
-    return cachedCommandConfig || { commands: [] };
+    return cached?.data || { commands: [] };
   }
 }
 
 function saveCommandJson(data) {
-  cachedCommandConfig = data;
-  cachedCommandConfigAt = Date.now();
-  fs.promises.mkdir(path.dirname(configPath), { recursive: true })
-    .then(() => fs.promises.writeFile(configPath, JSON.stringify(data, null, 2)))
+  const targetPath = resolveConfigPath();
+  const normalized = normalizeConfigData(data);
+  cachedConfigsByPath.set(targetPath, { data: normalized, at: Date.now() });
+  fs.promises
+    .mkdir(path.dirname(targetPath), { recursive: true })
+    .then(() => fs.promises.writeFile(targetPath, JSON.stringify(normalized, null, 2)))
     .catch(() => {});
 }
 
@@ -82,12 +114,13 @@ export async function getSenderName(api, uid, fallbackName = "") {
 
 function getCommandCountdown(name) {
   const config = loadCommandJson();
-  return config.commands.find(c => c.name === name)?.countdown || 30; // Mặc định 30 giây
+  const found = config.commands.find((c) => c.name === name);
+  return Number.isFinite(found?.countdown) ? found.countdown : 30;
 }
 
 function setCommandCountdown(name, seconds) {
   const config = loadCommandJson();
-  const command = config.commands.find(c => c.name === name);
+  const command = config.commands.find((c) => c.name === name);
   if (command) {
     command.countdown = seconds;
   } else {
@@ -99,30 +132,33 @@ function setCommandCountdown(name, seconds) {
 export async function handleAutoReplyCommand(api, message, aliasCommand, groupSettings) {
   const prefix = getGlobalPrefix();
   const threadId = message.threadId;
-  const content = removeMention(message).trim().toLowerCase();
-  const query = content.replace(`${prefix}${aliasCommand}`, "").trim();
-  const args = query.split(/\s+/);
-  const command = args[0];
+  const threadType = safeThreadType(message);
+  const args = extractCleanArgs(message, prefix, aliasCommand || "autoreply");
+  const command = (args[0] || "").toLowerCase();
 
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
 
   if (command === "setcountdown") {
     if (args.length < 2) {
-      await api.sendMessage({ msg: "⚠️ Bạn cần nhập số giây!", ttl: 30000 }, threadId, message.type);
+      await api.sendMessage({ msg: "⚠️ Bạn cần nhập số giây!", ttl: 30000 }, threadId, threadType);
       return true;
     }
 
-    const seconds = parseInt(args[1]);
-    if (isNaN(seconds) || seconds < 0) {
-      await api.sendMessage({ msg: "❌ Vui lòng nhập số giây hợp lệ!", ttl: 30000 }, threadId, message.type);
+    const seconds = Number.parseInt(args[1], 10);
+    if (Number.isNaN(seconds) || seconds < 0) {
+      await api.sendMessage({ msg: "❌ Vui lòng nhập số giây hợp lệ!", ttl: 30000 }, threadId, threadType);
       return true;
     }
 
     setCommandCountdown("autoreply", seconds);
-    await api.sendMessage({
-      msg: `✅ Đã cập nhật countdown cho Auto-AI: ${seconds} giây`,
-      ttl: 30000,
-    }, threadId, message.type);
+    await api.sendMessage(
+      {
+        msg: `✅ Đã cập nhật countdown cho Auto-AI: ${seconds} giây`,
+        ttl: 30000,
+      },
+      threadId,
+      threadType
+    );
     return true;
   }
 
@@ -135,30 +171,38 @@ export async function handleAutoReplyCommand(api, message, aliasCommand, groupSe
   }
 
   const status = groupSettings[threadId].autoReplyCommand;
-  const countdown = getCommandCountdown("autoreply");
-  await sendMessageStateQuote(api, message, `Chức năng Auto-AI đã được ${status ? "bật" : "tắt"}!`, status, 30000);
+  await sendMessageStateQuote(
+    api,
+    message,
+    `Chức năng Auto-AI đã được ${status ? "bật" : "tắt"}!`,
+    status,
+    30000
+  );
   return true;
 }
 
 export async function handleAutoReplyGemini(api, message, groupSettings, isSelf) {
   if (isSelf || message?.isSelf) return false;
   const threadId = message.threadId;
-  if (!groupSettings[threadId]?.autoReplyCommand) return false;
+  if (!groupSettings?.[threadId]?.autoReplyCommand) return false;
   const mentions = message.data?.mentions;
   if (!Array.isArray(mentions) || mentions.length === 0) return false;
+
   const botId = String(
-    api?.getBotId?.() || api?.getOwnId?.() || api?.currentUserId || appContext.uid || ""
+    api?.getBotId?.() || api?.getOwnId?.() || api?.currentUserId || getBotId() || appContext.uid || ""
   ).trim();
   const botMentioned = Boolean(botId) && mentions.some((m) => String(m?.uid || "") === botId);
   if (!botMentioned) return false;
+
   const content = removeMention(message).trim();
   if (!content) return false;
 
   const commandName = "autoreply";
   const cooldown = getCommandCountdown(commandName) * 1000;
-  const cooldownKey = `${threadId}:${commandName}`;
+  const instanceKey = botId || "default";
+  const cooldownKey = `${instanceKey}:${threadId}:${commandName}`;
   const currentTime = Date.now();
-  const lastUsage = commandUsage[cooldownKey] || 0;
+  const lastUsage = commandUsage.get(cooldownKey) || 0;
   const timeLeft = cooldown - (currentTime - lastUsage);
 
   if (timeLeft > 0) {
@@ -166,7 +210,7 @@ export async function handleAutoReplyGemini(api, message, groupSettings, isSelf)
     return true;
   }
 
-  commandUsage[cooldownKey] = Date.now();
+  commandUsage.set(cooldownKey, currentTime);
 
   try {
     const senderName = await getSenderName(api, message.data?.uidFrom, message.data?.dName);
@@ -177,18 +221,10 @@ export async function handleAutoReplyGemini(api, message, groupSettings, isSelf)
         dName: senderName,
       },
     };
-    const reply = await chatGeminiHandle(api, messageWithSender);
-    if (reply) {
-      const isQuoteSupported = !["webchat", "group.poll"].includes(message?.data?.msgType);
-      const payload = { msg: reply, ttl: 60000 }; // TTL 60s
-      if (isQuoteSupported) {
-        payload.quote = message;
-      }
-      await api.sendMessage(payload, threadId, message.type);
-    }
+    await chatGeminiHandle(api, messageWithSender);
   } catch (err) {
-    console.error("Lỗi gọi Gemini:", err);
-    await api.sendMessage({ msg: "Lỗi xử lý AI", ttl: 60000 }, threadId, message.type);
+    console.error("Lỗi gọi Gemini Auto-Reply:", err);
+    await api.sendMessage({ msg: "Lỗi xử lý AI", ttl: 60000 }, threadId, safeThreadType(message));
   }
 
   return true;

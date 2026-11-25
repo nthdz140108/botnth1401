@@ -1,140 +1,256 @@
-import fetch from 'node-fetch';
-import { sendMessageFactory } from  '../../../api-zalo/apis/sendMessage.js';
-import { getGlobalPrefix } from '../../../service-debug/service.js';
-import { nameServer } from '../../../utils/server-config.js';
+import fetch from "node-fetch";
+import { getGlobalPrefix } from "../../../service-debug/service.js";
+import { removeMention } from "../../../utils/format-util.js";
+import { MessageType } from "../../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getRawMessageText,
+} from "../../shared/command-input-utils.js";
 
 export const des = {
-  name: 'quocgia',
+  name: "quocgia",
   type: 1,
-  permission: 'all',
+  permission: "all",
   countdown: 30,
   active: true,
 };
 
-// Hàm ghép dòng tag + tên server
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line);
+const VI_COUNTRY_MAP = Object.freeze({
+  "việt nam": "vietnam",
+  "viet nam": "vietnam",
+  "nhật bản": "japan",
+  "nhat ban": "japan",
+  "nhật": "japan",
+  "hàn quốc": "south korea",
+  "han quoc": "south korea",
+  "nam hàn": "south korea",
+  "triều tiên": "north korea",
+  "bắc triều tiên": "north korea",
+  "trung quốc": "china",
+  "trung quoc": "china",
+  "đài loan": "taiwan",
+  "dai loan": "taiwan",
+  "mỹ": "united states",
+  "hoa kỳ": "united states",
+  "hoa ky": "united states",
+  "hợp chủng quốc hoa kỳ": "united states",
+  "anh": "united kingdom",
+  "vương quốc anh": "united kingdom",
+  "pháp": "france",
+  "phap": "france",
+  "đức": "germany",
+  "duc": "germany",
+  "nga": "russia",
+  "liên bang nga": "russia",
+  "thái lan": "thailand",
+  "thai lan": "thailand",
+  "úc": "australia",
+  "uc": "australia",
+  "ấn độ": "india",
+  "an do": "india",
+  "lào": "laos",
+  "lao": "laos",
+  "campuchia": "cambodia",
+  "miến điện": "myanmar",
+  "đông timor": "timor-leste",
+  "ý": "italy",
+  "italia": "italy",
+  "tây ban nha": "spain",
+  "tay ban nha": "spain",
+  "bồ đào nha": "portugal",
+  "bo dao nha": "portugal",
+  "hà lan": "netherlands",
+  "ha lan": "netherlands",
+  "bỉ": "belgium",
+  "thụy sĩ": "switzerland",
+  "thuy si": "switzerland",
+  "thụy điển": "sweden",
+  "thuy dien": "sweden",
+  "na uy": "norway",
+  "đan mạch": "denmark",
+  "phần lan": "finland",
+  "ba lan": "poland",
+  "áo": "austria",
+  "hy lạp": "greece",
+  "thổ nhĩ kỳ": "turkey",
+  "tho nhi ky": "turkey",
+  "ai cập": "egypt",
+  "nam phi": "south africa",
+  "ả rập xê út": "saudi arabia",
+  "uae": "united arab emirates",
+  "mê-hi-cô": "mexico",
+  "bra-xin": "brazil",
+  "ác-hen-ti-na": "argentina",
+});
 
-  const tagLine = lines.find(line => line.startsWith('@'));
-  const boldLine = lines.find(line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line));
+const FIELDS = [
+  "name",
+  "capital",
+  "region",
+  "subregion",
+  "population",
+  "languages",
+  "currencies",
+  "timezones",
+  "continents",
+  "maps",
+  "flags",
+].join(",");
 
-  return [tagLine, boldLine].filter(Boolean).join(' ');
-};
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-export async function handleQuocgiaCommand(api, message) {
+function matchesCountryCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "quocgia").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
+
+async function fetchCountryData(rawQuery) {
+  const normalizedKey = String(rawQuery || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  const mappedQuery = VI_COUNTRY_MAP[normalizedKey] || rawQuery.trim();
+
+  const candidateUrls = [
+    `https://restcountries.com/v3.1/name/${encodeURIComponent(mappedQuery)}?fullText=true&fields=${FIELDS}`,
+    `https://restcountries.com/v3.1/name/${encodeURIComponent(mappedQuery)}?fields=${FIELDS}`,
+    `https://restcountries.com/v3.1/translation/${encodeURIComponent(rawQuery.trim())}?fields=${FIELDS}`,
+  ];
+
+  if (/^[a-zA-Z]{2,3}$/.test(rawQuery.trim())) {
+    candidateUrls.push(
+      `https://restcountries.com/v3.1/alpha/${encodeURIComponent(rawQuery.trim())}?fields=${FIELDS}`
+    );
+  }
+
+  for (const url of candidateUrls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) return data[0];
+      if (data && typeof data === "object" && data.name) return data;
+    } catch {}
+  }
+
+  return null;
+}
+
+export async function handleQuocgiaCommand(api, message, aliasCommand = "quocgia") {
   const threadId = message.threadId;
-  const uid = message.data.uidFrom;
-  const sendMessage = sendMessageFactory(api);
-  const content = message.data.content.trim();
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "quocgia";
+  const threadType = safeThreadType(
+    message,
+    threadId && message?.data?.uidFrom && String(threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage
+  );
 
-  let isGroup = threadId !== uid;
-  if (typeof message.isGroup !== 'undefined') isGroup = message.isGroup;
-
-  if (!content.startsWith(`${currentPrefix}quocgia`)) {
-    return sendMessage(
+  if (!matchesCountryCommand(message, currentPrefix, effectiveAlias)) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}quocgia <tên quốc gia> 🚨`,
-        ttl: 60000
+        msg: `❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}${effectiveAlias} <tên quốc gia>`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
 
-  const args = content.slice(currentPrefix.length + 7).trim().split(/\s+/);
-  if (args.length < 1) {
-    return sendMessage(
+  const query = extractCommandBody(message, currentPrefix, effectiveAlias);
+  if (!query) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Thiếu tên quốc gia! Dùng: ${currentPrefix}quocgia <tên quốc gia>`,
-        ttl: 60000
+        msg: `❌ Thiếu tên quốc gia! Dùng: ${currentPrefix}${effectiveAlias} <tên quốc gia>\n👉 Ví dụ: ${currentPrefix}${effectiveAlias} Nhật Bản`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
-
-  const query = args.join(' ').trim();
-  const countryName = encodeURIComponent(query);
-  const fields = [
-    'name',
-    'capital',
-    'region',
-    'population',
-    'languages',
-    'timezones',
-    'continents',
-    'maps',
-    'flags'
-  ].join(',');
-  const url = `https://restcountries.com/v3.1/name/${countryName}?fields=${fields}`;
 
   try {
-    const response = await fetch(url, { timeout: 15000 });
-    const data = await response.json();
-
-    if (!response.ok || !Array.isArray(data) || data.length === 0) {
-      return sendMessage(
+    const info = await fetchCountryData(query);
+    if (!info) {
+      return api.sendMessage(
         {
-          msg: `${getCleanNameServer()}❌ Không tìm thấy thông tin cho quốc gia "${query}".`,
-          ttl: 60000
+          msg: `❌ Không tìm thấy thông tin cho quốc gia "${query}".`,
+          ttl: 60000,
         },
         threadId,
-        isGroup ? 1 : 0
+        threadType
       );
     }
 
-    const info = data[0];
     const name = info?.name?.common || query;
-    const officialName = info?.name?.official || 'N/A';
-    const capital = Array.isArray(info?.capital) && info.capital[0] ? info.capital[0] : 'N/A';
-    const region = info?.region || 'N/A';
-    const population = typeof info?.population === 'number' ? info.population.toLocaleString('vi-VN') : 'N/A';
-    const languages = info?.languages ? Object.values(info.languages).join(', ') : 'N/A';
-    const timezones = Array.isArray(info?.timezones) ? info.timezones.join(', ') : 'N/A';
-    const continents = Array.isArray(info?.continents) ? info.continents.join(', ') : 'N/A';
-    const googleMaps = info?.maps?.googleMaps || 'N/A';
-    const openStreetMaps = info?.maps?.openStreetMaps || 'N/A';
+    const officialName = info?.name?.official || "N/A";
+    const capital =
+      Array.isArray(info?.capital) && info.capital[0] ? info.capital[0] : "N/A";
+    const region = [info?.region, info?.subregion].filter(Boolean).join(" — ") || "N/A";
+    const population =
+      typeof info?.population === "number"
+        ? info.population.toLocaleString("vi-VN")
+        : "N/A";
+    const languages = info?.languages
+      ? Object.values(info.languages).join(", ")
+      : "N/A";
+    const currencies = info?.currencies
+      ? Object.values(info.currencies)
+          .map((c) => (c?.symbol ? `${c.name} (${c.symbol})` : c?.name))
+          .filter(Boolean)
+          .join(", ")
+      : "N/A";
+    const timezones = Array.isArray(info?.timezones)
+      ? info.timezones.join(", ")
+      : "N/A";
+    const continents = Array.isArray(info?.continents)
+      ? info.continents.join(", ")
+      : "N/A";
+    const googleMaps = info?.maps?.googleMaps || "N/A";
+    const openStreetMaps = info?.maps?.openStreetMaps || "N/A";
     const flagsPNG = info?.flags?.png || null;
     const flagsSVG = info?.flags?.svg || null;
 
-    const msg = `${getCleanNameServer()}🌎 Thông tin quốc gia 🌎
+    const lines = [
+      `🌎 THÔNG TIN QUỐC GIA`,
+      ``,
+      `🗺️ Quốc gia: ${name} (${officialName})`,
+      `🏰 Thủ đô: ${capital}`,
+      `🌍 Khu vực: ${region}`,
+      `👥 Dân số: ${population}`,
+      `🗣️ Ngôn ngữ: ${languages}`,
+      `💱 Tiền tệ: ${currencies}`,
+      `⏰ Múi giờ: ${timezones}`,
+      `🌐 Lục địa: ${continents}`,
+      `📍 Google Maps: ${googleMaps}`,
+      `🗾 OpenStreetMap: ${openStreetMaps}`,
+      flagsPNG || flagsSVG ? `\n🔱 Quốc kỳ:` : null,
+      flagsPNG ? `📸 [PNG] ${flagsPNG}` : null,
+      flagsSVG ? `🖼️ [SVG] ${flagsSVG}` : null,
+    ].filter(Boolean);
 
-🗺️ Quốc gia: ${name} (${officialName})
-🏰 Thủ đô: ${capital}
-🌍 Khu vực: ${region}
-👥 Dân số: ${population}
-🗣️ Ngôn ngữ: ${languages}
-⏰ Múi giờ: ${timezones}
-🌐 Lục địa: ${continents}
-📍 Google Maps: ${googleMaps}
-🗾 OpenStreetMap: ${openStreetMaps}
-${flagsPNG || flagsSVG ? '\n🔱 Cờ:' : ''}
-${flagsPNG ? `📸 [PNG] ${flagsPNG}` : ''}
-${flagsSVG ? `🖼️ [SVG] ${flagsSVG}` : ''}
-
-👤 Founder: Thanh Hung`;
-
-    return sendMessage(
+    return api.sendMessage(
       {
-        msg: msg,
-        ttl: 3600000
+        msg: lines.join("\n"),
+        ttl: 3600000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
-  } catch (err) {
-    console.error('❌ Quocgia Error:', err);
-    return sendMessage(
+  } catch {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Lỗi: Đã xảy ra lỗi khi tìm thông tin quốc gia. Vui lòng thử lại sau.`,
-        ttl: 60000
+        msg: `❌ Đã xảy ra lỗi khi tra cứu thông tin quốc gia "${query}". Vui lòng thử lại sau.`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
 }

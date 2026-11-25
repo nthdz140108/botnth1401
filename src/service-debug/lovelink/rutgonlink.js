@@ -1,92 +1,167 @@
 import fetch from "node-fetch";
 import { getGlobalPrefix } from "../service.js";
-
 import {
-  sendMessageStateQuote,
-  sendMessageFailed
+  sendMessageStateQuote,
+  sendMessageFailed,
 } from "../chat-zalo/chat-style/chat-style.js";
+import { removeMention } from "../../utils/format-util.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getQuoteData,
+  getQuotedText,
+  getRawMessageText,
+} from "../../commands/shared/command-input-utils.js";
 
-import { nameServer } from "../../utils/server-config.js";
-
-// ✅ Lấy header cho tin nhắn
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line) // <--- ĐÃ SỬA LỖI REGEX
-  );
-
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
-
-// ✅ Thông tin mô tả lệnh
 export const des = {
-  name: "rutgonlink",
-  type: 1,
-  permission: "all",
-  countdown: 5,
-  active: true,
+  name: "rutgonlink",
+  type: 1,
+  permission: "all",
+  countdown: 5,
+  active: true,
 };
 
-// ✅ Hàm xử lý chính cho lệnh
-export async function handleRutgonlinkCommand(api, message) {
-  const content = message.data.content.trim();
-  const currentPrefix = getGlobalPrefix();
+const SHORTEN_TIMEOUT_MS = 8000;
 
-  // Kiểm tra nếu tin nhắn bắt đầu bằng lệnh này
-  if (!content.startsWith(`${currentPrefix}rutgonlink`)) return false;
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  // Lấy URL từ nội dung tin nhắn
-  const args = content.slice(currentPrefix.length + "rutgonlink".length).trim().split(/\s+/);
-  const urlToShorten = args[0];
+function withSafeMessageType(message) {
+  const fallbackType =
+    message?.threadId &&
+    message?.data?.uidFrom &&
+    String(message.threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage;
+  const resolvedType = safeThreadType(message, fallbackType);
+  return message?.type === resolvedType ? message : { ...message, type: resolvedType };
+}
 
-  // ✅ Nếu không nhập URL
-  if (!urlToShorten) {
-    const guide = `❌ Vui lòng nhập URL bạn muốn rút gọn.
-    
-👉 Ví dụ: ${currentPrefix}rutgonlink https://www.google.com`;
+function matchesShortenCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "rutgonlink").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
 
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${guide}`, true, 60000, true);
-  }
+function extractUrlFromTextOrQuote(argText, message) {
+  const directMatch = String(argText || "").match(/https?:\/\/\S+/i);
+  if (directMatch) return directMatch[0];
+  const firstToken = String(argText || "").trim().split(/\s+/)[0] || "";
+  if (firstToken && /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(firstToken)) {
+    return `https://${firstToken}`;
+  }
 
-  const apiUrl = `https://is.gd/create.php?format=json&url=${encodeURIComponent(urlToShorten)}`;
-  console.log("Gọi API is.gd:", apiUrl);
+  const quote = getQuoteData(message);
+  if (quote?.attach) {
+    try {
+      const parsed = typeof quote.attach === "string" ? JSON.parse(quote.attach) : quote.attach;
+      if (typeof parsed?.href === "string" && /^https?:\/\//i.test(parsed.href.trim())) {
+        return parsed.href.trim();
+      }
+    } catch {}
+  }
 
-  try {
-    const res = await fetch(apiUrl);
-    
-    const data = await res.json();
+  const quotedText = getQuotedText(message);
+  const quotedMatch = String(quotedText || "").match(/https?:\/\/\S+/i);
+  return quotedMatch ? quotedMatch[0] : "";
+}
 
-    if (!res.ok || data.errormessage) {
-      const errorText = data.errormessage || 'URL không hợp lệ hoặc không thể rút gọn.';
-      return sendMessageStateQuote(
-        api,
-        message,
-        `${getCleanNameServer()}❌ ${errorText}`,
-        true,
-        60000,
-        false
-      );
-    }
+export async function shortenUrlMultiProvider(longUrl) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(longUrl);
+  } catch {
+    throw new Error("URL không đúng định dạng (cần bắt đầu bằng http:// hoặc https://)");
+  }
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    throw new Error("Chỉ hỗ trợ rút gọn liên kết http/https");
+  }
 
-    const shortUrl = data.shorturl;
+  const normalizedUrl = parsedUrl.toString();
+  const providers = [
+    async () => {
+      const res = await fetch(
+        `https://is.gd/create.php?format=json&url=${encodeURIComponent(normalizedUrl)}`,
+        { signal: AbortSignal.timeout(SHORTEN_TIMEOUT_MS) }
+      );
+      const data = await res.json();
+      if (!res.ok || !data?.shorturl || data?.errormessage) {
+        throw new Error(data?.errormessage || `is.gd HTTP ${res.status}`);
+      }
+      return data.shorturl.trim();
+    },
+    async () => {
+      const res = await fetch(
+        `https://v.gd/create.php?format=json&url=${encodeURIComponent(normalizedUrl)}`,
+        { signal: AbortSignal.timeout(SHORTEN_TIMEOUT_MS) }
+      );
+      const data = await res.json();
+      if (!res.ok || !data?.shorturl || data?.errormessage) {
+        throw new Error(data?.errormessage || `v.gd HTTP ${res.status}`);
+      }
+      return data.shorturl.trim();
+    },
+    async () => {
+      const res = await fetch(
+        `https://tinyurl.com/api-create.php?url=${encodeURIComponent(normalizedUrl)}`,
+        { signal: AbortSignal.timeout(SHORTEN_TIMEOUT_MS) }
+      );
+      const text = (await res.text()).trim();
+      if (!res.ok || !/^https?:\/\//i.test(text)) {
+        throw new Error(`tinyurl HTTP ${res.status}`);
+      }
+      return text;
+    },
+  ];
 
-    const msg = `✅ RÚT GỌN LINK THÀNH CÔNG
+  let lastError = null;
+  for (const runProvider of providers) {
+    try {
+      const shortUrl = await runProvider();
+      if (shortUrl) return shortUrl;
+    } catch (err) {
+      lastError = err;
+    }
+  }
 
-➤ Link rút gọn: ${shortUrl}`;
+  throw lastError || new Error("Không thể rút gọn link lúc này");
+}
 
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${msg}`, true, 3600000, false);
-  } catch (e) {
-    console.error("Lỗi API rutgonlink:", e);
-    return sendMessageFailed(
-      api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
-      true
-    );
-  }
+export async function handleRutgonlinkCommand(api, message, aliasCommand = "rutgonlink") {
+  const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "rutgonlink";
+
+  if (!matchesShortenCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
+  }
+
+  const msgCtx = withSafeMessageType(message);
+  const body = extractCommandBody(msgCtx, currentPrefix, effectiveAlias);
+  const urlToShorten = extractUrlFromTextOrQuote(body, msgCtx);
+
+  if (!urlToShorten) {
+    const guide =
+      `❌ Vui lòng nhập URL hoặc reply tin nhắn chứa link cần rút gọn.\n\n` +
+      `👉 Ví dụ: ${currentPrefix}${effectiveAlias} https://www.google.com`;
+    return sendMessageStateQuote(api, msgCtx, guide, false, 60000, true);
+  }
+
+  try {
+    const shortUrl = await shortenUrlMultiProvider(urlToShorten);
+    const msg =
+      `✅ RÚT GỌN LINK THÀNH CÔNG\n\n` +
+      `➤ Link gốc: ${urlToShorten}\n` +
+      `➤ Link rút gọn: ${shortUrl}`;
+    return sendMessageStateQuote(api, msgCtx, msg, true, 3600000, false);
+  } catch (e) {
+    return sendMessageFailed(
+      api,
+      msgCtx,
+      `❌ Không thể rút gọn link: ${e?.message || "Lỗi kết nối"}`,
+      true
+    );
+  }
 }

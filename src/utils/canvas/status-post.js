@@ -1,15 +1,18 @@
+import crypto from "node:crypto";
 import { createCanvas, loadImage } from "canvas";
-import path from "path";
 import fs from "fs/promises";
-import { sendMessageFromSQL, sendMessageFromSQLImage, sendMessageImageNotQuote } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
+import { sendMessageFromSQL } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
 import { getUserInfoData } from "../../service-debug/info-service/user-info.js";
 import { getGlobalPrefix } from "../../service-debug/service.js";
-import { removeMention } from "../format-util.js";
+import { extractCommandBody } from "../../commands/shared/command-input-utils.js";
 import { deleteFile } from "../util.js";
-import { threadId } from "worker_threads";
 import { createCanvasTempPath } from "./temp-path.js";
+import { ensureCanvasFontsRegistered } from "./register-fonts.js";
+
+const STATUS_POST_TTL_MS = 3600000;
 
 async function createStatusImage(text, userInfo) {
+	ensureCanvasFontsRegistered();
 	const width = 900;
 	const tempCanvas = createCanvas(width, 1);
 	const tempCtx = tempCanvas.getContext("2d");
@@ -190,15 +193,14 @@ async function createStatusImage(text, userInfo) {
 		ctx.fillText(line, width / 2, lineY);
 	});
 
-	const filePath = createCanvasTempPath(`status_${Date.now()}.png`);
+	const filePath = createCanvasTempPath(`status_${crypto.randomUUID()}.png`);
 	await fs.writeFile(filePath, canvas.toBuffer());
 	return filePath;
 }
 
 export async function handleCommandStatusPost(api, message, aliasCommand) {
 	const prefix = getGlobalPrefix();
-	const content = message.data.content;
-	let stringCommand = content.replace(`${prefix}${aliasCommand}`, "").trim();
+	const stringCommand = extractCommandBody(message, prefix, aliasCommand || "poststatus");
 	if (!stringCommand) {
 		const result = {
 			success: false,
@@ -209,15 +211,16 @@ export async function handleCommandStatusPost(api, message, aliasCommand) {
 	}
 
 	const senderId = message.data.uidFrom;
-	const userInfo = await getUserInfoData(api, senderId);
+	const userInfo = (await getUserInfoData(api, senderId)) || { name: message.data?.dName || "Người dùng", avatar: "", cover: "" };
 	let imagePath = null;
 
 	try {
 		imagePath = await createStatusImage(stringCommand, userInfo);
 		await api.sendMessage({
 			msg: "",
-			attachments: [imagePath]
-		}, message.threadId, message.type)
+			attachments: [imagePath],
+			ttl: STATUS_POST_TTL_MS
+		}, message.threadId, message.type);
 
 	} catch (error) {
 		console.error("Lỗi khi tạo ảnh bài đăng trạng thái:", error);
@@ -227,6 +230,8 @@ export async function handleCommandStatusPost(api, message, aliasCommand) {
 		};
 		await sendMessageFromSQL(api, message, result, false);
 	} finally {
-		await deleteFile(imagePath);
+		if (imagePath) {
+			await deleteFile(imagePath);
+		}
 	}
 }

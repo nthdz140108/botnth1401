@@ -14,8 +14,9 @@ const kickedUsers = new Set();
 
 export async function handleAntiFile(api, message, groupSettings) {
   const threadId = message.threadId;
-  const content = removeMention(message);
-  const parts = content.split(" ");
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
 
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};
@@ -23,9 +24,9 @@ export async function handleAntiFile(api, message, groupSettings) {
 
   if (parts.length === 1) {
     groupSettings[threadId].antiFile = !groupSettings[threadId].antiFile;
-  } else if (parts[1] === "on") {
+  } else if (option === "on") {
     groupSettings[threadId].antiFile = true;
-  } else if (parts[1] === "off") {
+  } else if (option === "off") {
     groupSettings[threadId].antiFile = false;
   } else {
     const caption = "Cú pháp không hợp lệ. Sử dụng antifile hoặc antifile on/off";
@@ -45,8 +46,9 @@ export async function enforceAntiFile(api, message, isAdminBox, groupSettings, b
   const msgType = message.data.msgType;
   const senderId = message.data.uidFrom;
   const senderName = message.data.dName;
+  const userKey = `${threadId}:${senderId}`;
 
-  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(senderId) || isInWhiteList(groupSettings, threadId, senderId)) {
+  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(userKey) || isInWhiteList(groupSettings, threadId, senderId)) {
     return false;
   }
 
@@ -88,14 +90,15 @@ async function handleWarning(
   senderId,
   senderName
 ) {
-  if (!userWarnings.has(senderId)) {
-    userWarnings.set(senderId, {
+  const userKey = `${threadId}:${senderId}`;
+  if (!userWarnings.has(userKey)) {
+    userWarnings.set(userKey, {
       count: 0,
       lastWarningTime: Date.now(),
     });
   }
 
-  const warning = userWarnings.get(senderId);
+  const warning = userWarnings.get(userKey);
   const currentTime = Date.now();
 
   const warningReductions = Math.floor(
@@ -126,7 +129,7 @@ async function handleWarning(
     );
     return { shouldBlock: false };
   } else {
-    userWarnings.delete(senderId);
+    userWarnings.delete(userKey);
     return { shouldBlock: true };
   }
 }
@@ -138,14 +141,15 @@ async function handleViolationDetected(
   senderId,
   senderName
 ) {
-  kickedUsers.add(senderId);
+  const userKey = `${threadId}:${senderId}`;
+  kickedUsers.add(userKey);
   try {
     await api.blockUsers(threadId, [senderId]);
   } catch (error) {
     console.error("Lỗi khi xử lý kick vi phạm:", error);
   } finally {
     setTimeout(() => {
-      kickedUsers.delete(senderId);
+      kickedUsers.delete(userKey);
     }, 5000).unref?.();
   }
 }

@@ -59,16 +59,17 @@ function listedUids(sent) {
   return sent.flatMap((entry) => [...entry.text.matchAll(/UID: (\d+)/g)].map((match) => match[1]));
 }
 
-test("getuser is available to group members and agrees with the command manifest", () => {
+test("getuser requires adminBox and agrees with the command manifest", () => {
   const resolved = resolveCommand(["getuser"], commandRegistry);
   assert.equal(resolved.code, "RESOLVED");
   assert.equal(resolved.definition.scope, "group");
-  assert.equal(resolved.definition.permission, "all");
+  assert.equal(resolved.definition.permission, "adminBox");
   assert.equal(resolved.definition.executionLane, "broadcast");
   const manifest = JSON.parse(fs.readFileSync(new URL("../assets/json-data/command.json", import.meta.url), "utf8"));
   const command = manifest.commands.find((entry) => entry.name === "getuser");
   assert.ok(command?.active);
   assert.equal(command.scope, "group");
+  assert.equal(command.permission, "adminBox");
 });
 
 test("getuser rejects private messages before accessing group data", async () => {
@@ -250,7 +251,7 @@ test("getuser can finish a paced roster longer than the broadcast broker's defau
   t.mock.method(console, "error", () => {});
   const definition = resolveCommand(["getuser"], commandRegistry).definition;
   const accepted = await executeCommand({
-    api, message: groupMessage, scope: "group", permissionLevel: "member", workloadBroker: broker,
+    api, message: groupMessage, scope: "group", permissionLevel: "adminBox", workloadBroker: broker,
     dependencies: { zaloSession: true },
   }, definition);
   assert.equal(accepted.code, "ACCEPTED");

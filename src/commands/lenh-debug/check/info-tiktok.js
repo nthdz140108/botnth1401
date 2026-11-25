@@ -1,149 +1,276 @@
-import fs from 'fs';
-import path, { dirname } from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
-import { sendMessageFactory } from '../../../api-zalo/apis/sendMessage.js';
-import fetch from 'node-fetch';
-import { getGlobalPrefix } from '../../../service-debug/service.js';
-import { nameServer } from '../../../utils/server-config.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import fetch from "node-fetch";
+import * as cheerio from "cheerio";
+import { getGlobalPrefix } from "../../../service-debug/service.js";
+import { tempDir } from "../../../utils/io-json.js";
+import { removeMention } from "../../../utils/format-util.js";
+import { MessageType } from "../../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getQuotedText,
+  getRawMessageText,
+} from "../../shared/command-input-utils.js";
 
 export const des = {
-  name: 'i4tiktok',
+  name: "i4tiktok",
   type: 1,
-  permission: 'all',
+  permission: "all",
   countdown: 5,
   active: true,
 };
 
-// Hàm ghép dòng tag + tên server
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line);
+const REQUEST_TIMEOUT_MS = 8000;
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-  const tagLine = lines.find(line => line.startsWith('@'));
-  const boldLine = lines.find(line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line));
-
-  return [tagLine, boldLine].filter(Boolean).join(' ');
-};
-
-// Hàm tải avatar về máy
-async function downloadImage(url, filePath) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Không thể tải ảnh avatar!');
-  const buffer = await res.buffer();
-  fs.writeFileSync(filePath, buffer);
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export async function handleI4tiktokCommand(api, message) {
+function matchesTikTokInfoCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "i4tiktok").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
+
+export function normalizeTikTokUsername(rawInput) {
+  let token = String(rawInput ?? "").trim().split(/\s+/)[0] || "";
+  if (!token) return "";
+
+  if (/^(?:https?:\/\/)?(?:[\w-]+\.)?tiktok\.com\//i.test(token)) {
+    try {
+      const normalized = /^https?:\/\//i.test(token) ? token : `https://${token}`;
+      const u = new URL(normalized);
+      const atSegment = u.pathname
+        .split("/")
+        .find((seg) => seg.startsWith("@") && seg.length > 1);
+      if (atSegment) {
+        token = atSegment;
+      }
+    } catch {}
+  }
+
+  return token.replace(/^@+/, "").trim();
+}
+
+function formatMetric(val) {
+  if (val === undefined || val === null || val === "") return "N/A";
+  const num = Number(val);
+  return Number.isFinite(num) ? num.toLocaleString("vi-VN") : String(val);
+}
+
+async function fetchTikTokFromRehydration(username) {
+  const profileUrl = `https://www.tiktok.com/@${encodeURIComponent(username)}`;
+  const res = await fetch(profileUrl, {
+    headers: {
+      "User-Agent": BROWSER_UA,
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) return null;
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  const universalRaw = $("#__UNIVERSAL_DATA_FOR_REHYDRATION__").html();
+  if (universalRaw) {
+    try {
+      const parsed = JSON.parse(universalRaw);
+      const userDetail = parsed?.["__DEFAULT_SCOPE__"]?.["webapp.user-detail"];
+      if (userDetail?.userInfo?.user) {
+        return {
+          user: userDetail.userInfo.user,
+          stats: userDetail.userInfo.stats || userDetail.userInfo.statsV2 || {},
+        };
+      }
+    } catch {}
+  }
+
+  const sigiRaw = $("#SIGI_STATE").html();
+  if (sigiRaw) {
+    try {
+      const parsed = JSON.parse(sigiRaw);
+      const users = parsed?.UserModule?.users || {};
+      const statsMap = parsed?.UserModule?.stats || {};
+      const key = Object.keys(users).find(
+        (k) => k.toLowerCase() === username.toLowerCase()
+      );
+      if (key && users[key]) {
+        return {
+          user: users[key],
+          stats: statsMap[key] || {},
+        };
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+async function fetchTikTokFromOEmbed(username) {
+  const targetUrl = `https://www.tiktok.com/@${encodeURIComponent(username)}`;
+  const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(targetUrl)}`;
+  const res = await fetch(oembedUrl, {
+    headers: { "User-Agent": BROWSER_UA, Accept: "application/json" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) return null;
+
+  const json = await res.json();
+  if (!json || (!json.author_name && !json.title)) return null;
+
+  return {
+    user: {
+      nickname: json.author_name || username,
+      uniqueId: json.author_unique_id || username,
+      id: "",
+      signature: json.title || "",
+      avatarLarger: json.thumbnail_url || "",
+      verified: false,
+      privateAccount: false,
+    },
+    stats: null,
+  };
+}
+
+async function downloadAvatarToTemp(url) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": BROWSER_UA, Referer: "https://www.tiktok.com/" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`Avatar HTTP ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (!buffer.length) throw new Error("Empty avatar buffer");
+
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  const avatarPath = path.join(tempDir, `tiktok_avatar_${crypto.randomUUID()}.jpg`);
+  await fs.promises.writeFile(avatarPath, buffer);
+  return avatarPath;
+}
+
+export async function handleI4tiktokCommand(api, message, aliasCommand = "i4tiktok") {
   const threadId = message.threadId;
-  const uid = message.data.uidFrom;
-  const sendMessage = sendMessageFactory(api);
-  const content = message.data.content.trim();
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "i4tiktok";
+  const threadType = safeThreadType(
+    message,
+    threadId && message?.data?.uidFrom && String(threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage
+  );
 
-  let isGroup = threadId !== uid;
-  if (typeof message.isGroup !== 'undefined') isGroup = message.isGroup;
-
-  if (!content.startsWith(`${currentPrefix}i4tiktok`)) {
-    return sendMessage(
+  if (!matchesTikTokInfoCommand(message, currentPrefix, effectiveAlias)) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}i4tiktok <username> 🚨`,
-        ttl: 60000
+        msg: `❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}${effectiveAlias} <username>`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
 
-  const args = content.slice(currentPrefix.length + 8).trim().split(/\s+/);
-  if (args.length < 1) {
-    return sendMessage(
+  const rawArg =
+    extractCommandBody(message, currentPrefix, effectiveAlias) || getQuotedText(message);
+  const tikTokUsername = normalizeTikTokUsername(rawArg);
+
+  if (!tikTokUsername) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Thiếu username! Dùng: ${currentPrefix}i4tiktok <username>`,
-        ttl: 60000
+        msg: `❌ Thiếu username! Dùng: ${currentPrefix}${effectiveAlias} <username>\n👉 Ví dụ: ${currentPrefix}${effectiveAlias} @tiktok`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
 
-  const tikTokUsername = args[0];
-  if (!/^[a-zA-Z0-9._]+$/.test(tikTokUsername)) {
-    return sendMessage(
+  if (!/^[a-zA-Z0-9._-]+$/.test(tikTokUsername)) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Username TikTok không hợp lệ!`,
-        ttl: 60000
+        msg: `❌ Username TikTok "${tikTokUsername}" không hợp lệ!`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
   }
 
+  let avatarPath = null;
   try {
-    const apiUrl = `https://api.zeidteam.xyz/tiktok/user-info?username=${encodeURIComponent(tikTokUsername)}`;
-    const response = await fetch(apiUrl);
-    const data = await response.json();
-
-    if (!response.ok || !data.status || !data.data?.user) {
-      const errMsg = data?.msg || 'Không thể lấy dữ liệu từ API!';
-      throw new Error(`${getCleanNameServer()}❌ ${errMsg}`);
+    let profile = await fetchTikTokFromRehydration(tikTokUsername).catch(() => null);
+    if (!profile) {
+      profile = await fetchTikTokFromOEmbed(tikTokUsername).catch(() => null);
     }
 
-    const user = data.data.user;
-    const stats = data.data.stats;
+    if (!profile?.user) {
+      return api.sendMessage(
+        {
+          msg: `❌ Không tìm thấy tài khoản TikTok "@${tikTokUsername}" hoặc tài khoản không tồn tại.`,
+          ttl: 60000,
+        },
+        threadId,
+        threadType
+      );
+    }
 
-    const msg =
-`${getCleanNameServer()}🎥 Thông tin tài khoản TikTok 🎥
+    const { user, stats } = profile;
+    const avatarUrl = user.avatarLarger || user.avatarMedium || user.avatarThumb || "";
+    if (avatarUrl) {
+      avatarPath = await downloadAvatarToTemp(avatarUrl).catch(() => null);
+    }
 
-🧑 Thông tin cơ bản:
-✨ Tên hiển thị: ${user.nickname || 'N/A'}
-🆔 Username: @${user.uniqueId || 'N/A'}
-🪪 ID: ${user.id || 'N/A'}
-📝 Tiểu sử: ${user.signature || 'Không có'}
-✅ Xác minh: ${user.verified ? 'Đã xác minh ✅' : 'Chưa xác minh ❌'}
-🔒 Tài khoản riêng tư: ${user.privateAccount ? 'Có 🔒' : 'Không 🔓'}
+    const lines = [
+      `🎥 THÔNG TIN TÀI KHOẢN TIKTOK`,
+      ``,
+      `✨ Tên hiển thị: ${user.nickname || tikTokUsername}`,
+      `🆔 Username: @${user.uniqueId || tikTokUsername}`,
+      user.id ? `🪪 ID: ${user.id}` : null,
+      `📝 Tiểu sử: ${user.signature || "Không có"}`,
+      `✅ Xác minh: ${user.verified ? "Đã xác minh ✅" : "Chưa xác minh ❌"}`,
+      `🔒 Riêng tư: ${user.privateAccount ? "Có 🔒" : "Không 🔓"}`,
+      `🔗 Link: https://www.tiktok.com/@${encodeURIComponent(user.uniqueId || tikTokUsername)}`,
+    ].filter(Boolean);
 
-📊 Thống kê:
-👥 Follower: ${stats.followerCount}
-👣 Đang theo dõi: ${stats.followingCount}
-❤️ Lượt thích: ${stats.heartCount}
-🎬 Số video: ${stats.videoCount}
-👍 Đã thích: ${stats.diggCount}
+    if (stats) {
+      lines.push(
+        ``,
+        `📊 Thống kê:`,
+        `👥 Follower: ${formatMetric(stats.followerCount)}`,
+        `👣 Đang theo dõi: ${formatMetric(stats.followingCount)}`,
+        `❤️ Lượt thích: ${formatMetric(stats.heartCount ?? stats.heart)}`,
+        `🎬 Số video: ${formatMetric(stats.videoCount)}`,
+        stats.diggCount !== undefined ? `👍 Đã thích: ${formatMetric(stats.diggCount)}` : null
+      );
+    }
 
-
-👤 Founder: Thanh Hung`;
-
-    const tmpDir = path.join(os.tmpdir(), 'tiktok-avatar');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
-
-    const avatarPath = path.join(tmpDir, `avatar_${user.uniqueId}.jpg`);
-    await downloadImage(user.avatarLarger, avatarPath);
-
-    await sendMessage(
+    await api.sendMessage(
       {
-        attachments: [avatarPath], // ✅ Sử dụng đúng chuẩn attachments
-        msg: msg,
-        ttl: 3600000
+        msg: lines.filter(Boolean).join("\n"),
+        ...(avatarPath ? { attachments: [avatarPath] } : {}),
+        ttl: 3600000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
-
-    fs.unlinkSync(avatarPath); // Xoá file sau khi gửi
   } catch (err) {
-    console.error('❌ TikTok Error:', err);
-    await sendMessage(
+    await api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Lỗi: ${err.message}`,
-        ttl: 60000
+        msg: `❌ Lỗi tra cứu TikTok: ${err?.message || "Không xác định"}`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
+  } finally {
+    if (avatarPath) {
+      await fs.promises.unlink(avatarPath).catch(() => {});
+    }
   }
 }

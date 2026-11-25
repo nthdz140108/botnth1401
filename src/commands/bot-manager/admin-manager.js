@@ -16,6 +16,10 @@ import { appContext } from "../../api-zalo/context.js";
 import { createBotRuntimeContext, getInitialAdminList } from "../../utils/bot-runtime-context.js";
 import { parseAdminCommand as parseAdminCommandCore } from "../../utils/admin-command-parser.js";
 import {
+  extractCleanArgs,
+  resolveTargetUsers,
+} from "../shared/command-input-utils.js";
+import {
   addHighAdminViaCommand,
   removeHighAdminViaCommand,
   mutateBotAdmin,
@@ -81,8 +85,8 @@ export async function loadGlobalAdmins(adminFilePath, botUid) {
   return admins;
 }
 
-export function parseAdminCommand(rawContent, prefix = "!", message = {}, scope = "group") {
-  return parseAdminCommandCore(rawContent, prefix, message, scope);
+export function parseAdminCommand(rawContent, prefix = "!", message = {}, scope = "group", canonicalCommand = "") {
+  return parseAdminCommandCore(rawContent, prefix, message, scope, canonicalCommand);
 }
 
 const TIER_LABELS = Object.freeze({
@@ -152,7 +156,148 @@ export async function executeAdminCommand(context = {}) {
   const isCallerHigh = authorizationSnapshot.isAdminLevelHigh;
   const isCallerAtLeastBot = authorizationSnapshot.isBotAdmin;
 
-  const parsed = parseAdminCommand(rawContent, prefix, message, scope);
+  const invokedCmd = String(context.commandParts?.[0] || message?.commandName || "").trim().toLowerCase();
+  const parsed = parseAdminCommand(rawContent, prefix, message, scope, invokedCmd);
+  const standaloneVerb =
+    invokedCmd === "add" || invokedCmd === "remove"
+      ? invokedCmd
+      : parsed.rawVerb === "add" || parsed.rawVerb === "remove"
+        ? parsed.rawVerb
+        : "";
+
+  if (standaloneVerb) {
+    const cleanArgs = Array.isArray(context.args)
+      ? context.args
+      : extractCleanArgs(message, prefix, context.aliasCommand || standaloneVerb);
+
+    if (!isPrivate && String(cleanArgs[0] || "").toLowerCase() === "member") {
+      const callerHasGroupRights = Boolean(
+        isCallerAtLeastBot || authorizationSnapshot.isGroupAdmin || context.callerIsAdminBox
+      );
+      if (!callerHasGroupRights) {
+        await sendDeny(api, message, "Bạn cần quyền Quản trị viên nhóm trở lên để thực hiện lệnh này!");
+        return true;
+      }
+
+      const memberTargets = resolveTargetUsers(message, cleanArgs.slice(1)).filter(
+        (uid) => uid !== currentBotUid
+      );
+      if (memberTargets.length === 0) {
+        await sendMessageQuery(
+          api,
+          message,
+          `Vui lòng @mention, reply hoặc nhập UID: ${prefix}${standaloneVerb} member <@user|UID>`
+        );
+        return true;
+      }
+
+      let gInfo = context.groupInfo || null;
+      if (!gInfo && typeof api?.getGroupInfo === "function" && threadId) {
+        try {
+          const fetched = await api.getGroupInfo(threadId);
+          gInfo = fetched?.gridInfoMap?.[threadId] || fetched || null;
+        } catch {}
+      } else if (gInfo?.gridInfoMap?.[threadId]) {
+        gInfo = gInfo.gridInfoMap[threadId];
+      }
+
+      const nativeGroupAdmins = new Set(
+        [
+          gInfo?.creatorId,
+          ...(Array.isArray(gInfo?.adminIds) ? gInfo.adminIds : []),
+          ...(Array.isArray(context.groupAdmins) ? context.groupAdmins : []),
+        ]
+          .filter(Boolean)
+          .map(String)
+      );
+
+      if (
+        standaloneVerb === "remove" &&
+        currentBotUid &&
+        nativeGroupAdmins.size > 0 &&
+        !nativeGroupAdmins.has(currentBotUid)
+      ) {
+        await sendMessageWarning(
+          api,
+          message,
+          "🔑 Bot cần quyền Quản trị viên nhóm (Key Vàng/Key Bạc) để mời thành viên ra khỏi nhóm!"
+        );
+        return true;
+      }
+
+      try {
+        if (standaloneVerb === "add") {
+          if (typeof api?.addUserToGroup !== "function") {
+            await sendMessageWarning(api, message, "API hiện tại chưa hỗ trợ thêm thành viên vào nhóm.");
+            return true;
+          }
+          const res = await api.addUserToGroup(threadId, memberTargets);
+          const errorSet = new Set((res?.errorMembers || []).map(String));
+          const okUids = memberTargets.filter((uid) => !errorSet.has(uid));
+          if (okUids.length > 0) {
+            await sendMessageComplete(
+              api,
+              message,
+              `✅ Đã thêm thành viên vào nhóm: ${okUids.join(", ")}${errorSet.size > 0 ? ` (Không thể thêm: ${[...errorSet].join(", ")})` : ""}`
+            );
+          } else {
+            await sendMessageWarning(
+              api,
+              message,
+              `Không thể thêm thành viên (${memberTargets.join(", ")}) vào nhóm — hãy kiểm tra quyền nhóm hoặc cài đặt chặn kết bạn/mời nhóm.`
+            );
+          }
+        } else {
+          if (typeof api?.removeUserFromGroup !== "function") {
+            await sendMessageWarning(api, message, "API hiện tại chưa hỗ trợ mời thành viên ra khỏi nhóm.");
+            return true;
+          }
+          const safeTargets = memberTargets.filter((uid) => !nativeGroupAdmins.has(uid));
+          if (safeTargets.length === 0) {
+            await sendMessageWarning(api, message, "Không thể mời Quản trị viên nhóm ra khỏi nhóm!");
+            return true;
+          }
+          const res = await api.removeUserFromGroup(threadId, safeTargets);
+          const errorSet = new Set((res?.errorMembers || []).map(String));
+          const okUids = safeTargets.filter((uid) => !errorSet.has(uid));
+          if (okUids.length > 0) {
+            await sendMessageComplete(
+              api,
+              message,
+              `✅ Đã mời khỏi nhóm: ${okUids.join(", ")}${errorSet.size > 0 ? ` (Thất bại: ${[...errorSet].join(", ")})` : ""}`
+            );
+          } else {
+            await sendMessageWarning(
+              api,
+              message,
+              "Không thể mời thành viên khỏi nhóm — hãy kiểm tra Key Vàng/Key Bạc của bot!"
+            );
+          }
+        }
+      } catch (error) {
+        await sendMessageWarning(api, message, `Thao tác thất bại: ${error?.message || error}`);
+      }
+      return true;
+    }
+
+    const targetHint = resolveTargetUsers(message, cleanArgs)[0] || "<UID>";
+    const standaloneGuide = isPrivate
+      ? [
+          `ℹ️ Lệnh "${prefix}${standaloneVerb}" độc lập không tự động thay đổi quyền Admin để đảm bảo an toàn.`,
+          `👉 Copy cú pháp chuẩn bên dưới để thực hiện:`,
+          `• ${prefix}admin ${standaloneVerb} ${targetHint} — ${standaloneVerb === "add" ? "Thêm" : "Xóa"} Admin Bot đa-nhóm`,
+          `• ${prefix}admin ${standaloneVerb} qtv ${targetHint} — ${standaloneVerb === "add" ? "Thêm" : "Xóa"} Quản trị Tối cao`,
+        ].join("\n")
+      : [
+          `📌 Hướng dẫn sử dụng lệnh "${prefix}${standaloneVerb}":`,
+          `• Quản trị Nhóm: ${prefix}admin ${standaloneVerb} box ${targetHint}`,
+          `• Admin Bot đa-nhóm: ${prefix}admin ${standaloneVerb} ${targetHint}`,
+          `• Quản trị Tối cao: ${prefix}admin ${standaloneVerb} qtv ${targetHint}`,
+          `• ${standaloneVerb === "add" ? "Thêm thành viên vào nhóm Zalo" : "Mời thành viên ra khỏi nhóm Zalo"}: ${prefix}${standaloneVerb} member ${targetHint}`,
+        ].join("\n");
+    await api.sendMessage({ msg: standaloneGuide, quote: message }, threadId, message?.type);
+    return true;
+  }
 
   if (parsed.action === "guide" || parsed.action === "unknown") {
     if (parsed.action === "unknown") {
@@ -407,14 +552,13 @@ export async function executeAdminCommand(context = {}) {
     if (imagePath && fsSync.existsSync(imagePath)) {
       try {
         await api.sendMessage({ msg: listText, attachments: [imagePath], ttl: 600000 }, threadId, message.type);
-        setTimeout(async () => {
-          try {
-            await fs.unlink(imagePath);
-          } catch {}
-        }, 30000);
         return true;
       } catch (sendError) {
         console.warn("Lỗi khi gửi kèm ảnh, chuyển sang gửi text thuần:", sendError.message);
+      } finally {
+        try {
+          await fs.unlink(imagePath);
+        } catch {}
       }
     }
 
@@ -702,7 +846,25 @@ export async function executeAdminCommand(context = {}) {
  */
 export async function handleAdminCommand(api, message, groupAdmins, groupSettings, authorization = null) {
   const scope = message?.type === 0 ? "private" : "group";
-  return executeAdminCommand({ api, message, groupSettings, scope, instanceKind: authorization?.instanceKind });
+  const resolvedSettings =
+    groupSettings && !Array.isArray(groupSettings)
+      ? groupSettings
+      : groupAdmins && !Array.isArray(groupAdmins)
+        ? groupAdmins
+        : {};
+  const resolvedAdmins = Array.isArray(groupAdmins)
+    ? groupAdmins
+    : Array.isArray(groupSettings)
+      ? groupSettings
+      : [];
+  return executeAdminCommand({
+    api,
+    message,
+    groupSettings: resolvedSettings,
+    groupAdmins: resolvedAdmins,
+    scope,
+    instanceKind: authorization?.instanceKind,
+  });
 }
 
 export async function handleListAdmin(api, message, groupSettings, authorization = null) {
@@ -712,5 +874,24 @@ export async function handleListAdmin(api, message, groupSettings, authorization
 
 export async function handleAdminHighLevelCommands(api, message, groupAdmins, groupSettings, isAdminLevelHighest, authorization = null) {
   const scope = message?.type === 0 ? "private" : "group";
-  return executeAdminCommand({ api, message, groupSettings, scope, instanceKind: authorization?.instanceKind });
+  const resolvedSettings =
+    groupSettings && !Array.isArray(groupSettings)
+      ? groupSettings
+      : groupAdmins && !Array.isArray(groupAdmins)
+        ? groupAdmins
+        : {};
+  const resolvedAdmins = Array.isArray(groupAdmins)
+    ? groupAdmins
+    : Array.isArray(groupSettings)
+      ? groupSettings
+      : [];
+  return executeAdminCommand({
+    api,
+    message,
+    groupSettings: resolvedSettings,
+    groupAdmins: resolvedAdmins,
+    isAdminLevelHighest,
+    scope,
+    instanceKind: authorization?.instanceKind,
+  });
 }

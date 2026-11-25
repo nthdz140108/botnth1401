@@ -3004,7 +3004,7 @@
       "name": "getuser",
       "description": "Liệt kê thành viên nhóm, gom tối đa 20 thành viên mỗi tin và giãn cách ít nhất 1 giây",
       "syntax": "{p}getuser",
-      "permission": "all",
+      "permission": "adminBox",
       "scope": "group",
       "countdown": 30,
       "icon": "👥",

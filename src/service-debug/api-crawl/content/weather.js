@@ -1,4 +1,4 @@
-import { removeMention } from "../../../utils/format-util.js";
+import { extractCommandBody, getRawMessageText, safeThreadType } from "../../../commands/shared/command-input-utils.js";
 import { deleteFile } from "../../../utils/util.js";
 import { readCommandConfig } from "../../../utils/io-json.js";
 import {
@@ -7,15 +7,20 @@ import {
 } from "./weather-provider.js";
 import { createWeatherImageFile } from "./weather-render.js";
 
+const WEATHER_IMAGE_TTL_MS = 300000;
+
 // Lấy prefix hiện tại từ cấu hình lệnh (nhẹ, không kéo theo side-effect của service.js)
 function getGlobalPrefix() {
   return readCommandConfig().prefix || "!";
 }
 
-// Khóa API cho các dịch vụ thời tiết (đọc từ môi trường, không nhúng cứng)
-const TOMORROW_API_KEY = process.env.TOMORROW_API_KEY || "";
-const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY || "";
-const WEATHERAPI_KEY = process.env.WEATHERAPI_KEY || process.env.WEATHER_API_KEY || "";
+function getWeatherApiKeys() {
+  return {
+    tomorrow: process.env.TOMORROW_API_KEY || "",
+    openweather: process.env.OPENWEATHER_API_KEY || "",
+    weatherapi: process.env.WEATHERAPI_KEY || process.env.WEATHER_API_KEY || "",
+  };
+}
 
 // Hàm xử lý tên người dùng
 export function hanldeNameUser(name) {
@@ -76,12 +81,15 @@ export function handleNameLong(name, lengthLine = 16) {
 export const handleNameUser = hanldeNameUser;
 
 // Hàm xử lý lệnh thời tiết
-export async function weatherCommand(api, message) {
-  const content = removeMention(message);
-  const threadId = message.threadId;
+export async function weatherCommand(api, message, aliasCommand = "thoitiet") {
+  const rawText = getRawMessageText(message).trim();
   const prefix = getGlobalPrefix();
+  if (!rawText) {
+    return;
+  }
 
-  const location = content.replace(`${prefix}thoitiet`, "").trim();
+  const threadId = message.threadId;
+  const location = extractCommandBody(message, prefix, aliasCommand || "thoitiet");
 
   if (!location) {
     await getOverallWeather(api, message, threadId);
@@ -101,12 +109,13 @@ async function getOverallWeather(api, message, threadId) {
     await api.sendMessage(
       { msg: "Đã xảy ra lỗi khi lấy thông tin thời tiết tổng quan. Vui lòng thử lại sau.", quote: message },
       threadId,
-      message.type
+      safeThreadType(message)
     );
   }
 }
 
 async function getLocalWeather(api, message, threadId, location, isOverall = false) {
+  const threadType = safeThreadType(message);
   try {
     // Lấy tọa độ địa lý
     const geo = await geocodeWeatherLocation(location);
@@ -114,31 +123,27 @@ async function getLocalWeather(api, message, threadId, location, isOverall = fal
       await api.sendMessage(
         { msg: "Không tìm thấy thành phố. Vui lòng kiểm tra lại tên thành phố.", quote: message },
         threadId,
-        message.type
+        threadType
       );
       return;
     }
 
-    // Lấy thời tiết từ nhiều provider song song; một provider lỗi không làm hỏng lệnh
-    const model = await buildWeatherModel(geo, {
-      tomorrow: TOMORROW_API_KEY,
-      openweather: OPENWEATHER_API_KEY,
-      weatherapi: WEATHERAPI_KEY,
-    });
+    // Lấy thời tiết từ nhiều provider song song (Open-Meteo miễn phí không cần key + hợp nhất key nếu có)
+    const model = await buildWeatherModel(geo, getWeatherApiKeys());
 
     // Gán nhãn tổng quan khi người dùng không nhập địa điểm
     if (isOverall) {
       model.location.name = `Tổng quan - ${model.location.name}`;
     }
 
-    // Render và gửi ảnh thời tiết với TTL; file tạm luôn được dọn
+    // Render và gửi ảnh thời tiết với TTL 5 phút; file tạm luôn được dọn
     await sendWeatherImage(api, message, model, threadId);
   } catch (error) {
     console.error("Lỗi khi lấy thông tin thời tiết địa phương:", error);
     await api.sendMessage(
       { msg: `Đã xảy ra lỗi khi xử lý thông tin thời tiết: ${error.message}`, quote: message },
       threadId,
-      message.type
+      threadType
     );
   }
 }
@@ -151,10 +156,10 @@ async function sendWeatherImage(api, message, model, threadId) {
         msg: "",
         attachments: [filePath],
         quote: message,
-        ttl: 60000,
+        ttl: WEATHER_IMAGE_TTL_MS,
       },
       threadId,
-      message.type
+      safeThreadType(message)
     );
   } finally {
     await deleteFile(filePath);

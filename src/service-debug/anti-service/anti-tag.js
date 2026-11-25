@@ -40,11 +40,7 @@ export async function antiTag(api, message, isAdminBox, groupSettings, botIsAdmi
       await blockUser(api, message, threadId, senderId, senderName);
       return true;
     }
-    await sendWarningMessage(api, message, senderId, senderName, mentionCount, isHiddenTag);
-  }
-
-  if (isDeleteTag) {
-    await updateTagCount(api, message, threadId, senderId, senderName, getBotId(), isAdminBox);
+    await updateTagCount(api, message, threadId, senderId, senderName, getBotId(), isAdminBox, mentionCount, isHiddenTag);
   }
 
   return isDeleteTag;
@@ -54,7 +50,7 @@ export async function handleAntiTagCommand(api, message, groupSettings) {
   const threadId = message.threadId;
   let isChangeSetting = false;
   const content = removeMention(message);
-  const status = content.split(" ")[1]?.toLowerCase();
+  const status = content.trim().split(/\s+/)[1]?.toLowerCase();
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};
   }
@@ -69,7 +65,7 @@ export async function handleAntiTagCommand(api, message, groupSettings) {
   return isChangeSetting;
 }
 
-async function updateTagCount(api, message, threadId, senderId, senderName, botId, isAdminBox) {
+async function updateTagCount(api, message, threadId, senderId, senderName, botId, isAdminBox, mentionCount = 1, isHiddenTag = false) {
   const key = `${threadId}:${senderId}`;
   const now = Date.now();
   let state = tagSpamState.get(key);
@@ -87,7 +83,10 @@ async function updateTagCount(api, message, threadId, senderId, senderName, botI
   if (state.count > 2) {
     tagSpamState.delete(key);
     await blockUser(api, message, threadId, senderId, senderName);
+    return;
   }
+
+  await sendWarningMessage(api, message, senderId, senderName, mentionCount, isHiddenTag);
 }
 
 async function blockUser(api, message, threadId, senderId, senderName) {

@@ -2,88 +2,139 @@ import fetch from "node-fetch";
 import { getGlobalPrefix } from "../service.js";
 import {
   sendMessageStateQuote,
-  sendMessageFailed
+  sendMessageFailed,
 } from "../chat-zalo/chat-style/chat-style.js";
+import { removeMention } from "../../utils/format-util.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getRawMessageText,
+} from "../../commands/shared/command-input-utils.js";
 
-import { nameServer } from "../../utils/server-config.js";
+const AUDIO_OPTIONS = [
+  { index: "1", code: "nnca", title: "Nơi Này Có Anh" },
+  { index: "2", code: "pm", title: "Phép Màu" },
+  { index: "3", code: "thttt", title: "Tín Hiệu Từ Trái Tim" },
+  { index: "4", code: "ccyld", title: "Có Chắc Yêu Là Đây" },
+  { index: "5", code: "cgm52", title: "Cô Gái M52" },
+  { index: "6", code: "hgedat", title: "Hẹn Gặp Em Dưới Ánh Trăng" },
+  { index: "7", code: "mrtt", title: "Mượn Rượu Tỏ Tình" },
+  { index: "8", code: "nap", title: "Người Âm Phủ" },
+];
 
-// ✅ Ghép tag + chữ đỏ vào header tin nhắn
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line)
+function withSafeMessageType(message) {
+  const fallbackType =
+    message?.threadId &&
+    message?.data?.uidFrom &&
+    String(message.threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage;
+  const resolvedType = safeThreadType(message, fallbackType);
+  return message?.type === resolvedType ? message : { ...message, type: resolvedType };
+}
+
+function matchesLovelinkCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "lovelink").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
+
+function resolveAudioSelection(rawAudio) {
+  const key = String(rawAudio ?? "").trim().toLowerCase();
+  if (!key) return null;
+  const byIdxOrCode = AUDIO_OPTIONS.find((item) => item.index === key || item.code === key);
+  return byIdxOrCode || { index: "", code: key, title: key };
+}
+
+function buildGuide(prefix, aliasCommand) {
+  const cmd = `${prefix}${aliasCommand || "lovelink"}`;
+  const audioList = AUDIO_OPTIONS.map(
+    (a) => `• ${a.index} hoặc ${a.code} — ${a.title}`
+  ).join("\n");
+  return (
+    `❌ Vui lòng nhập đúng định dạng:\n` +
+    `${cmd} <Lời nhắn> | <Mã nhạc>\n` +
+    `(Hoặc: ${cmd} <Lời nhắn> <Mã nhạc>)\n\n` +
+    `🎵 Danh sách mã nhạc:\n${audioList}`
   );
+}
 
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
-
-export async function handlelovelinkCommand(api, message) {
-  const content = message.data.content.trim();
+export async function handlelovelinkCommand(api, message, aliasCommand = "lovelink") {
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "lovelink";
 
-  if (!content.startsWith(`${currentPrefix}lovelink`)) return false;
-
-  const args = content.slice(currentPrefix.length + 8).trim().split(/\s+/).filter(Boolean);
-
-  if (args.length < 2) {
-    const guide = `❌ Vui lòng nhập đúng định dạng
-${currentPrefix}lovelink Text Audio
-
-Trong đó Audio bao gồm:
-- Nơi Này Có Anh: nnca
-- Phép Màu: pm
-- Tín Hiệu Từ Trái Tim: thttt
-- Có Chắc Yêu Là Đây: ccyld
-- Cô Gái M52: cgm52
-- Hẹn Gặp Em Dưới Ánh Trăng: hgedat
-- Mượn Rượu Tỏ Tình: mrtt
-- Người Âm Phủ: nap
-
-👉 Audio viết dạng viết tắt`;
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${guide}`, true, 60000, true);
+  if (!matchesLovelinkCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
   }
 
-  // ✅ Text là toàn bộ từ đầu trừ tham số cuối cùng (audio)
-  const audio = args[args.length - 1];
-  const text = args.slice(0, -1).join(" ");
+  const msgCtx = withSafeMessageType(message);
+  const body = extractCommandBody(msgCtx, currentPrefix, effectiveAlias);
 
-  const apiUrl = `https://api.nemg.me/love?text=${encodeURIComponent(text)}&audio=${encodeURIComponent(audio)}`;
-  console.log("Gọi API lovelink:", apiUrl);
+  let text = "";
+  let audioRaw = "";
+
+  if (body.includes("|")) {
+    const lastPipe = body.lastIndexOf("|");
+    text = body.slice(0, lastPipe).trim();
+    audioRaw = body.slice(lastPipe + 1).trim();
+  } else {
+    const tokens = body.split(/\s+/).filter(Boolean);
+    if (tokens.length >= 2) {
+      audioRaw = tokens[tokens.length - 1];
+      text = tokens.slice(0, -1).join(" ").trim();
+    }
+  }
+
+  const selectedAudio = resolveAudioSelection(audioRaw);
+  if (!text || !selectedAudio) {
+    return sendMessageStateQuote(
+      api,
+      msgCtx,
+      buildGuide(currentPrefix, effectiveAlias),
+      false,
+      60000,
+      true
+    );
+  }
+
+  const apiUrl = `https://api.nemg.me/love?text=${encodeURIComponent(text)}&audio=${encodeURIComponent(selectedAudio.code)}`;
 
   try {
-    const res = await fetch(apiUrl);
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
     const json = await res.json();
 
-    if (!res.ok || !json.success) {
+    if (!json?.success || !json?.url) {
       return sendMessageStateQuote(
         api,
-        message,
-        `${getCleanNameServer()}❌ Không tạo được love link với dữ liệu đã nhập.`,
-        true,
+        msgCtx,
+        `❌ Không tạo được love link với dữ liệu đã nhập.`,
+        false,
         60000,
-        false
+        true
       );
     }
 
-    const msg = `💖 LOVE LINK ĐÃ TẠO THÀNH CÔNG
+    const msg =
+      `💖 LOVE LINK ĐÃ TẠO THÀNH CÔNG\n\n` +
+      `➤ Lời nhắn: ${text}\n` +
+      `➤ Nhạc nền: ${json.audioName || selectedAudio.title}\n` +
+      `➤ Link: ${json.url}`;
 
-➤ Text: ${text}
-➤ Audio: ${json.audioName || audio}
-➤ Link: ${json.url}`;
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${msg}`, true, 3600000, false);
+    return sendMessageStateQuote(api, msgCtx, msg, true, 3600000, false);
   } catch (e) {
-    console.error("Lỗi API lovelink:", e);
     return sendMessageFailed(
       api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
+      msgCtx,
+      `❌ Lỗi khi tạo Love Link: ${e?.message || "Hết thời gian kết nối"}`,
       true
     );
   }

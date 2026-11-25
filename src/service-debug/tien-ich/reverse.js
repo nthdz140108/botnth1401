@@ -1,29 +1,19 @@
-import fetch from "node-fetch";
 import { getGlobalPrefix } from "../service.js";
-
 import {
   sendMessageStateQuote,
-  sendMessageFailed
+  sendMessageFailed,
 } from "../chat-zalo/chat-style/chat-style.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import { removeMention } from "../../utils/format-util.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getQuotedText,
+  getRawMessageText,
+} from "../../commands/shared/command-input-utils.js";
 
-import { nameServer } from "../../utils/server-config.js";
+const VI_GRAPHEME_SEGMENTER = new Intl.Segmenter("vi", { granularity: "grapheme" });
 
-// ✅ Lấy header cho tin nhắn (giữ nguyên từ file lovelink.js)
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line)
-  );
-
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
-
-// ✅ Thông tin mô tả lệnh
 export const des = {
   name: "reverse",
   type: 1,
@@ -32,60 +22,75 @@ export const des = {
   active: true,
 };
 
-// ✅ Hàm xử lý chính cho lệnh
-export async function handleReverseCommand(api, message) {
-  const content = message.data.content.trim();
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesCommandInvocation(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const aliasTokens = String(aliasCommand || "reverse")
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegExp)
+    .join("\\s+");
+  const pattern = new RegExp(
+    `^\\s*${escapeRegExp(prefix)}\\s*${aliasTokens}(?:[\\s_]+|$)`,
+    "i"
+  );
+  return pattern.test(cleaned);
+}
+
+function withSafeMessageType(message) {
+  const fallbackType =
+    message?.threadId &&
+    message?.data?.uidFrom &&
+    String(message.threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage;
+  const resolvedType = safeThreadType(message, fallbackType);
+  return message?.type === resolvedType ? message : { ...message, type: resolvedType };
+}
+
+export function reverseGraphemeText(text) {
+  const str = String(text ?? "");
+  if (!str) return "";
+  return Array.from(VI_GRAPHEME_SEGMENTER.segment(str), (s) => s.segment)
+    .reverse()
+    .join("");
+}
+
+export async function handleReverseCommand(api, message, aliasCommand = "reverse") {
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "reverse";
 
-  // Kiểm tra nếu tin nhắn bắt đầu bằng lệnh này
-  if (!content.startsWith(`${currentPrefix}reverse`)) return false;
-
-  // Lấy toàn bộ nội dung sau tên lệnh
-  const textToReverse = content.slice(currentPrefix.length + "reverse".length).trim();
-
-  // ✅ Nếu không nhập nội dung
-  if (!textToReverse) {
-    const guide = `❌ Vui lòng nhập nội dung bạn muốn đảo ngược.
-    
-👉 Ví dụ: ${currentPrefix}reverse chào bạn nhé`;
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${guide}`, true, 60000, true);
+  if (!matchesCommandInvocation(message, currentPrefix, effectiveAlias)) {
+    return false;
   }
 
-  // Mã hóa nội dung để đưa vào URL
-  const apiUrl = `https://apinvh.zzux.com/api/example?text=${encodeURIComponent(textToReverse)}`;
-  console.log("Gọi API Reverse:", apiUrl);
+  const msgCtx = withSafeMessageType(message);
+  const argText = extractCommandBody(msgCtx, currentPrefix, effectiveAlias);
+  const textToReverse = argText || getQuotedText(msgCtx);
+
+  if (!textToReverse) {
+    const guide =
+      `❌ Vui lòng nhập nội dung hoặc reply tin nhắn muốn đảo ngược.\n\n` +
+      `👉 Ví dụ: ${currentPrefix}${effectiveAlias} Xin chào Việt Nam 🇻🇳`;
+    return sendMessageStateQuote(api, msgCtx, guide, false, 60000, true);
+  }
 
   try {
-    const res = await fetch(apiUrl);
-    
-    // API này trả về JSON
-    const data = await res.json();
-
-    if (!res.ok || !data.reversed) {
-      return sendMessageStateQuote(
-        api,
-        message,
-        `${getCleanNameServer()}❌ Văn bản không hợp lệ hoặc không thể đảo ngược.`,
-        true,
-        60000,
-        false
-      );
-    }
-
-    // Lấy kết quả từ key 'reversed' trong JSON
-    const msg = `✅ ĐẢO NGƯỢC VĂN BẢN THÀNH CÔNG
-
-➤ Gốc: ${data.original}
-➤ Đảo ngược: ${data.reversed}`;
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${msg}`, true, 3600000, false);
-  } catch (e) {
-    console.error("Lỗi API reverse:", e);
+    const reversed = reverseGraphemeText(textToReverse);
+    const msg =
+      `✅ ĐẢO NGƯỢC VĂN BẢN THÀNH CÔNG\n\n` +
+      `➤ Gốc: ${textToReverse}\n` +
+      `➤ Đảo ngược: ${reversed}`;
+    return sendMessageStateQuote(api, msgCtx, msg, true, 3600000, false);
+  } catch (error) {
     return sendMessageFailed(
       api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
+      msgCtx,
+      `❌ Không thể đảo ngược văn bản: ${error?.message || "Không xác định"}`,
       true
     );
   }

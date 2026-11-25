@@ -1,19 +1,18 @@
-import { promises as fs } from "fs";
+import { promises as fs, existsSync } from "fs";
 import path from "path";
-// Import removeMention phòng trường hợp cần sau này
-import { removeMention } from "../../utils/format-util.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import { MessageMention } from "../../api-zalo/models/index.js";
 import { getGlobalPrefix } from "../service.js";
 import {
   sendMessageStateQuote,
   sendMessageFailed,
   sendMessageInsufficientAuthority,
 } from "../chat-zalo/chat-style/chat-style.js";
-
 import { getBotId, getProjectRoot } from "../../utils/env.js";
 import { getActiveRuntimeContext } from "../../utils/io-json.js";
 import { isAdmin } from "../../utils/role-policy.js";
 import { getUserInfoData } from "../info-service/user-info.js";
-import { existsSync } from "fs";
+import { extractCommandBody, safeThreadType } from "../../commands/shared/command-input-utils.js";
 
 let reminderIntervalHandle = null;
 
@@ -26,7 +25,14 @@ function getDataFilePath(botId) {
   if (ctx?.remindersPath) {
     return ctx.remindersPath;
   }
-  return path.join(getProjectRoot(), "mybot", "instances", String(botId || "admin"), "data", "reminders.json");
+  return path.join(
+    getProjectRoot(),
+    "mybot",
+    "instances",
+    String(botId || "admin"),
+    "data",
+    "reminders.json"
+  );
 }
 
 async function readReminders(botId) {
@@ -64,124 +70,216 @@ async function writeReminders(reminders, botId) {
   }
 }
 
-/**
- * Phân tích chuỗi dd/mm/yy thành các phần (ngày, tháng, năm).
- * Giả định múi giờ là GMT+7. Trả về null nếu không hợp lệ.
- */
 function parseDateString(dateStr) {
-    const dateParts = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
-    if (!dateParts) return null;
+  const dateParts = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!dateParts) return null;
 
-    const day = parseInt(dateParts[1], 10);
-    const month = parseInt(dateParts[2], 10) - 1; // Tháng bắt đầu từ 0
-    const year = 2000 + parseInt(dateParts[3], 10); // Giả định năm 20xx
+  const day = Number.parseInt(dateParts[1], 10);
+  const month = Number.parseInt(dateParts[2], 10) - 1;
+  const rawYear = Number.parseInt(dateParts[3], 10);
+  const year = dateParts[3].length === 2 ? 2000 + rawYear : rawYear;
 
-    // Kiểm tra cơ bản
-    if (day < 1 || day > 31 || month < 0 || month > 11) return null;
-
-    // (Có thể thêm kiểm tra ngày hợp lệ cho từng tháng nếu cần)
-
-    return { day, month, year };
+  if (day < 1 || day > 31 || month < 0 || month > 11) return null;
+  const check = new Date(Date.UTC(year, month, day));
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month ||
+    check.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { day, month, year };
 }
 
+function formatVietnamDateTime(timestampMs) {
+  const vn = new Date(timestampMs + 7 * 3600_000);
+  const hh = String(vn.getUTCHours()).padStart(2, "0");
+  const mm = String(vn.getUTCMinutes()).padStart(2, "0");
+  const dd = String(vn.getUTCDate()).padStart(2, "0");
+  const mo = String(vn.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = vn.getUTCFullYear();
+  return {
+    timeStr: `${hh}:${mm}`,
+    dateStr: `${dd}/${mo}/${yyyy}`,
+    fullStr: `${hh}:${mm} ngày ${dd}/${mo}/${yyyy}`,
+  };
+}
 
-/**
- * Xử lý lệnh .nhacnho
- */
-export async function handleNhacNhoCommand(api, message, aliasCommand) {
+function getUserVisibleReminders(allReminders, requesterId) {
+  const uid = String(requesterId || "");
+  return allReminders
+    .filter((r) => String(r.requesterId) === uid || String(r.targetId) === uid)
+    .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+}
+
+export async function handleNhacNhoCommand(api, message, aliasCommand = "nhacnho") {
   const prefix = getGlobalPrefix();
   const threadId = message.threadId;
   const requesterId = message.data.uidFrom;
-  const botId = getBotId();
+  const botId = getBotId() || api?.getOwnId?.() || "admin";
 
-  const rawContent = message.data.content.slice(prefix.length + aliasCommand.length).trim();
+  const rawText = String(message?.data?.content || "").trim();
+  const cmdStripRegex = new RegExp(
+    `^\\s*${String(prefix || "").replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*${String(
+      aliasCommand || "nhacnho"
+    ).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}(?:\\s+|$)`,
+    "i"
+  );
+  const rawContent = cmdStripRegex.test(rawText)
+    ? rawText.replace(cmdStripRegex, "").trim()
+    : extractCommandBody(message, prefix, aliasCommand);
 
-  // Tìm thời gian HH:MM cuối cùng
+  const subTokens = rawContent.split(/\s+/).filter(Boolean);
+  const firstSub = (subTokens[0] || "").toLowerCase();
+
+  if (firstSub === "list" || firstSub === "ds") {
+    const reminders = await readReminders(botId);
+    const mine = getUserVisibleReminders(reminders, requesterId);
+    if (mine.length === 0) {
+      await sendMessageStateQuote(api, message, "Bạn hiện không có lời nhắc nào đang chờ.", true, 60000);
+      return;
+    }
+    const lines = mine.map((item, idx) => {
+      const { fullStr } = formatVietnamDateTime(item.timestamp);
+      const who =
+        String(item.targetId) === String(requesterId)
+          ? "Bạn"
+          : item.targetName || item.targetId;
+      return `${idx + 1}. [${fullStr}] (${who}) — ${item.message}`;
+    });
+    const listText =
+      `📋 Danh sách lời nhắc đang chờ (${mine.length}):\n` +
+      lines.join("\n") +
+      `\n\n💡 Dùng ${prefix}${aliasCommand} del <STT> để xóa lời nhắc.`;
+    await sendMessageStateQuote(api, message, listText, true, 120000, false);
+    return;
+  }
+
+  if (firstSub === "del" || firstSub === "xoa" || firstSub === "remove") {
+    const stt = Number.parseInt(subTokens[1], 10);
+    if (!Number.isInteger(stt) || stt < 1) {
+      await sendMessageFailed(
+        api,
+        message,
+        `Vui lòng nhập số thứ tự lời nhắc cần xóa.\nVí dụ: ${prefix}${aliasCommand} del 1 (xem danh sách bằng ${prefix}${aliasCommand} list)`
+      );
+      return;
+    }
+    const reminders = await readReminders(botId);
+    const mine = getUserVisibleReminders(reminders, requesterId);
+    const targetItem = mine[stt - 1];
+    if (!targetItem) {
+      await sendMessageFailed(
+        api,
+        message,
+        `Không tìm thấy lời nhắc số #${stt}. Dùng ${prefix}${aliasCommand} list để kiểm tra lại.`
+      );
+      return;
+    }
+    const remaining = reminders.filter((r) => r.id !== targetItem.id);
+    await writeReminders(remaining, botId);
+    const { fullStr } = formatVietnamDateTime(targetItem.timestamp);
+    await sendMessageStateQuote(
+      api,
+      message,
+      `Đã xóa lời nhắc #${stt} (${fullStr}): "${targetItem.message}"`,
+      true,
+      60000
+    );
+    return;
+  }
+
   const timeRegex = /\b(\d{1,2}):(\d{2})\b/g;
   let timeMatch = null;
   let lastTimeIndex = -1;
   let currentMatch;
   while ((currentMatch = timeRegex.exec(rawContent)) !== null) {
-      timeMatch = currentMatch;
-      lastTimeIndex = currentMatch.index;
+    timeMatch = currentMatch;
+    lastTimeIndex = currentMatch.index;
   }
 
   if (!timeMatch) {
     await sendMessageFailed(
       api,
       message,
-      `Cú pháp sai. Thiếu thời gian (HH:MM).\nVí dụ: ${prefix}${aliasCommand} nội dung [dd/mm/yy] HH:MM`
+      `Cú pháp: ${prefix}${aliasCommand} <nội dung> [dd/mm/yy] <HH:MM>\n` +
+        `• Xem danh sách: ${prefix}${aliasCommand} list\n` +
+        `• Xóa lời nhắc: ${prefix}${aliasCommand} del <STT>`
     );
     return;
   }
 
   const timeStr = timeMatch[0];
-  const hours = parseInt(timeMatch[1], 10); // Giờ (GMT+7)
-  const minutes = parseInt(timeMatch[2], 10); // Phút
+  const hours = Number.parseInt(timeMatch[1], 10);
+  const minutes = Number.parseInt(timeMatch[2], 10);
 
-  // Nội dung là phần trước thời gian HH:MM cuối cùng
-  let contentBeforeTime = rawContent.substring(0, lastTimeIndex).trim();
-
-  // Tìm ngày dd/mm/yy trong phần nội dung trước thời gian
-  const dateRegex = /\b(\d{1,2}\/\d{1,2}\/\d{2})\b/;
-  const dateMatch = contentBeforeTime.match(dateRegex);
-  let specificDateParts = null;
-  let contentWithoutDateAndTime = contentBeforeTime; // Nội dung mặc định
-
-  if (dateMatch) {
-    const potentialDateStr = dateMatch[1];
-    specificDateParts = parseDateString(potentialDateStr); // Phân tích ngày
-    if (specificDateParts) {
-      // Nếu ngày hợp lệ, loại bỏ nó khỏi nội dung
-      contentWithoutDateAndTime = contentBeforeTime.replace(dateRegex, "").trim();
-    }
-    // Nếu ngày không hợp lệ, coi nó là một phần của nội dung
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    await sendMessageFailed(
+      api,
+      message,
+      `Thời gian "${timeStr}" không hợp lệ! Giờ phải từ 00 đến 23 và phút từ 00 đến 59.`
+    );
+    return;
   }
 
-  // Sử dụng phần nội dung còn lại để xác định người nhận và nội dung nhắc
-  let textToParse = contentWithoutDateAndTime;
+  const contentBeforeTime = rawContent.substring(0, lastTimeIndex).trim();
 
-  // 2. Xác định người nhận (target) và nội dung (reminderText)
+  const dateRegex = /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/;
+  const dateMatch = contentBeforeTime.match(dateRegex);
+  let specificDateParts = null;
+  let contentWithoutDateAndTime = contentBeforeTime;
+
+  if (dateMatch) {
+    specificDateParts = parseDateString(dateMatch[1]);
+    if (specificDateParts) {
+      contentWithoutDateAndTime = contentBeforeTime.replace(dateRegex, "").trim();
+    }
+  }
+
+  const textToParse = contentWithoutDateAndTime;
   let targetId = requesterId;
   let targetName = "bạn";
-  let reminderText = ""; // Nội dung cuối cùng
+  let reminderText = "";
 
   const targetMention = message.data.mentions?.[0];
-  const args = textToParse.split(/\s+/); // Tách theo khoảng trắng
-  const firstWord = args[0];
+  const args = textToParse.split(/\s+/);
+  const firstWord = args[0] || "";
   const isFirstWordUID = /^\d{10,}$/.test(firstWord);
+  const mentionSlice =
+    targetMention &&
+    typeof targetMention.pos === "number" &&
+    typeof targetMention.len === "number" &&
+    typeof message.data.content === "string"
+      ? message.data.content.substring(targetMention.pos, targetMention.pos + targetMention.len)
+      : "";
 
-  if (targetMention && textToParse.startsWith(message.data.content.substring(targetMention.pos, targetMention.pos + targetMention.len))) {
-    // Trường hợp 1: @Mention ở đầu
+  if (targetMention && mentionSlice && textToParse.startsWith(mentionSlice)) {
     targetId = targetMention.uid;
-    targetName = targetMention.dName;
-    // Lấy nội dung sau @mention
-    reminderText = textToParse.substring(message.data.content.substring(targetMention.pos, targetMention.pos + targetMention.len).length).trim();
-
+    targetName = targetMention.dName || mentionSlice.replace(/^@/, "").trim() || targetId;
+    reminderText = textToParse.substring(mentionSlice.length).trim();
   } else if (isFirstWordUID) {
-    // Trường hợp 2: UID ở đầu (Cần quyền Admin bot)
     if (!isAdmin(requesterId)) {
-      await sendMessageInsufficientAuthority(api, message, "Bạn không có quyền dùng lệnh nhắc nhở qua UID.");
+      await sendMessageInsufficientAuthority(
+        api,
+        message,
+        "Bạn không có quyền dùng lệnh nhắc nhở qua UID."
+      );
       return;
     }
-
     targetId = firstWord;
-    // Lấy nội dung sau UID
     reminderText = textToParse.substring(firstWord.length).trim();
     try {
       const userInfo = await getUserInfoData(api, targetId);
       targetName = userInfo.name || targetId;
-    } catch (e) {
+    } catch {
       targetName = targetId;
     }
   } else {
-    // Trường hợp 3: Nhắc cho bản thân
     targetId = requesterId;
     targetName = "bạn";
-    reminderText = textToParse.trim(); // Toàn bộ nội dung còn lại là lời nhắc
+    reminderText = textToParse.trim();
   }
 
-  // Kiểm tra nội dung lần cuối
   if (!reminderText) {
     await sendMessageFailed(
       api,
@@ -191,105 +289,91 @@ export async function handleNhacNhoCommand(api, message, aliasCommand) {
     return;
   }
 
-  // 3. Tính toán thời gian nhắc (GMT+7 sang UTC)
-  const now = new Date(); // Giờ địa phương của server
-  const nowMsUTC = Date.now(); // Timestamp UTC hiện tại
-
-  const reminderTime = new Date(); // Bắt đầu với ngày giờ hiện tại của server
+  const nowMsUTC = Date.now();
+  const vnNow = new Date(nowMsUTC + 7 * 3600_000);
+  let targetTimestampMs;
 
   if (specificDateParts) {
-    // === Đặt ngày cụ thể (đã nhập) ===
-    // Đặt ngày/tháng/năm theo UTC để tránh lỗi timezone khi đặt
-    reminderTime.setUTCFullYear(specificDateParts.year, specificDateParts.month, specificDateParts.day);
-    // Đặt giờ/phút theo UTC (giờ VN - 7)
-    reminderTime.setUTCHours(hours - 7, minutes, 0, 0);
-
-    // Kiểm tra xem ngày giờ cụ thể này có nằm trong quá khứ không
-    if (reminderTime.getTime() <= nowMsUTC) {
-        await sendMessageFailed(
-            api,
-            message,
-            `Không thể đặt lời nhắc cho quá khứ (${dateMatch[1]} ${timeStr}).`
-        );
-        return;
+    targetTimestampMs = Date.UTC(
+      specificDateParts.year,
+      specificDateParts.month,
+      specificDateParts.day,
+      hours - 7,
+      minutes,
+      0,
+      0
+    );
+    if (targetTimestampMs <= nowMsUTC) {
+      await sendMessageFailed(
+        api,
+        message,
+        `Không thể đặt lời nhắc cho quá khứ (${dateMatch[1]} ${timeStr}).`
+      );
+      return;
     }
-
   } else {
-    // === Không nhập ngày, dùng logic hôm nay/ngày mai ===
-    // Đặt giờ/phút theo UTC cho hôm nay
-    reminderTime.setUTCHours(hours - 7, minutes, 0, 0);
-
-    // Nếu thời gian UTC này đã trôi qua so với hiện tại, đặt cho ngày mai (UTC)
-    if (reminderTime.getTime() <= nowMsUTC) {
-      reminderTime.setUTCDate(reminderTime.getUTCDate() + 1);
+    targetTimestampMs = Date.UTC(
+      vnNow.getUTCFullYear(),
+      vnNow.getUTCMonth(),
+      vnNow.getUTCDate(),
+      hours - 7,
+      minutes,
+      0,
+      0
+    );
+    if (targetTimestampMs <= nowMsUTC) {
+      targetTimestampMs += 86_400_000;
     }
   }
 
-  // 4. Tạo đối tượng lời nhắc
+  const normalizedTimeStr = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
   const newReminder = {
-    id: Date.now().toString(),
-    requesterId: requesterId,
-    targetId: targetId,
-    threadId: threadId,
-    message: reminderText, // Nội dung đã được trim
-    timestamp: reminderTime.getTime(), // Lưu timestamp UTC
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    requesterId,
+    targetId,
+    targetName: targetName === "bạn" ? message.data?.dName || "Bạn" : targetName,
+    threadId,
+    isGroup: safeThreadType(message) === MessageType.GroupMessage,
+    message: reminderText,
+    timestamp: targetTimestampMs,
   };
 
-  // 5. Lưu vào file
   try {
-      const reminders = await readReminders(botId);
-      reminders.push(newReminder);
-      await writeReminders(reminders, botId); // Chờ ghi file xong
+    const reminders = await readReminders(botId);
+    reminders.push(newReminder);
+    await writeReminders(reminders, botId);
 
-      // 6. Gửi tin nhắn xác nhận (chỉ sau khi ghi thành công)
-      const displayDate = reminderTime.toLocaleDateString("vi-VN", {
-          timeZone: "Asia/Ho_Chi_Minh", // Hiển thị theo giờ VN
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric"
-      });
-      // Tin nhắn xác nhận một dòng
-      const confirmationMsg = `Đã đặt lời nhắc cho ${targetName} lúc ${timeStr} ngày ${displayDate}. Nội dung: "${reminderText}"`;
-
-      await sendMessageStateQuote(api, message, confirmationMsg, true, 300000);
-
+    const { dateStr } = formatVietnamDateTime(targetTimestampMs);
+    const confirmationMsg = `Đã đặt lời nhắc cho ${targetName} lúc ${normalizedTimeStr} ngày ${dateStr}. Nội dung: "${reminderText}"`;
+    await sendMessageStateQuote(api, message, confirmationMsg, true, 300000);
   } catch (writeError) {
-      console.error("[NHACNHO] Lỗi khi lưu lời nhắc:", writeError);
-      await sendMessageFailed(api, message, "Đã xảy ra lỗi khi lưu lời nhắc. Vui lòng thử lại.");
+    console.error("[NHACNHO] Lỗi khi lưu lời nhắc:", writeError);
+    await sendMessageFailed(api, message, "Đã xảy ra lỗi khi lưu lời nhắc. Vui lòng thử lại.");
   }
 }
 
-/**
- * Kiểm tra và gửi lời nhắc đến hạn (Tin nhắn riêng tư)
- * @param {object} api
- * @param {string} botId (PHẢI được truyền từ setInterval)
- */
 export async function checkReminders(api, botId) {
   if (!botId) {
-      console.error("[checkReminders] Thiếu botId! Không thể kiểm tra lời nhắc.");
-      return;
+    console.error("[checkReminders] Thiếu botId! Không thể kiểm tra lời nhắc.");
+    return;
   }
 
   let allReminders = [];
   try {
-      allReminders = await readReminders(botId);
+    allReminders = await readReminders(botId);
   } catch (readError) {
-      console.error(`[checkReminders] Lỗi đọc file reminders cho bot ${botId}:`, readError);
-      return; // Không thể tiếp tục nếu không đọc được file
+    console.error(`[checkReminders] Lỗi đọc file reminders cho bot ${botId}:`, readError);
+    return;
   }
 
-  const now = Date.now(); // Timestamp UTC hiện tại
-
-  // Lọc lời nhắc
+  const now = Date.now();
   const dueReminders = [];
   const pendingReminders = [];
+
   for (const reminder of allReminders) {
-    // Kiểm tra timestamp hợp lệ
-    if (typeof reminder.timestamp !== 'number' || isNaN(reminder.timestamp)) {
-        console.warn(`[checkReminders] Lời nhắc ID ${reminder.id} có timestamp không hợp lệ, bỏ qua.`);
-        continue;
+    if (typeof reminder.timestamp !== "number" || Number.isNaN(reminder.timestamp)) {
+      continue;
     }
-    // Phân loại
     if (reminder.timestamp <= now) {
       dueReminders.push(reminder);
     } else {
@@ -297,57 +381,66 @@ export async function checkReminders(api, botId) {
     }
   }
 
-  // Nếu không có gì đến hạn, thoát
   if (dueReminders.length === 0) {
     return;
   }
 
-  // Ghi lại danh sách chờ ngay lập tức để tránh gửi lặp
   try {
-      await writeReminders(pendingReminders, botId);
+    await writeReminders(pendingReminders, botId);
   } catch (writeError) {
-      console.error(`[checkReminders] Lỗi nghiêm trọng: Không thể cập nhật file reminders sau khi lọc! Lời nhắc có thể bị gửi lại.`, writeError);
+    console.error("[checkReminders] Lỗi cập nhật file reminders sau khi lọc:", writeError);
   }
 
-  // Gửi các lời nhắc đến hạn
   for (const reminder of dueReminders) {
-    // Kiểm tra dữ liệu cơ bản
     if (!reminder || !reminder.targetId || !reminder.message || !reminder.requesterId) {
-        console.warn(`[checkReminders] Lời nhắc ID ${reminder?.id} thiếu thông tin, bỏ qua.`);
-        continue;
+      continue;
     }
-    try {
-      const { targetId, threadId, message, requesterId } = reminder;
+    const { targetId, targetName, threadId, isGroup, message, requesterId } = reminder;
+    let finalMsg = `⏰ LỜI NHẮC TỰ ĐỘNG ⏰\nNội dung: ${message}`;
 
-      // Tạo nội dung (dùng \n để xuống dòng)
-      let finalMsg = `⏰ LỜI NHẮC TỰ ĐỘNG ⏰\nNội dung: ${message}`;
-
-      // Thêm người đặt nếu khác người nhận
-      if (requesterId !== targetId) {
-        try {
-          const requesterInfo = await getUserInfoData(api, requesterId);
-          finalMsg += `\n(Người đặt: ${requesterInfo.name || 'Một ai đó'})`;
-        } catch (e) {
-          console.warn(`[checkReminders] Không lấy được info người đặt ${requesterId}: ${e.message}`);
-          finalMsg += `\n(Người đặt: ... )`;
-        }
+    if (requesterId !== targetId) {
+      try {
+        const requesterInfo = await getUserInfoData(api, requesterId);
+        finalMsg += `\n(Người đặt: ${requesterInfo.name || "Một thành viên"})`;
+      } catch {
+        finalMsg += `\n(Người đặt: ${requesterId})`;
       }
+    }
 
-      console.log(`[NHACNHO] Chuẩn bị gửi lời nhắc ID ${reminder.id} đến ${targetId}`);
-      // console.log("[NHACNHO] Nội dung trước khi gửi:", JSON.stringify(finalMsg));
-
-      // Gửi tin nhắn riêng tư với TTL 24h
+    try {
       await api.sendMessage(
         {
           msg: finalMsg,
-          ttl: 86400000 // 24 giờ
+          ttl: 86400000,
         },
-        targetId // ID người nhận
+        targetId,
+        MessageType.DirectMessage
       );
-      console.log(`[NHACNHO] Gửi thành công lời nhắc ID ${reminder.id} đến ${targetId}`);
-
-    } catch (sendError) {
-      console.error(`[checkReminders] Lỗi khi gửi lời nhắc RIÊNG TƯ (ID: ${reminder.id} đến ${reminder.targetId}):`, sendError);
+    } catch (dmError) {
+      console.warn(
+        `[checkReminders] Không gửi được tin riêng cho ${targetId}, thử fallback vào nhóm ${threadId}:`,
+        dmError?.message || dmError
+      );
+      if (threadId && String(threadId) !== String(targetId) && isGroup !== false) {
+        try {
+          const displayTag = `@${targetName || targetId}`;
+          const groupText = `${displayTag}\n${finalMsg}`;
+          await api.sendMessage(
+            {
+              msg: groupText,
+              mentions: [MessageMention(targetId, displayTag.length, 0)],
+              ttl: 86400000,
+            },
+            threadId,
+            MessageType.GroupMessage
+          );
+        } catch (groupErr) {
+          console.error(
+            `[checkReminders] Fallback gửi nhóm ${threadId} cho lời nhắc ${reminder.id} thất bại:`,
+            groupErr?.message || groupErr
+          );
+        }
+      }
     }
   }
 }

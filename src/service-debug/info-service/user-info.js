@@ -1,5 +1,5 @@
 import * as cv from "../../utils/canvas/index.js";
-import { removeMention } from "../../utils/format-util.js";
+import { extractCommandBody } from "../../commands/shared/command-input-utils.js";
 import { getGlobalPrefix } from "../service.js";
 import { getUserInfoData } from "./user-info-data.js";
 import { getInstanceKind, getBotName } from "../../utils/env.js";
@@ -10,13 +10,22 @@ function logStage(stage, details = {}) {
 
 export { getUserInfoData } from "./user-info-data.js";
 
+function hasTextFlagToken(body) {
+  const tokens = String(body || "").trim().split(/\s+/).filter(Boolean);
+  return tokens.some((token) => /^-?text$/i.test(token));
+}
+
+function stripTextFlagTokens(body) {
+  const tokens = String(body || "").trim().split(/\s+/).filter(Boolean);
+  return tokens.filter((token) => !/^-?text$/i.test(token)).join(" ").trim();
+}
+
 export async function userInfoCommand(api, message, aliasCommand) {
   const threadId = message.threadId;
   const senderId = message.data.uidFrom;
-  let content = removeMention(message);
   const prefix = getGlobalPrefix();
-  content = content.replace(`${prefix}${aliasCommand}`, "").trim();
-  if (content.includes("text")) {
+  const content = extractCommandBody(message, prefix, aliasCommand || "info");
+  if (hasTextFlagToken(content)) {
     await userInfoCommandText(api, message, aliasCommand);
     return;
   }
@@ -58,10 +67,9 @@ export async function userInfoCommand(api, message, aliasCommand) {
 export async function userInfoCommandText(api, message, aliasCommand) {
   const threadId = message.threadId;
   const senderId = message.data.uidFrom;
-  let content = removeMention(message);
   const prefix = getGlobalPrefix();
-  content = content.replace(`${prefix}${aliasCommand}`, "").trim();
-  content = content.replace("text", "").trim();
+  const rawBody = extractCommandBody(message, prefix, aliasCommand || "info");
+  const content = stripTextFlagTokens(rawBody);
   try {
     const targetUserId = message.data.mentions?.[0]?.uid
         || (content === "-f" ? message.data?.idTo

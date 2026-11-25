@@ -57,7 +57,42 @@ export function isAdmin(userId, threadId, groupAdmins) {
   return isAdminBoxOrHigher(userId, threadId, groupAdmins);
 }
 
-export const scoldUsers = new Map();
+class ScoldUserMap extends Map {
+  has(key) {
+    const strKey = String(key ?? "");
+    if (super.has(strKey)) return true;
+    if (!strKey.includes(":")) {
+      const suffix = `:${strKey}`;
+      for (const existingKey of super.keys()) {
+        if (String(existingKey).endsWith(suffix)) return true;
+      }
+    }
+    return false;
+  }
+
+  delete(key) {
+    const strKey = String(key ?? "");
+    const deletedExact = super.delete(strKey);
+    if (deletedExact || strKey.includes(":")) return deletedExact;
+    let deletedAny = false;
+    const suffix = `:${strKey}`;
+    for (const existingKey of Array.from(super.keys())) {
+      if (String(existingKey).endsWith(suffix)) {
+        super.delete(existingKey);
+        deletedAny = true;
+      }
+    }
+    return deletedAny;
+  }
+}
+
+function makeScoldSessionKey(threadId, userId) {
+  const uidStr = String(userId ?? "").trim();
+  const tidStr = threadId !== undefined && threadId !== null ? String(threadId).trim() : "";
+  return tidStr ? `${tidStr}:${uidStr}` : uidStr;
+}
+
+export const scoldUsers = new ScoldUserMap();
 export let isScoldingActive = false;
 const activeSessions = new Map();
 
@@ -83,25 +118,27 @@ export function hasActiveScold(threadId) {
   );
 }
 
-function cleanupSession(userId) {
-  const session = activeSessions.get(userId);
+function cleanupSession(sessionKey) {
+  const key = String(sessionKey ?? "");
+  const session = activeSessions.get(key);
   if (session) {
     if (session.timer) {
       clearTimeout(session.timer);
       session.timer = null;
     }
     session.active = false;
-    activeSessions.delete(userId);
+    activeSessions.delete(key);
   }
-  scoldUsers.delete(userId);
+  scoldUsers.delete(key);
   if (activeSessions.size === 0) {
     isScoldingActive = false;
   }
 }
 
 async function handleForgive(session, api) {
+  const sessionKey = session?.sessionKey || makeScoldSessionKey(session?.threadId, session?.userId);
   if (!session || session.forgiven) {
-    if (session) cleanupSession(session.userId);
+    if (session) cleanupSession(sessionKey);
     return;
   }
   session.forgiven = true;
@@ -134,7 +171,7 @@ async function handleForgive(session, api) {
       console.error(`[scoldUser] Fallback plain forgiveness message failed for ${session.userId}:`, fallbackErr);
     }
   } finally {
-    cleanupSession(session.userId);
+    cleanupSession(sessionKey);
   }
 }
 
@@ -322,7 +359,13 @@ export async function scoldUser(api, message, providedGroupAdmins) {
     return;
   }
 
-  if (scoldUsers.has(userId)) {
+  const sessionKey = makeScoldSessionKey(threadId, userId);
+  const isAlreadyScoldingInScope =
+    Map.prototype.has.call(scoldUsers, sessionKey) ||
+    Map.prototype.has.call(scoldUsers, String(userId)) ||
+    (!threadId && scoldUsers.has(userId));
+
+  if (isAlreadyScoldingInScope) {
     try {
       await api.sendMessage(
         {
@@ -2041,10 +2084,11 @@ export async function scoldUser(api, message, providedGroupAdmins) {
     genderId: userTarget?.genderId ?? 0,
   };
 
-  scoldUsers.set(userId, true);
+  scoldUsers.set(sessionKey, true);
   isScoldingActive = true;
 
   const session = {
+    sessionKey,
     userId: String(userId),
     threadId,
     userTarget,
@@ -2055,7 +2099,7 @@ export async function scoldUser(api, message, providedGroupAdmins) {
     forgiven: false,
     timer: null,
   };
-  activeSessions.set(userId, session);
+  activeSessions.set(sessionKey, session);
 
   const caption = "Tao chuẩn bị mắng yêu ";
   try {
@@ -2069,7 +2113,7 @@ export async function scoldUser(api, message, providedGroupAdmins) {
     );
   } catch (err) {
     console.error("[scoldUser] Error sending initial scold warning message:", err);
-    cleanupSession(userId);
+    cleanupSession(sessionKey);
     return;
   }
 
@@ -2120,7 +2164,7 @@ export async function scoldUser(api, message, providedGroupAdmins) {
           );
         } catch (retryErr) {
           console.error(`[scoldUser] Plain scold message retry failed for ${session.userId}:`, retryErr);
-          cleanupSession(session.userId);
+          cleanupSession(sessionKey);
           return;
         }
       }

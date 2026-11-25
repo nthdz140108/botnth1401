@@ -7,6 +7,7 @@ import { removeMention } from "../../../utils/format-util.js";
 import { getBotInfoSync, getProjectRoot } from "../../../utils/env.js";
 import { writeGroupSettings } from "../../../utils/io-json.js";
 import { isGroupBotActive } from "../../../automations/chat-access-policy.js";
+import { safeThreadType } from "../../../commands/shared/command-input-utils.js";
 
 function resolveTrainingPath() {
   const projectRoot = getProjectRoot();
@@ -596,96 +597,153 @@ export function findResponse(message, threadId) {
 }
 
 // ====================== COMMAND HANDLERS ======================
-export async function handleLearnCommand(api, message, groupSettings) {
+function escapeCmdRegExp(str) {
+  return String(str ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseLearnNowPair(rawPayload) {
+  const cleaned = String(rawPayload || "").replace(/^[\s_]+/, "").trim();
+  if (!cleaned) return null;
+
+  if (cleaned.includes("|")) {
+    const sepIdx = cleaned.indexOf("|");
+    const question = cleaned.slice(0, sepIdx).trim();
+    const answer = cleaned.slice(sepIdx + 1).trim().replace(/\\n/g, "\n");
+    if (question && answer) return { question, answer };
+    return null;
+  }
+
+  if (cleaned.includes("_")) {
+    const sepIdx = cleaned.indexOf("_");
+    const question = cleaned.slice(0, sepIdx).trim();
+    const answer = cleaned.slice(sepIdx + 1).trim().replace(/\\n/g, "\n");
+    if (question && answer) return { question, answer };
+  }
+
+  return null;
+}
+
+export async function handleLearnCommand(
+  api,
+  message,
+  groupSettings,
+  aliasCommand = "",
+  forcedKind = ""
+) {
   const threadId = message.threadId;
-  const content = removeMention(message);
+  const content = (removeMention(message) || String(message?.data?.content || "")).trim();
   const prefix = getGlobalPrefix();
+  const escapedPrefix = escapeCmdRegExp(prefix);
 
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = { learnEnabled: false, replyEnabled: false };
   }
 
-  if (content.startsWith(`${prefix}learnnow`)) {
-    const parts = content.split("_");
-    if (parts.length >= 3) {
-      const question = parts[1];
-      let answer = parts.slice(2).join("_").replace(/\\n/g, "\n");
-      if (question && answer) {
-        const success = await learnNewResponse(api, threadId, question, answer);
-        if (success) {
-          const caption = `Đã thêm câu trả lời mới thành công. Khi người dùng gửi tin nhắn chứa "${question}", tôi sẽ trả lời:\n${answer}`;
-          await sendMessageComplete(api, message, caption);
-        } else {
-          const caption = `Câu trả lời "${answer}" đã tồn tại cho câu hỏi "${question}"`;
-          await sendMessageWarning(api, message, caption);
-        }
+  const learnNowRegex = new RegExp(
+    `^\\s*${escapedPrefix}\\s*${aliasCommand && forcedKind === "learnnow" ? escapeCmdRegExp(aliasCommand) : "learnnow"}(?=[\\s_]|$)`,
+    "i"
+  );
+  const unlearnRegex = new RegExp(
+    `^\\s*${escapedPrefix}\\s*${aliasCommand && forcedKind === "unlearn" ? escapeCmdRegExp(aliasCommand) : "unlearn"}(?:\\s+|$)`,
+    "i"
+  );
+  const learnRegex = new RegExp(
+    `^\\s*${escapedPrefix}\\s*${aliasCommand && forcedKind === "learn" ? escapeCmdRegExp(aliasCommand) : "learn"}(?:\\s+|$)`,
+    "i"
+  );
+
+  if (forcedKind === "learnnow" || learnNowRegex.test(content)) {
+    const payload = content.replace(learnNowRegex, "");
+    const parsed = parseLearnNowPair(payload);
+    if (parsed) {
+      const { question, answer } = parsed;
+      const success = await learnNewResponse(api, threadId, question, answer);
+      if (success) {
+        const caption = `Đã thêm câu trả lời cố định thành công. Khi người dùng gửi tin nhắn chứa "${question}", tôi sẽ trả lời:\n${answer}`;
+        await sendMessageComplete(api, message, caption);
       } else {
-        const caption = "Cú pháp không hợp lệ. Vui lòng sử dụng: !learnnow_[Câu Hỏi]_[Câu Trả Lời] (dùng \\n để xuống dòng)";
+        const caption = `Không thể lưu: Câu trả lời "${answer}" đã tồn tại hoặc chứa từ khóa không hợp lệ.`;
         await sendMessageWarning(api, message, caption);
       }
     } else {
-      const caption = "Cú pháp không hợp lệ. Vui lòng sử dụng: !learnnow_[Câu Hỏi]_[Câu Trả Lời] (dùng \\n để xuống dòng)";
+      const caption =
+        `Cú pháp: ${prefix}${aliasCommand || "learnnow"} [Câu hỏi] | [Câu trả lời] ` +
+        `hoặc ${prefix}${aliasCommand || "learnnow"}_[Câu hỏi]_[Câu trả lời] (dùng \\n để xuống dòng)`;
       await sendMessageWarning(api, message, caption);
     }
     return true;
-  } else if (content.startsWith(`${prefix}learn`)) {
-    const parts = content.split(" ");
-    if (parts.length >= 2 && parts[1].toLowerCase() === "list") {
-      await handleLearnListCommand(api, message);
-    } else if (parts.length === 1) {
+  }
+
+  if (forcedKind === "unlearn" || unlearnRegex.test(content)) {
+    await handleUnlearnCommand(api, message, aliasCommand || "unlearn");
+    return true;
+  }
+
+  if (forcedKind === "learn" || learnRegex.test(content)) {
+    const rest = content.replace(learnRegex, "").trim();
+    const parts = rest ? rest.split(/\s+/).filter(Boolean) : [];
+    const sub = (parts[0] || "").toLowerCase();
+
+    if (sub === "list") {
+      await handleLearnListCommand(api, message, parts[1]);
+    } else if (parts.length === 0) {
       groupSettings[threadId].learnEnabled = !groupSettings[threadId].learnEnabled;
       writeGroupSettings(groupSettings);
       const caption = `Chế độ học tập đã được ${groupSettings[threadId].learnEnabled ? "bật" : "tắt"}!`;
       await sendMessageStateQuote(api, message, caption, groupSettings[threadId].learnEnabled, 30000, false);
-    } else if (parts[1].toLowerCase() === "on" || parts[1].toLowerCase() === "off") {
-      groupSettings[threadId].learnEnabled = parts[1].toLowerCase() === "on";
+    } else if (sub === "on" || sub === "off") {
+      groupSettings[threadId].learnEnabled = sub === "on";
       writeGroupSettings(groupSettings);
-      const caption = `Chế độ học tập đã được ${parts[1].toLowerCase() === "on" ? "bật" : "tắt"}!`;
+      const caption = `Chế độ học tập đã được ${sub === "on" ? "bật" : "tắt"}!`;
       await sendMessageStateQuote(api, message, caption, groupSettings[threadId].learnEnabled, 30000, false);
     } else {
-      await sendMessageWarning(api, message, "❌ Cú pháp không hợp lệ. Sử dụng !learn, !learn on/off để bật/tắt chế độ học tập, !learn list [trang] để xem danh sách");
+      await sendMessageWarning(
+        api,
+        message,
+        `❌ Cú pháp không hợp lệ. Sử dụng ${prefix}learn, ${prefix}learn on/off để bật/tắt chế độ học tập, hoặc ${prefix}learn list [trang] để xem danh sách.`
+      );
     }
     return true;
-  } else if (content.startsWith(`${prefix}unlearn`)) {
-    await handleUnlearnCommand(api, message);
-    return true;
   }
+
   return false;
 }
 
-export async function handleReplyCommand(api, message, groupSettings) {
+export async function handleReplyCommand(api, message, groupSettings, aliasCommand = "reply") {
   const threadId = message.threadId;
-  const content = removeMention(message);
+  const content = (removeMention(message) || String(message?.data?.content || "")).trim();
   const prefix = getGlobalPrefix();
+  const replyRegex = new RegExp(
+    `^\\s*${escapeCmdRegExp(prefix)}\\s*${escapeCmdRegExp(aliasCommand || "reply")}(?:\\s+|$)`,
+    "i"
+  );
 
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = { learnEnabled: false, replyEnabled: false };
   }
 
-  if (content.startsWith(`${prefix}reply`)) {
-    const parts = content.split(" ");
-    if (parts.length === 1) {
-      if (!groupSettings[threadId].replyEnabled) {
-        groupSettings[threadId].replyEnabled = true;
-        writeGroupSettings(groupSettings);
-        const caption = `Chế độ trả lời đã được bật!`;
-        await sendMessageStateQuote(api, message, caption, true, 30000, false);
-      } else {
-        const caption = `Chế độ trả lời đã được bật trước đó!`;
-        await sendMessageStateQuote(api, message, caption, true, 30000, false);
-      }
-    } else if (parts[1].toLowerCase() === "on") {
-      groupSettings[threadId].replyEnabled = true;
+  if (replyRegex.test(content)) {
+    const rest = content.replace(replyRegex, "").trim();
+    const arg = (rest.split(/\s+/)[0] || "").toLowerCase();
+
+    if (!arg) {
+      groupSettings[threadId].replyEnabled = !groupSettings[threadId].replyEnabled;
       writeGroupSettings(groupSettings);
-      const caption = `Chế độ trả lời đã được bật!`;
-      await sendMessageStateQuote(api, message, caption, true, 30000, false);
-    } else if (parts[1].toLowerCase() === "off") {
-      groupSettings[threadId].replyEnabled = false;
+      const enabled = Boolean(groupSettings[threadId].replyEnabled);
+      const caption = `Chế độ trả lời tự động đã được ${enabled ? "bật" : "tắt"}!`;
+      await sendMessageStateQuote(api, message, caption, enabled, 30000, false);
+    } else if (arg === "on" || arg === "off") {
+      const enabled = arg === "on";
+      groupSettings[threadId].replyEnabled = enabled;
       writeGroupSettings(groupSettings);
-      const caption = `Chế độ trả lời đã được tắt!`;
-      await sendMessageStateQuote(api, message, caption, false, 30000, false);
+      const caption = `Chế độ trả lời tự động đã được ${enabled ? "bật" : "tắt"}!`;
+      await sendMessageStateQuote(api, message, caption, enabled, 30000, false);
     } else {
-      await sendMessageWarning(api, message, "❌ Cú pháp không hợp lệ. Sử dụng !reply hoặc !reply on/off để bật/tắt chế độ trả lời");
+      await sendMessageWarning(
+        api,
+        message,
+        `❌ Cú pháp không hợp lệ. Sử dụng ${prefix}${aliasCommand || "reply"} hoặc ${prefix}${aliasCommand || "reply"} on/off để bật/tắt chế độ trả lời.`
+      );
     }
     return true;
   }
@@ -741,15 +799,19 @@ export async function learnNewResponse(api, threadId, question, answer) {
   }
 }
 
-export async function handleUnlearnCommand(api, message) {
+export async function handleUnlearnCommand(api, message, aliasCommand = "unlearn") {
   const threadId = message.threadId;
-  const content = removeMention(message).trim();
+  const threadType = safeThreadType(message);
+  const content = (removeMention(message) || String(message?.data?.content || "")).trim();
   const prefix = getGlobalPrefix();
+  const unlearnRegex = new RegExp(
+    `^\\s*${escapeCmdRegExp(prefix)}\\s*${escapeCmdRegExp(aliasCommand || "unlearn")}(?:\\s+|$)`,
+    "i"
+  );
 
-  if (content.startsWith(`${prefix}unlearn`)) {
-    const parts = content.split(" ");
-    if (parts.length >= 2) {
-      const rawArg = parts.slice(1).join(" ").trim();
+  if (unlearnRegex.test(content)) {
+    const rawArg = content.replace(unlearnRegex, "").trim();
+    if (rawArg) {
       if (/^[1-9]\d*$/.test(rawArg)) {
         const index = parseInt(rawArg, 10);
         const result = removeLearnedResponseByIndex(threadId, index);
@@ -765,7 +827,7 @@ export async function handleUnlearnCommand(api, message) {
               ttl: 30000,
             },
             threadId,
-            message.type
+            threadType
           );
         } else {
           const detail = result.reason === "invalid"
@@ -773,17 +835,17 @@ export async function handleUnlearnCommand(api, message) {
             : "không tồn tại";
           await api.sendMessage(
             {
-              msg: `❌ Không tìm thấy mục #${index} (${detail}). Dùng !learn list để xem số thứ tự hợp lệ.`,
+              msg: `❌ Không tìm thấy mục #${index} (${detail}). Dùng ${prefix}learn list để xem số thứ tự hợp lệ.`,
               quote: message,
               ttl: 30000,
             },
             threadId,
-            message.type
+            threadType
           );
         }
         return true;
       }
-      let valueToRemove = rawArg.replace(/\\n/g, "\n");
+      const valueToRemove = rawArg.replace(/\\n/g, "\n");
       const removed = await removeLearnedResponse(threadId, valueToRemove);
       if (removed) {
         await api.sendMessage(
@@ -793,28 +855,32 @@ export async function handleUnlearnCommand(api, message) {
             ttl: 30000,
           },
           threadId,
-          message.type
+          threadType
         );
       } else {
         await api.sendMessage(
           {
-            msg: `❌ Không tìm thấy câu hỏi nào có câu trả lời "${valueToRemove}". Gợi ý: dùng !learn list rồi !unlearn <số> để tránh lỗi xuống dòng/khoảng trắng.`,
+            msg: `❌ Không tìm thấy câu hỏi nào có câu trả lời "${valueToRemove}". Gợi ý: dùng ${prefix}learn list rồi ${prefix}${aliasCommand || "unlearn"} <số> để xóa chính xác.`,
             quote: message,
             ttl: 30000,
           },
           threadId,
-          message.type
+          threadType
         );
       }
     } else {
       await api.sendMessage(
         {
-          msg: "❌ Cú pháp không hợp lệ. Vui lòng sử dụng: !unlearn [Câu Trả Lời] (dùng \\n để xuống dòng) hoặc !unlearn <số> (lấy từ !learn list)",
+          msg:
+            `💡 Hướng dẫn xóa dữ liệu học:\n` +
+            `• Xem danh sách: ${prefix}learn list\n` +
+            `• Xóa theo số thứ tự: ${prefix}${aliasCommand || "unlearn"} <số> (ví dụ: ${prefix}${aliasCommand || "unlearn"} 1)\n` +
+            `• Xóa theo câu trả lời: ${prefix}${aliasCommand || "unlearn"} <nội dung câu trả lời>`,
           quote: message,
-          ttl: 30000,
+          ttl: 45000,
         },
         threadId,
-        message.type
+        threadType
       );
     }
     return true;
@@ -837,7 +903,7 @@ function buildLearnListMessage(threadId, page) {
   const lines = [];
   lines.push(`📚 Danh sách câu học của nhóm (trang ${result.page}/${result.totalPages}, tổng ${result.total}):`);
   for (const item of result.items) {
-    const tag = item.isTemporary ? "⏳tạm" : "✅lưu";
+    const tag = item.isTemporary ? "Tạm" : "Cố định";
     const q = shortenForMessage(item.question, 60);
     const r = shortenForMessage(item.response, 80);
     lines.push(`${item.index}. [${tag}] Hỏi: ${q} → Đáp: ${r}`);
@@ -848,8 +914,8 @@ function buildLearnListMessage(threadId, page) {
 
 export async function handleLearnListCommand(api, message, page) {
   const threadId = message.threadId;
-  const content = removeMention(message).trim();
-  const prefix = getGlobalPrefix();
+  const threadType = safeThreadType(message);
+  const content = (removeMention(message) || String(message?.data?.content || "")).trim();
   let parsedPage = page;
   if (parsedPage === undefined) {
     const parts = content.split(/\s+/);
@@ -865,7 +931,7 @@ export async function handleLearnListCommand(api, message, page) {
       ttl: 60000,
     },
     threadId,
-    message.type
+    threadType
   );
   return true;
 }
@@ -930,8 +996,8 @@ export async function handleBotReply(api, message, groupSettings) {
           for (const r of validResponses) {
             const response = typeof r === "string" ? r : r.response;
             const isTemp = typeof r === "string" ? true : r.isTemporary;
-            const filePath = path.join(SHARE_DIR, response);
-            if (fs.existsSync(filePath)) {
+            const filePath = resolveSafeShareFilePath(response);
+            if (filePath && fs.existsSync(filePath)) {
               const ext = path.extname(filePath).toLowerCase();
               if (ext === ".txt") {
                 const fileContent = fs.readFileSync(filePath, "utf-8").trim();

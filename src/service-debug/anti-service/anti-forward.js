@@ -68,34 +68,41 @@ export async function handleAntiForwardCommand(
   groupSettings
 ) {
   const threadId = message.threadId;
-  let isChangeSetting = false;
   const content = removeMention(message);
-  const parts = content.split(" ");
+  const parts = content.trim().split(/\s+/);
   const subcommand = parts[1]?.toLowerCase();
 
-  if (subcommand === "on" || subcommand === "off") {
-    if (!groupSettings[threadId]) {
-      groupSettings[threadId] = {};
-    }
-    const newStatus = subcommand === "on" ? true : false;
-    groupSettings[threadId].blockForward = newStatus;
-    isChangeSetting = true;
-    const statusText = newStatus ? "bật" : "tắt";
-    const caption = `Chức năng chặn chuyển tiếp đã được ${statusText}!`;
-    await sendMessageStateQuote(api, message, caption, newStatus, 300000);
-  } else {
-    const newStatus = !groupSettings[threadId]?.blockForward;
-    if (!groupSettings[threadId]) {
-      groupSettings[threadId] = {};
-    }
-    groupSettings[threadId].blockForward = newStatus;
-    isChangeSetting = true;
-    const statusText = newStatus ? "bật" : "tắt";
-    const caption = `Chức năng chặn chuyển tiếp đã được ${statusText}!`;
-    await sendMessageStateQuote(api, message, caption, newStatus, 300000);
+  if (!groupSettings[threadId]) {
+    groupSettings[threadId] = {};
   }
 
-  return isChangeSetting;
+  const newStatus =
+    subcommand === "on"
+      ? true
+      : subcommand === "off"
+        ? false
+        : !groupSettings[threadId].blockForward;
+
+  groupSettings[threadId].blockForward = newStatus;
+  const statusText = newStatus ? "bật" : "tắt";
+  let caption = `Chức năng chặn chuyển tiếp đã được ${statusText}!`;
+
+  if (newStatus && typeof api?.getGroupInfo === "function") {
+    try {
+      const res = await api.getGroupInfo(threadId);
+      const gridInfo = res?.gridInfoMap?.[threadId];
+      const botUid = String(api?.getOwnId?.() || api?.getBotId?.() || getBotId() || "");
+      if (gridInfo && botUid && botUid !== "-1") {
+        const admins = [gridInfo.creatorId, ...(gridInfo.adminIds || gridInfo.admins || [])].filter(Boolean).map(String);
+        if (!admins.includes(botUid)) {
+          caption += "\n⚠️ Lưu ý: Hãy cấp Key Bạc/Vàng cho Bot để Bot có quyền xóa tin nhắn chuyển tiếp.";
+        }
+      }
+    } catch {}
+  }
+
+  await sendMessageStateQuote(api, message, caption, newStatus, 300000);
+  return true;
 }
 
 async function handleForwardMessage(

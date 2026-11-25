@@ -6,6 +6,7 @@ import { getBotId } from "../../utils/env.js";
 import { getLocmemStore } from "./locmem-store.js";
 import { getVietnamDateKey, VIETNAM_TIMEZONE } from "./time-util.js";
 import { checkAndRunStartupCatchUp, initializeMonthlyCleanupScheduler } from "./locmem-cleanup.js";
+import { readRoster, completeRoster } from "../info-service/roster-service.js";
 
 // Active scheduled jobs per botUid
 const rolloverJobs = new Map();
@@ -261,23 +262,44 @@ export async function takeGroupSnapshots(api, botUid = "admin", targetDateKey = 
   let failedGroups = 0;
 
   for (const groupId of groupIds) {
-    try {
-      const groupInfo = typeof api.getGroupInfo === "function" ? await api.getGroupInfo(groupId) : null;
-      if (!groupInfo) {
-        throw new Error("Empty groupInfo returned");
+    let lastGroupErr = null;
+    let memberUids = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const groupInfo = typeof api.getGroupInfo === "function" ? await api.getGroupInfo(groupId) : null;
+        if (!groupInfo) {
+          throw new Error("Empty groupInfo returned");
+        }
+        try {
+          const roster = await completeRoster(api, String(groupId), readRoster(groupInfo, String(groupId)));
+          memberUids = roster.members.map((m) => m.uid).filter(Boolean);
+        } catch {
+          memberUids = [];
+        }
+        if (memberUids.length === 0) {
+          memberUids = extractGroupMemberUids(groupInfo, groupId);
+        }
+        if (memberUids.length === 0) {
+          throw new Error("No members extracted from groupInfo");
+        }
+        lastGroupErr = null;
+        break;
+      } catch (groupErr) {
+        lastGroupErr = groupErr;
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
       }
-      const memberUids = extractGroupMemberUids(groupInfo, groupId);
-      if (memberUids.length === 0) {
-        throw new Error("No members extracted from groupInfo");
-      }
+    }
 
+    if (!lastGroupErr && memberUids.length > 0) {
       store.recordSnapshot(groupId, memberUids, dateKey);
       store.recordDailyCoverageSnapshot(groupId, dateKey, true);
       successfulGroups++;
-    } catch (groupErr) {
-      console.warn(`[locmem-tracker] snapshot failed for group ${groupId}: ${groupErr.message}`);
+    } else {
+      console.warn(`[locmem-tracker] snapshot failed for group ${groupId}: ${lastGroupErr?.message}`);
       store.recordDailyCoverageSnapshot(groupId, dateKey, false);
-      store.recordDowntime(groupId, dateKey, `snapshot_failed: ${groupErr.message}`);
+      store.recordDowntime(groupId, dateKey, `snapshot_failed: ${lastGroupErr?.message}`);
       failedGroups++;
     }
   }

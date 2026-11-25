@@ -10,8 +10,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
-import { getActiveRuntimeContext } from "../../../utils/io-json.js";
+import {
+  allocateTempPath,
+  acquireTempLease,
+  releaseAndDeleteTempFile,
+} from "../../../utils/temp-lease-manager.js";
 import {
   generateStickerImageHF,
   hasHuggingFaceConfig,
@@ -20,7 +23,6 @@ import {
   __test as __hfTest,
 } from "../../chat-zalo/chat-special/send-sticker/sticker/hf.js";
 import { resolveInstanceAuthorization } from "../../../utils/instance-authorization.js";
-import { removeMention } from "../../../utils/format-util.js";
 import {
   sendMessageComplete,
   sendMessageFailed,
@@ -35,7 +37,6 @@ async function resolvePrefix() {
     return "!";
   }
 }
-
 
 export { hasHuggingFaceConfig, getHuggingFaceConfig, HfInferenceError };
 
@@ -139,23 +140,26 @@ export async function downloadQuoteAttachment(api, message) {
 }
 
 /**
- * Generate an AI image via Hugging Face and write it to a temporary file.
- * Returns { filePath, imageBuffer, mimeType, provider, model }
+ * Generate an AI image via Hugging Face and write it to a leased temporary file.
+ * Returns { filePath, imageBuffer, mimeType, provider, model, usedT2iFallback }
  */
-export async function generateAiImageFile({ prompt, referenceBuffer, referenceMimeType }) {
+export async function generateAiImageFile({
+  prompt,
+  referenceBuffer,
+  referenceMimeType,
+  mode = "photo",
+}) {
   const result = await generateStickerImageHF({
     prompt,
     referenceBuffer,
     referenceMimeType,
+    mode,
   });
 
-  const ext = result.mimeType && result.mimeType.includes("jpeg") ? "jpg" : "png";
-  const tempDir = getActiveRuntimeContext().tempDir;
-  fs.mkdirSync(tempDir, { recursive: true });
-  const tmpPath = path.join(
-    tempDir,
-    `ai-img-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext}`
-  );
+  const ext = result.mimeType && result.mimeType.includes("jpeg") ? ".jpg" : ".png";
+  const tmpPath = allocateTempPath(ext, { prefix: "ai-img" });
+  fs.mkdirSync(path.dirname(tmpPath), { recursive: true });
+  acquireTempLease(tmpPath, 30000);
   fs.writeFileSync(tmpPath, result.imageBuffer);
 
   return {
@@ -164,19 +168,12 @@ export async function generateAiImageFile({ prompt, referenceBuffer, referenceMi
     mimeType: result.mimeType,
     provider: result.provider,
     model: result.model,
+    usedT2iFallback: Boolean(result.usedT2iFallback),
   };
 }
 
 /**
- * Common workflow handler for AI image generation commands:
- * 1. Admin permission check (adminLevelHigh only)
- * 2. Prompt validation
- * 3. HF configuration check
- * 4. Processing status notification
- * 5. Quote reference download (if any)
- * 6. Headless Hugging Face generation
- * 7. Delivery via api.sendMessage
- * 8. Safe temp file cleanup
+ * Common workflow handler for AI image generation commands
  */
 export async function executeAiImageWorkflow({
   api,
@@ -185,11 +182,11 @@ export async function executeAiImageWorkflow({
   aliasCommand = "createimageai",
   isAdminLevelHighest = false,
   customSuccessCaption = null,
+  mode = "photo",
 }) {
   const senderName = message?.data?.dName || "";
   const prefix = await resolvePrefix();
 
-  // 1. Phân quyền: Chỉ Admin tối cao mới được tạo ảnh AI
   const isAdmin = isAdminLevelHighest || checkAdminLevelHigh(message, { isAdminLevelHighest }, api);
   if (!isAdmin) {
     await sendMessageWarning(
@@ -201,7 +198,6 @@ export async function executeAiImageWorkflow({
     return false;
   }
 
-  // 2. Kiểm tra mô tả ảnh (prompt)
   const cleanPrompt = String(prompt || "").trim();
   if (!cleanPrompt) {
     await sendMessageWarning(
@@ -213,7 +209,6 @@ export async function executeAiImageWorkflow({
     return false;
   }
 
-  // 3. Kiểm tra cấu hình HF
   if (!hasHuggingFaceConfig()) {
     await sendMessageWarning(
       api,
@@ -224,7 +219,6 @@ export async function executeAiImageWorkflow({
     return false;
   }
 
-  // 4. Kiểm tra ảnh đính kèm (nếu người dùng đang reply vào ảnh)
   let referenceBuffer = null;
   let referenceMimeType = null;
   const quote = message?.data?.quote;
@@ -236,13 +230,13 @@ export async function executeAiImageWorkflow({
     }
   }
 
-  // 5. Sinh ảnh qua HF Inference API (hoàn toàn không mở trình duyệt)
   let generated;
   try {
     generated = await generateAiImageFile({
       prompt: cleanPrompt,
       referenceBuffer,
       referenceMimeType,
+      mode,
     });
   } catch (err) {
     let msg = "Có lỗi xảy ra khi tạo ảnh AI qua Hugging Face.";
@@ -255,10 +249,12 @@ export async function executeAiImageWorkflow({
     return false;
   }
 
-  // 6. Gửi kết quả
-  const caption = customSuccessCaption || `Ảnh đã được tạo theo từ khóa: ${cleanPrompt}`;
+  let caption = customSuccessCaption || `Ảnh đã được tạo theo từ khóa: ${cleanPrompt}`;
+  if (generated.usedT2iFallback) {
+    caption +=
+      "\n(Lưu ý: Model chỉnh sửa từ ảnh gốc không khả dụng trên gói HF miễn phí nên đã tạo ảnh mới theo mô tả.)";
+  }
   await sendMessageComplete(api, message, caption, true);
-
 
   try {
     await api.sendMessage(
@@ -267,13 +263,10 @@ export async function executeAiImageWorkflow({
       message.type
     );
   } finally {
-    setTimeout(() => {
-      try {
-        if (fs.existsSync(generated.filePath)) {
-          fs.unlinkSync(generated.filePath);
-        }
-      } catch {}
-    }, 65000).unref?.();
+    const cleanupTimer = setTimeout(() => {
+      releaseAndDeleteTempFile(generated.filePath).catch(() => {});
+    }, 5000);
+    cleanupTimer.unref?.();
   }
 
   return true;

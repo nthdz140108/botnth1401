@@ -8,32 +8,50 @@ import { getUserInfoData } from "../info-service/user-info.js";
 import { LRUCache } from "lru-cache";
 import { createAntiVideoImage } from "../../utils/canvas/event-image.js";
 import { clearImagePath } from "../../utils/canvas/index.js";
+import { isInWhiteList } from "./white-list.js";
 
 const videoSpamState = new LRUCache({ max: 5000, ttl: 10 * 60 * 1000 });
 
 export async function handleAntiVideo(api, message, groupSettings) {
-  const threadId = message.threadId, prefix = getGlobalPrefix(), content = removeMention(message).trim();
-  if (!content.startsWith(`${prefix}antivideo`)) return false;
+  const threadId = message.threadId;
+  const prefix = getGlobalPrefix();
+  const content = removeMention(message).trim();
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-  const parts = content.split(" ");
-  if (parts.length === 1) groupSettings[threadId].antiVideo = !groupSettings[threadId].antiVideo;
-  else if (parts[1] === "on") groupSettings[threadId].antiVideo = true;
-  else if (parts[1] === "off") groupSettings[threadId].antiVideo = false;
-  else { await sendMessageWarning(api, message, `❌ Sai cú pháp. Dùng: ${prefix}antivideo [on/off]`); return true; }
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
+
+  if (!option) {
+    groupSettings[threadId].antiVideo = !groupSettings[threadId].antiVideo;
+  } else if (option === "on") {
+    groupSettings[threadId].antiVideo = true;
+  } else if (option === "off") {
+    groupSettings[threadId].antiVideo = false;
+  } else {
+    await sendMessageWarning(api, message, `❌ Sai cú pháp. Dùng: ${prefix}antivideo [on/off]`);
+    return false;
+  }
   const status = groupSettings[threadId].antiVideo ? "bật" : "tắt";
-  await sendMessageStateQuote(api, message, `Chức năng chống gửi video đã ${status}`, groupSettings[threadId].antiVideo, 300000);
+  await sendMessageStateQuote(api, message, `Chức năng chống gửi video đã ${status}!`, groupSettings[threadId].antiVideo, 300000);
   return true;
 }
 
 export async function antiVideo(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf) {
   const threadId = message.threadId, senderId = message.data.uidFrom, senderName = message.data.dName, botId = getBotId();
-  if (!botIsAdminBox || isAdminBox || isSelf || !groupSettings?.[threadId]?.antiVideo) return false;
+  if (
+    !botIsAdminBox ||
+    isAdminBox ||
+    isSelf ||
+    !groupSettings?.[threadId]?.antiVideo ||
+    isInWhiteList(groupSettings, threadId, senderId)
+  ) {
+    return false;
+  }
 
-  let isDelete = false, content = message.data.content || "";
-  if (message?.data?.msgType === "chat.video.msg") { await api.deleteMessage(message, false).catch(console.error); isDelete = true; }
-  if (typeof content === "string" && /\.mp4/i.test(content)) { await api.deleteMessage(message, false).catch(console.error); isDelete = true; }
-
-  if (isDelete) { await updateVideoCount(api, message, threadId, senderId, senderName, botId, isAdminBox); return true; }
+  if (message?.data?.msgType === "chat.video.msg") {
+    await api.deleteMessage(message, false).catch(console.error);
+    await updateVideoCount(api, message, threadId, senderId, senderName, botId, isAdminBox);
+    return true;
+  }
   return false;
 }
 

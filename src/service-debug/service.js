@@ -16,6 +16,7 @@ import { checkRestartFile } from "../utils/util.js";
 import { initCheckCommand, startPeriodicCheckTime } from "../commands/mybot/Check-time/start-period.js";
 import { initAdminHandle } from "../commands/bot-manager/init-admin.js";
 import { startReminderService } from "./tien-ich/nhacnho.js";
+import { restoreAutoSticker } from "../commands/lenh-debug/send-all/sendsticker.js";
 import { buildSendtaskSchedulesFromStudio } from "../commands/studio/runtime-apply.js";
 import { getBotName, getProjectRoot } from "../utils/env.js";
 
@@ -119,6 +120,7 @@ export async function initService(api) {
     initRankSystem(),
     notifyResetGroup(api),
     startReminderService(api),
+    Promise.resolve().then(() => restoreAutoSticker(api)),
   ];
 
   await Promise.all(tasks);
@@ -132,6 +134,7 @@ export async function rebindServiceApi(api) {
     initPRService(api),
     startMuteCheck(api),
     startReminderService(api),
+    Promise.resolve().then(() => restoreAutoSticker(api)),
   ]);
 }
 

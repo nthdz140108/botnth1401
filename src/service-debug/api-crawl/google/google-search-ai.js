@@ -1,19 +1,58 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import fetch from "node-fetch";
-import fs from "fs"; // Thêm import 'fs'
-import path from "path"; // Thêm import 'path'
-import { createCanvas } from "canvas"; // Thêm import 'canvas'
+import { createCanvas } from "canvas";
 import { getGlobalPrefix } from "../../service.js";
-
 import {
   sendMessageStateQuote,
   sendMessageFailed,
-  sendMessageCompleteRequest // Thêm import này
+  sendMessageCompleteRequest,
 } from "../../chat-zalo/chat-style/chat-style.js";
-
-import { nameServer } from "../../../utils/server-config.js";
-import { tempDir } from "../../../utils/io-json.js"; // Thêm import từ file 'business-card-qr'
-import { deleteFile } from "../../../utils/util.js"; // Thêm import từ file 'business-card-qr'
+import { tempDir } from "../../../utils/io-json.js";
+import { deleteFile } from "../../../utils/util.js";
+import { removeMention } from "../../../utils/format-util.js";
 import { normalizeMessageReference } from "../../../utils/interaction-countdown.js";
+import { ensureCanvasFontsRegistered } from "../../../utils/canvas/register-fonts.js";
+import { MessageType } from "../../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCommandBody,
+  getQuotedText,
+  getRawMessageText,
+} from "../../../commands/shared/command-input-utils.js";
+import { searchWebMultiSource } from "./google-search.js";
+
+export const des = {
+  name: "googlesearchai",
+  aliases: ["ggsai"],
+  type: 1,
+  permission: "all",
+  countdown: 10,
+  active: true,
+};
+
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function withSafeMessageType(message) {
+  const fallbackType =
+    message?.threadId &&
+    message?.data?.uidFrom &&
+    String(message.threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage;
+  const resolvedType = safeThreadType(message, fallbackType);
+  return message?.type === resolvedType ? message : { ...message, type: resolvedType };
+}
+
+function matchesGoogleSearchAiCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "googlesearchai").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
 
 async function safeUndoLoadingMessage(api, loadingMessage, contextMessage) {
   if (!loadingMessage || typeof api?.undoMessage !== "function") return;
@@ -34,234 +73,227 @@ async function safeUndoLoadingMessage(api, loadingMessage, contextMessage) {
   }
 }
 
-// ✅ Đảm bảo thư mục temp tồn tại
-async function ensureTempDir() {
-  if (!tempDir) throw new Error("tempDir is not defined");
-  await fs.promises.mkdir(tempDir, { recursive: true });
-}
-
-// ✅ Ghép tag + chữ đỏ vào header tin nhắn
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line)
-  );
-
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
-
-// API Key cho SerpAPI
-const SERPAPI_KEY = "6b6461d49e65141940bbbd9ad134bafde20c3aa12e7a65b7359c35f12d3f02d9";
-
-export const des = {
-  name: "googlesearchai", // Tên lệnh
-  aliases: ["gg", "search"], // ✅ Thêm aliases (lệnh gọi tắt)
-  type: 1,
-  permission: "all",
-  countdown: 10, // Tăng thời gian chờ vì gọi API ngoài
-  active: true,
-};
-
-/**
- * Hàm hỗ trợ ngắt dòng văn bản cho vừa với ảnh
- * @param {string} text - Văn bản cần ngắt dòng
- * @param {number} lineLength - Độ dài tối đa mỗi dòng
- * @returns {string} - Văn bản đã ngắt dòng với ký tự \n
- */
-function wrapText(text, lineLength = 40) { // Giảm độ dài dòng một chút cho font to hơn
-  if (!text) return "";
-  const words = text.split(' ');
-  let wrappedText = '';
-  let currentLine = '';
-
-  words.forEach(word => {
-    if ((currentLine + word).length > lineLength) {
-      wrappedText += currentLine.trim() + '\n';
-      currentLine = word + ' ';
+function wrapTextByWidth(ctx, text, maxWidth) {
+  const cleaned = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  const words = cleaned.split(" ");
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (ctx.measureText(next).width <= maxWidth) {
+      current = next;
     } else {
-      currentLine += word + ' ';
+      if (current) lines.push(current);
+      current = word;
     }
-  });
-  wrappedText += currentLine.trim(); // Thêm dòng cuối
-  return wrappedText;
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
-/**
- * ✅ HÀM CẬP NHẬT: Dùng canvas để vẽ ảnh chứa snippet
- * - Nền trắng, chữ đen
- * - Font to hơn
- * - Chiều cao động
- */
-async function drawSnippetImage(snippet, uid) {
-  await ensureTempDir();
+async function drawSnippetImage({ title, snippet, source }, uid) {
+  ensureCanvasFontsRegistered();
+  await fs.promises.mkdir(tempDir, { recursive: true });
 
-  const width = 700;
-  const fontSize = 30;
-  const lineHeight = 45; // 30px font + 15px khoảng cách
-  const paddingTop = 50;
-  const paddingBottom = 50;
-  const lineLength = 40; // Độ dài dòng (phải khớp với hàm wrapText)
+  const width = 820;
+  const sidePadding = 48;
+  const maxTextWidth = width - sidePadding * 2;
 
-  // Chuẩn bị văn bản
-  const wrappedSnippet = wrapText(snippet, lineLength);
-  const lines = wrappedSnippet.split('\n');
+  const measureCanvas = createCanvas(10, 10);
+  const measureCtx = measureCanvas.getContext("2d");
 
-  // ✅ Tính toán chiều cao động
-  const height = (lines.length * lineHeight) + paddingTop + paddingBottom;
+  measureCtx.font = "bold 28px BeVietnamPro, sans-serif";
+  const titleLines = wrapTextByWidth(measureCtx, title, maxTextWidth).slice(0, 3);
+
+  measureCtx.font = "22px BeVietnamPro, sans-serif";
+  const snippetLines = wrapTextByWidth(measureCtx, snippet, maxTextWidth).slice(0, 12);
+
+  const height =
+    56 +
+    titleLines.length * 38 +
+    20 +
+    snippetLines.length * 34 +
+    (source ? 52 : 24) +
+    40;
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
-  // ✅ Vẽ nền trắng
-  ctx.fillStyle = "#ffffff";
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
+  bgGrad.addColorStop(0, "#FFFFFF");
+  bgGrad.addColorStop(1, "#F8FAFC");
+  ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, width, height);
 
-  // ✅ Vẽ văn bản đen
-  ctx.fillStyle = "#000000";
-  ctx.font = `bold ${fontSize}px sans-serif`; // Tăng kích thước font
-  ctx.textAlign = "center";
+  ctx.strokeStyle = "#CBD5E1";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(12, 12, width - 24, height - 24);
 
-  // Vị trí baseline của dòng đầu tiên
-  const startY = paddingTop + fontSize; 
+  let cursorY = 52;
+  ctx.fillStyle = "#0F172A";
+  ctx.font = "bold 28px BeVietnamPro, sans-serif";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  for (const line of titleLines) {
+    ctx.fillText(line, sidePadding, cursorY);
+    cursorY += 38;
+  }
 
-  lines.forEach((line, index) => {
-    ctx.fillText(line, width / 2, startY + (index * lineHeight));
-  });
+  cursorY += 14;
+  ctx.fillStyle = "#1E293B";
+  ctx.font = "22px BeVietnamPro, sans-serif";
+  for (const line of snippetLines) {
+    ctx.fillText(line, sidePadding, cursorY);
+    cursorY += 34;
+  }
 
-  // Lưu ảnh ra file tạm
-  const filePath = path.join(tempDir, `search_result_${uid}_${Date.now()}.png`);
-  const buffer = canvas.toBuffer("image/png");
-  await fs.promises.writeFile(filePath, buffer);
+  if (source) {
+    cursorY += 16;
+    ctx.fillStyle = "#2563EB";
+    ctx.font = "bold 17px BeVietnamPro, sans-serif";
+    ctx.fillText(`Nguồn: ${String(source).slice(0, 72)}`, sidePadding, cursorY);
+  }
+
+  const safeUid = String(uid || "user").replace(/[^a-zA-Z0-9_-]/g, "");
+  const filePath = path.join(
+    tempDir,
+    `search_card_${safeUid}_${crypto.randomUUID()}.png`
+  );
+  await fs.promises.writeFile(filePath, canvas.toBuffer("image/png"));
   return filePath;
 }
 
-
-export async function handleGooglesearchaiCommand(api, message, aliasCommand) { // ✅ Thêm aliasCommand
-  const content = message.data.content.trim();
-  const currentPrefix = getGlobalPrefix();
-
-  // ✅ Thay thế tên lệnh cứng bằng aliasCommand
-  if (!content.startsWith(`${currentPrefix}${aliasCommand}`)) return false;
-
-  // Lấy toàn bộ nội dung sau tên lệnh làm truy vấn tìm kiếm
-  // ✅ Thay thế tên lệnh cứng bằng aliasCommand
-  const args = content.slice(currentPrefix.length + aliasCommand.length).trim().split(/\s+/).filter(Boolean);
-  const queryText = args.join(" ");
-
-  // ✅ Nếu không nhập gì ngoài lệnh
-  if (args.length === 0) {
-    const guide = `❌ Vui lòng nhập từ khóa tìm kiếm.
-${currentPrefix}${aliasCommand} [nội dung cần tìm]`; // ✅ Thay thế tên lệnh cứng
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${guide}`, true, 60000, true);
-  }
-
-  // Gửi tin nhắn tạm thời "Đang tìm kiếm..."
-  const loadingMessage = await sendMessageStateQuote(
-    api,
-    message,
-    `${getCleanNameServer()}🔍 Đang tìm kiếm với từ khóa "${queryText}", vui lòng chờ...`,
-    true,
-    30000, // Tự gỡ sau 30s nếu có lỗi
-    false
-  );
-
-  let imagePath = null; // Chuẩn bị biến để lưu đường dẫn ảnh
-  const uid = message?.sender?.id || "unknown"; // Lấy uid để đặt tên file
+async function fetchSerpApiHighlight(queryText) {
+  const serpApiKey = String(process.env.SERPAPI_API_KEY || "").trim();
+  if (!serpApiKey) return null;
 
   try {
-    // ✅ Thêm &hl=vi&gl=vn để lấy kết quả tiếng Việt
-    const apiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(queryText)}&hl=vi&gl=vn&api_key=${SERPAPI_KEY}`;
-    console.log("Gọi API Google Search:", apiUrl);
-
-    const res = await fetch(apiUrl);
+    const apiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(queryText)}&hl=vi&gl=vn&api_key=${encodeURIComponent(serpApiKey)}`;
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
     const json = await res.json();
-
-    // ✅ Xử lý kết quả JSON (Ưu tiên Knowledge Graph và Answer Box)
-    let title, snippet, source;
+    if (!json || json.error) return null;
 
     const answerBox = json.answer_box;
     const knowledgeGraph = json.knowledge_graph;
     const firstResult = json.organic_results?.[0];
 
-    if (answerBox) {
-      // Ưu tiên 1: Hộp trả lời trực tiếp
-      snippet = answerBox.answer || answerBox.snippet;
-      title = answerBox.title || queryText;
-      source = answerBox.displayed_link || "Google Answer";
-    } else if (knowledgeGraph) {
-      // Ưu tiên 2: Knowledge Graph (như JSON mẫu của bạn)
-      snippet = knowledgeGraph.description;
-      title = knowledgeGraph.title;
-      source = knowledgeGraph.type || "Google Knowledge Graph"; // Lấy 'type' làm nguồn
-    } else if (firstResult) {
-      // Ưu tiên 3: Kết quả tự nhiên đầu tiên (logic cũ)
-      snippet = firstResult.snippet;
-      title = firstResult.title;
-      source = firstResult.displayed_link;
+    if (answerBox && (answerBox.answer || answerBox.snippet)) {
+      return {
+        title: answerBox.title || queryText,
+        snippet: answerBox.answer || answerBox.snippet,
+        source: answerBox.displayed_link || answerBox.link || "Google Answer",
+        url: answerBox.link || "",
+      };
+    }
+    if (knowledgeGraph?.description) {
+      return {
+        title: knowledgeGraph.title || queryText,
+        snippet: knowledgeGraph.description,
+        source: knowledgeGraph.type || "Google Knowledge Graph",
+        url: knowledgeGraph.description_link || knowledgeGraph.website || "",
+      };
+    }
+    if (firstResult?.snippet || firstResult?.title) {
+      return {
+        title: firstResult.title || queryText,
+        snippet: firstResult.snippet || "Xem chi tiết tại liên kết nguồn.",
+        source: firstResult.displayed_link || firstResult.link || "",
+        url: firstResult.link || "",
+      };
+    }
+  } catch {
+    // Fall back to keyless multi-source search
+  }
+  return null;
+}
+
+export async function handleGooglesearchaiCommand(api, message, aliasCommand = "googlesearchai") {
+  const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "googlesearchai";
+
+  if (!matchesGoogleSearchAiCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
+  }
+
+  const msgCtx = withSafeMessageType(message);
+  const queryText =
+    extractCommandBody(msgCtx, currentPrefix, effectiveAlias) || getQuotedText(msgCtx);
+
+  if (!queryText) {
+    const guide = `❌ Vui lòng nhập từ khóa tìm kiếm.\n👉 Ví dụ: ${currentPrefix}${effectiveAlias} Trí tuệ nhân tạo là gì`;
+    return sendMessageStateQuote(api, msgCtx, guide, false, 60000, true);
+  }
+
+  const loadingMessage = await sendMessageStateQuote(
+    api,
+    msgCtx,
+    `🔍 Đang tìm kiếm "${queryText}", vui lòng chờ...`,
+    true,
+    30000,
+    false
+  );
+
+  let imagePath = null;
+  const uid = msgCtx?.data?.uidFrom || msgCtx?.sender?.id || "user";
+
+  try {
+    let highlight = await fetchSerpApiHighlight(queryText);
+
+    if (!highlight) {
+      const fallbackResults = await searchWebMultiSource(queryText, { maxResults: 3 });
+      if (fallbackResults.length > 0) {
+        const top = fallbackResults[0];
+        let hostname = "";
+        try {
+          hostname = new URL(top.url).hostname;
+        } catch {}
+        highlight = {
+          title: top.title || queryText,
+          snippet: top.snippet || "Xem chi tiết tại liên kết đính kèm.",
+          source: hostname || top.url,
+          url: top.url,
+        };
+      }
     }
 
-    // Dọn dẹp
-    snippet = snippet || "Không có mô tả chi tiết.";
-    title = title || queryText;
-    source = source || "Không rõ nguồn";
-
-    if (!title && !snippet && !firstResult) {
-      // Gỡ tin nhắn "Đang tìm kiếm..."
-      await safeUndoLoadingMessage(api, loadingMessage, message);
+    if (!highlight) {
+      await safeUndoLoadingMessage(api, loadingMessage, msgCtx);
       return sendMessageStateQuote(
         api,
-        message,
-        `${getCleanNameServer()}❌ Không tìm thấy kết quả nào cho từ khóa "${queryText}".`,
-        true,
+        msgCtx,
+        `❌ Không tìm thấy kết quả nào cho từ khóa "${queryText}".`,
+        false,
         60000,
-        false
+        true
       );
     }
 
-    // ✅ Tạo ảnh với văn bản kết quả (snippet) ở trên đó
-    imagePath = await drawSnippetImage(snippet, uid);
+    imagePath = await drawSnippetImage(highlight, uid);
+    await safeUndoLoadingMessage(api, loadingMessage, msgCtx);
 
-    // ✅ Tạo nội dung tin nhắn theo yêu cầu (đã bỏ title và source)
-    const caption = `Nội dung tìm kiếm được từ từ khóa mà bạn cung cấp "${queryText}"`;
+    const caption =
+      `🔎 Kết quả tìm kiếm cho "${queryText}"` +
+      (highlight.url ? `\n🔗 Nguồn: ${highlight.url}` : "");
 
-    let msg = `${getCleanNameServer()}${caption}`;
-    // Bỏ URL ảnh khỏi text vì ta sẽ gửi nó dưới dạng file đính kèm
-
-    // Gỡ tin nhắn "Đang tìm kiếm..."
-    await safeUndoLoadingMessage(api, loadingMessage, message);
-
-    // Gửi kết quả cuối cùng (Văn bản + Ảnh đính kèm)
-    // Thay thế 'sendMessageStateQuote' bằng 'sendMessageCompleteRequest'
-    return sendMessageCompleteRequest(
+    return await sendMessageCompleteRequest(
       api,
-      message,
-      { caption: msg, imagePath: imagePath }, // Gửi caption (văn bản) và imagePath (ảnh)
-      3600000 // Thời gian tự gỡ
+      msgCtx,
+      { caption, imagePath },
+      3600000
     );
-
   } catch (e) {
-    console.error("Lỗi API Google Search:", e);
-    // Gỡ tin nhắn "Đang tìm kiếm..." nếu có lỗi
-    await safeUndoLoadingMessage(api, loadingMessage, message);
+    await safeUndoLoadingMessage(api, loadingMessage, msgCtx);
     return sendMessageFailed(
       api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API Google Search: ${e.message}`,
+      msgCtx,
+      `❌ Lỗi khi tìm kiếm: ${e?.message || "Không xác định"}`,
       true
     );
   } finally {
-    // ✅ Thêm khối finally để xóa ảnh tạm (giống hệt 'business-card-qr.js')
-    try {
-      if (imagePath && fs.existsSync(imagePath)) await deleteFile(imagePath);
-    } catch (e) {
-      console.error("Không thể xóa ảnh tạm:", imagePath, e);
+    if (imagePath) {
+      await deleteFile(imagePath).catch(() => {});
     }
   }
 }
-

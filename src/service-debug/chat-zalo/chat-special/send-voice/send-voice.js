@@ -1,27 +1,63 @@
 import gtts from "gtts";
-import fs from "fs";
-import path from "path";
-import axios from 'axios';
-import googleTTS from 'google-tts-api';
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import axios from "axios";
+import googleTTS from "google-tts-api";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { getGlobalPrefix } from "../../../service.js";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
-import { convertToM4A, extractAudioFromVideo, uploadAudioFile } from "./process-audio.js";
-import { sendMessageCompleteRequest, sendMessageFailed, sendMessageFromSQL, sendMessageImageNotQuote, sendMessageState, sendMessageStateQuote } from "../../chat-style/chat-style.js";
+import {
+  convertToM4A,
+  downloadAudio,
+  extractAudioFromVideo,
+  uploadAudioFile,
+} from "./process-audio.js";
+import {
+  sendMessageCompleteRequest,
+  sendMessageFailed,
+  sendMessageFromSQL,
+  sendMessageImageNotQuote,
+  sendMessageStateQuote,
+} from "../../chat-style/chat-style.js";
 import { checkExstentionFileRemote, deleteFile, downloadFile } from "../../../../utils/util.js";
 import { getFfmpegExecutableSync } from "../../../../utils/runtime-dependencies.js";
+import { resolveExecutableSync, projectRoot } from "../../../../platform/index.js";
 import { tempDir } from "../../../../utils/io-json.js";
-import { createSpinningDiscGif } from "../send-gif/create-gif.js";
-import { normalizeSymbolName, removeMention } from "../../../../utils/format-util.js";
-import { createCircleWebp, createImageWebp } from "../send-sticker/create-webp.js";
+import { removeMention } from "../../../../utils/format-util.js";
 import { createMusicCard } from "../../../../utils/canvas/music-canvas.js";
 import { getUserInfoData } from "../../../info-service/user-info.js";
+import {
+  extractCommandBody,
+  getQuoteData,
+  safeThreadType,
+} from "../../../../commands/shared/command-input-utils.js";
+import { validateSafeRemoteResourceUrl } from "../../../utilities/download-resource.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const execFileAsync = promisify(execFile);
+
+const AUDIO_EXTENSIONS = new Set(["aac", "m4a", "mp3", "wav", "ogg", "opus"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "avi", "mkv", "webm", "flv", "m4v", "3gp"]);
+
+function resolveYtDlpExecutableSync() {
+  const exeName = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+  const runtimeBin = path.join(projectRoot, ".runtime", "bin", exeName);
+  const bundledNpmBin = path.join(projectRoot, "node_modules", "youtube-dl-exec", "bin", exeName);
+  return resolveExecutableSync(
+    [
+      process.env.YTDLP_BIN,
+      process.env.YT_DLP_BIN,
+      runtimeBin,
+      bundledNpmBin,
+      "yt-dlp",
+    ].filter(Boolean),
+    { probeArgs: ["--version"] },
+  );
+}
 
 function buildConcatArgs(audioPaths, outputPath) {
   return [
@@ -51,10 +87,11 @@ async function runFfmpegConcat(audioPaths, outputPath) {
 }
 
 async function textToSpeech(text, api, message, lang = "vi") {
+  fs.mkdirSync(tempDir, { recursive: true });
   return new Promise((resolve, reject) => {
     try {
       const tts = new gtts(text, lang);
-      const fileName = `voice_${Date.now()}.mp3`;
+      const fileName = `voice_${randomUUID()}.mp3`;
       const filePath = path.join(tempDir, fileName);
 
       tts.save(filePath, async (err) => {
@@ -99,7 +136,7 @@ function detectLanguage(text) {
     (max, [lang, count]) => {
       return count > max.count ? { lang, count } : max;
     },
-    { lang: "vi", count: 0 }
+    { lang: "vi", count: 0 },
   );
 
   if (maxLang.count === 0 && /^[\x00-\x7F]*$/.test(text)) {
@@ -120,7 +157,7 @@ function splitByLanguage(text) {
     lang: detectLanguage(words[0]),
   };
 
-  for (let i = 1; i < words.length; i++) {
+  for (let i = 1; i < words.length; i += 1) {
     const word = words[i];
     const lang = detectLanguage(word);
 
@@ -130,7 +167,7 @@ function splitByLanguage(text) {
       parts.push(currentPart);
       currentPart = {
         text: word,
-        lang: lang,
+        lang,
       };
     }
   }
@@ -153,7 +190,10 @@ function emphasizeRepeatedWords(text) {
       continue;
     }
 
-    const previousWord = output.length > 0 ? output[output.length - 1].replace(/[,\.\!\?\:\;]+$/g, "").trim() : "";
+    const previousWord =
+      output.length > 0
+        ? output[output.length - 1].replace(/[,\.\!\?\:\;]+$/g, "").trim()
+        : "";
     if (previousWord && previousWord.toLowerCase() === token.toLowerCase()) {
       output.push(", ", token);
       continue;
@@ -169,13 +209,14 @@ function emphasizeRepeatedWords(text) {
  * Ghép các file audio
  */
 async function concatenateAudios(audioPaths) {
-  const outputPath = path.join(tempDir, `combined_${Date.now()}.mp3`);
+  const outputPath = path.join(tempDir, `combined_${randomUUID()}.mp3`);
   await runFfmpegConcat(audioPaths, outputPath);
   return outputPath;
 }
 
 /**
- * Chuyển văn bản đa ngôn ngữ thành giọng nói
+ * Chuyển văn bản đa ngôn ngữ thành giọng nói.
+ * Nếu môi trường thiếu FFmpeg, trả về mảng URL của từng phân đoạn để gửi tuần tự.
  */
 async function multilingualTextToSpeech(text, api, message) {
   let finalAudioPath = null;
@@ -188,8 +229,10 @@ async function multilingualTextToSpeech(text, api, message) {
       return await textToSpeech(parts[0].text, api, message, parts[0].lang);
     }
 
+    fs.mkdirSync(tempDir, { recursive: true });
     for (const part of parts) {
-      const fileName = `voice_${Date.now()}_${part.lang}.mp3`;
+      if (!part.text || !part.text.trim()) continue;
+      const fileName = `voice_${randomUUID()}_${part.lang}.mp3`;
       const filePath = path.join(tempDir, fileName);
 
       const tts = new gtts(part.text, part.lang);
@@ -203,64 +246,177 @@ async function multilingualTextToSpeech(text, api, message) {
       audioFiles.push(filePath);
     }
 
-    finalAudioPath = await concatenateAudios(audioFiles);
+    if (audioFiles.length === 0) return null;
+    if (audioFiles.length === 1) {
+      return await uploadAudioFile(audioFiles[0], api, message);
+    }
 
-    const voiceUrl = await uploadAudioFile(finalAudioPath, api, message);
+    const ffmpegBinary = getFfmpegExecutableSync();
+    if (ffmpegBinary) {
+      try {
+        finalAudioPath = await concatenateAudios(audioFiles);
+        return await uploadAudioFile(finalAudioPath, api, message);
+      } catch (concatErr) {
+        console.warn("[voice] Không thể nối bằng FFmpeg, chuyển sang gửi tuần tự từng đoạn:", concatErr.message);
+      }
+    }
 
-    return voiceUrl;
+    const segmentUrls = [];
+    for (const segmentPath of audioFiles) {
+      const segUrl = await uploadAudioFile(segmentPath, api, message);
+      if (segUrl) segmentUrls.push(segUrl);
+    }
+    return segmentUrls;
   } catch (error) {
     console.error("Lỗi khi xử lý audio đa ngôn ngữ:", error);
     throw error;
   } finally {
     await Promise.all(audioFiles.map((file) => deleteFile(file)));
-    await deleteFile(finalAudioPath);
+    if (finalAudioPath) {
+      await deleteFile(finalAudioPath);
+    }
   }
+}
+
+/**
+ * Chia văn bản nhiều dòng an toàn (<= maxLen ký tự) theo câu/từ bằng [\s\S],
+ * tuyệt đối không trả về null khi gặp ký tự xuống dòng \n.
+ */
+export function splitTextIntoTtsChunks(rawText, maxLen = 200) {
+  const normalized = String(rawText ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/[\s\S]/g, (ch) => (ch === "\n" ? ". " : ch))
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return [];
+
+  const sentences = normalized.split(/(?<=[.!?;:])\s+/).filter(Boolean);
+  const chunks = [];
+  let current = "";
+
+  const pushLongPiece = (piece) => {
+    const words = piece.split(/\s+/).filter(Boolean);
+    let wordBuf = "";
+    for (const word of words) {
+      if (Array.from(word).length > maxLen) {
+        if (wordBuf) {
+          chunks.push(wordBuf);
+          wordBuf = "";
+        }
+        const chars = Array.from(word);
+        for (let idx = 0; idx < chars.length; idx += maxLen) {
+          chunks.push(chars.slice(idx, idx + maxLen).join(""));
+        }
+        continue;
+      }
+      const nextWordBuf = wordBuf ? `${wordBuf} ${word}` : word;
+      if (Array.from(nextWordBuf).length <= maxLen) {
+        wordBuf = nextWordBuf;
+      } else {
+        if (wordBuf) chunks.push(wordBuf);
+        wordBuf = word;
+      }
+    }
+    if (wordBuf) chunks.push(wordBuf);
+  };
+
+  for (const sentence of sentences) {
+    if (Array.from(sentence).length > maxLen) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      pushLongPiece(sentence);
+      continue;
+    }
+
+    const combined = current ? `${current} ${sentence}` : sentence;
+    if (Array.from(combined).length <= maxLen) {
+      current = combined;
+    } else {
+      if (current) chunks.push(current);
+      current = sentence;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks.filter((c) => c.trim().length > 0);
+}
+
+/**
+ * Chuẩn hóa văn bản truyện cười trên RAM (xóa chữ Wink thừa và sửa lỗi viết hoa chữ Không giữa câu),
+ * KHÔNG chỉnh sửa file z_truyencuoi.txt trên đĩa.
+ */
+export function normalizeStoryText(rawStory) {
+  const unescaped = String(rawStory ?? "").replaceAll("\\n", "\n");
+  const withoutWink = unescaped
+    .replace(/[ \t]*\bWink\b[ \t]*/gi, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+  const lines = withoutWink.split("\n");
+  return lines
+    .map((line, index) => {
+      // Giữ nguyên dòng tiêu đề "Truyện: ..."
+      if (index === 0 && /^\s*Truyện\s*:/i.test(line)) {
+        return line.trim();
+      }
+      // Hạ chữ "Không" viết hoa nhầm ở giữa câu (sau chữ cái/chữ số/dấu phẩy/ngoặc đóng)
+      return line
+        .replace(/([\p{L}\p{N},;)\]])(\s+)Không\b/gu, "$1$2không")
+        .replace(/[ \t]{2,}/g, " ")
+        .trimEnd();
+    })
+    .join("\n")
+    .trim();
 }
 
 /**
  * Xử lý lệnh chuyển văn bản thành giọng nói
  */
-export async function handleVoiceCommand(api, message, command) {
+export async function handleVoiceCommand(api, message, command = "voice") {
+  const threadType = safeThreadType(message);
   try {
     const prefix = getGlobalPrefix();
-    const content = removeMention(message);
-    let text = content.slice(prefix.length + command.length).trim();
-    if (message.data?.quote) {
-      if (!text) text = message.data?.quote?.msg || null;
-      if (!text) {
+    const cmdName = command || "voice";
+    let text = extractCommandBody(message, prefix, cmdName);
+
+    const quote = getQuoteData(message);
+    if (quote && !text) {
+      text = quote.msg || quote.content || null;
+      if (!text && quote.attach) {
         try {
-          const parseMessage = JSON.parse(message.data?.quote?.attach);
-          text = parseMessage.description || parseMessage.title || null;
-        } catch (error) {
-        }
+          const parseMessage =
+            typeof quote.attach === "string" ? JSON.parse(quote.attach) : quote.attach;
+          text = parseMessage?.description || parseMessage?.title || null;
+        } catch {}
       }
     }
 
-    if (!text) {
+    if (!text || !String(text).trim()) {
       await api.sendMessage(
         {
-          msg: `Vui lòng nhập nội dung cần chuyển thành giọng nói.\nVí dụ: 
-${prefix}${command} Nội dung cần send Voice bất kỳ`,
+          msg: `Vui lòng nhập nội dung cần chuyển thành giọng nói.\nVí dụ:\n${prefix}${cmdName} Xin chào mọi người`,
           quote: message,
           ttl: 600000,
         },
         message.threadId,
-        message.type
+        threadType,
       );
       return;
     }
 
-    const voiceUrl = await multilingualTextToSpeech(text, api, message);
+    const voiceResult = await multilingualTextToSpeech(String(text).trim(), api, message);
+    const voiceUrls = (Array.isArray(voiceResult) ? voiceResult : [voiceResult]).filter(Boolean);
 
-    if (!voiceUrl) {
+    if (voiceUrls.length === 0) {
       throw new Error("Không thể tạo file âm thanh");
     }
 
-    await api.sendVoice(
-      message,
-      voiceUrl,
-      600000
-    );
+    for (const url of voiceUrls) {
+      await api.sendVoice(message, url, 600000);
+    }
   } catch (error) {
     console.error("Lỗi khi xử lý lệnh voice:", error);
     await api.sendMessage(
@@ -270,26 +426,26 @@ ${prefix}${command} Nội dung cần send Voice bất kỳ`,
         ttl: 600000,
       },
       message.threadId,
-      message.type
+      threadType,
     );
   }
 }
 
 export async function handleStoryCommand(api, message) {
+  const threadType = safeThreadType(message);
   try {
     const storyFilePath = path.join(__dirname, "z_truyencuoi.txt");
     const stories = fs
       .readFileSync(storyFilePath, "utf8")
-      .split("\n")
+      .split(/\r?\n/)
       .filter((line) => line.trim());
 
-    let randomStory = stories[Math.floor(Math.random() * stories.length)];
-
-    if (!randomStory) {
+    const rawStory = stories[Math.floor(Math.random() * stories.length)];
+    if (!rawStory) {
       throw new Error("Không tìm thấy truyện cười");
     }
 
-    randomStory = randomStory.replaceAll("\\n", "\n");
+    const randomStory = normalizeStoryText(rawStory);
     const voiceUrl = await textToSpeech(randomStory, api, message);
 
     if (!voiceUrl) {
@@ -305,7 +461,7 @@ export async function handleStoryCommand(api, message) {
           ttl: 600000,
         },
         message.threadId,
-        message.type
+        threadType,
       ),
     ]);
   } catch (error) {
@@ -317,41 +473,44 @@ export async function handleStoryCommand(api, message) {
         ttl: 600000,
       },
       message.threadId,
-      message.type
+      threadType,
     );
   }
 }
 
 export async function handleTarrotCommand(api, message) {
+  const threadType = safeThreadType(message);
   try {
     const tarotFilePath = path.join(__dirname, "z_tarot.txt");
     const tarots = fs
       .readFileSync(tarotFilePath, "utf8")
-      .split("\n")
+      .split(/\r?\n/)
       .filter((line) => line.trim());
 
-    let randomTarot = tarots[Math.floor(Math.random() * tarots.length)];
-
+    const randomTarot = tarots[Math.floor(Math.random() * tarots.length)];
     if (!randomTarot) {
       throw new Error("Không tìm thấy Tarot");
     }
 
-    const tarotText = randomTarot
-      .replaceAll("\\n", "\n")
+    const displayTarot = randomTarot.replaceAll("\\n", "\n");
+    const tarotText = displayTarot
       .replaceAll("♠", "Bích")
       .replaceAll("♥", "Cơ")
       .replaceAll("♣", "Chuồn")
       .replaceAll("♦", "Rô");
     const voiceUrl = await textToSpeech(tarotText, api, message);
 
-    await Promise.all([
+    const tasks = [
       api.sendMessage(
-        { msg: randomTarot, quote: message, ttl: 600000 },
+        { msg: displayTarot, quote: message, ttl: 600000 },
         message.threadId,
-        message.type
+        threadType,
       ),
-      api.sendVoice(message, voiceUrl, 600000),
-    ]);
+    ];
+    if (voiceUrl) {
+      tasks.push(api.sendVoice(message, voiceUrl, 600000));
+    }
+    await Promise.all(tasks);
   } catch (error) {
     console.error("Lỗi khi xử lý lệnh Tarot:", error);
     await api.sendMessage(
@@ -361,32 +520,36 @@ export async function handleTarrotCommand(api, message) {
         ttl: 600000,
       },
       message.threadId,
-      message.type
+      threadType,
     );
   }
 }
 
 export async function sendVoiceMusic(api, message, object, ttl, { throwOnError = false } = {}) {
-  let thumbnailPath = path.resolve(tempDir, `${Date.now()}.jpg`);
+  const thumbnailPath = path.resolve(tempDir, `${randomUUID()}.jpg`);
   const voiceUrl = object.voiceUrl;
   if (!voiceUrl) {
-    if (throwOnError) throw Object.assign(new Error('Missing uploaded audio URL'), { stage: 'upload' });
+    if (throwOnError) {
+      throw Object.assign(new Error("Missing uploaded audio URL"), { stage: "upload" });
+    }
     sendMessageFailed(api, message, "Upload file nhạc thất bại!", true);
     return;
   }
-  // let spinningWebp = null;
+
   try {
     if (message?.data?.uidFrom) {
-      let senderId = message.data.uidFrom;
+      const senderId = message.data.uidFrom;
       const userInfo = await getUserInfoData(api, senderId);
       object.userAvatar = userInfo.avatar;
     }
   } catch (error) {
     console.error("Lỗi khi lấy thông tin người dùng:", error);
   }
+
   let imagePath = null;
   try {
     if (object.imageUrl) {
+      fs.mkdirSync(tempDir, { recursive: true });
       await downloadFile(object.imageUrl, thumbnailPath);
       try {
         object.thumbnailPath = thumbnailPath;
@@ -395,33 +558,23 @@ export async function sendVoiceMusic(api, message, object, ttl, { throwOnError =
         console.error("Lỗi khi tạo music card:", error);
         imagePath = null;
       }
-      // spinningWebp = await createCircleWebp(api, message, object.imageUrl, object.trackId);
     }
 
     await sendMessageCompleteRequest(api, message, object, 180000);
     if (imagePath) {
       await api.sendMessage(
         {
-          msg: ``,
+          msg: "",
           attachments: [imagePath],
-          ttl: ttl,
+          ttl,
         },
         message.threadId,
-        message.type
+        safeThreadType(message),
       );
     }
-    // if (spinningWebp) {
-    //   await api.sendCustomSticker(
-    //     message,
-    //     spinningWebp.url,
-    //     spinningWebp.url,
-    //     spinningWebp.stickerData.width,
-    //     spinningWebp.stickerData.height
-    //   );
-    // }
     await api.sendVoice(message, voiceUrl, ttl);
   } catch (error) {
-    if (throwOnError) throw Object.assign(error, { stage: error.stage || 'send' });
+    if (throwOnError) throw Object.assign(error, { stage: error.stage || "send" });
     console.error("Lỗi khi gửi voice music:", error);
   } finally {
     await deleteFile(thumbnailPath);
@@ -430,11 +583,13 @@ export async function sendVoiceMusic(api, message, object, ttl, { throwOnError =
 }
 
 export async function sendVoiceMusicNotQuote(api, message, object, ttl) {
-  let thumbnailPath = path.resolve(tempDir, `${Date.now()}.jpg`);
+  const thumbnailPath = path.resolve(tempDir, `${randomUUID()}.jpg`);
   let imagePath = null;
   try {
     const voiceUrl = object.voiceUrl;
+    if (!voiceUrl) return;
     if (object.imageUrl) {
+      fs.mkdirSync(tempDir, { recursive: true });
       await downloadFile(object.imageUrl, thumbnailPath);
       try {
         object.thumbnailPath = thumbnailPath;
@@ -460,275 +615,299 @@ export async function sendVoiceMusicNotQuote(api, message, object, ttl) {
   }
 }
 
-// export async function handleGetVoiceCommand(api, message, aliasCommand) {
-  // console.log(message);
-  // const quote = message.data.quote;
-  // const prefix = getGlobalPrefix();
-  // const content = removeMention(message);
-  // let voiceUrl = null;
-  // let videoUrl = null;
-  // let keyContent = content.replace(`${prefix}${aliasCommand}`, "").trim();
-  // let ext = null;
+async function extractVoiceFromRemoteUrl(rawUrl, api, message) {
+  const safeUrl = await validateSafeRemoteResourceUrl(rawUrl);
+  let urlExt = "";
+  try {
+    urlExt = path.extname(new URL(safeUrl).pathname).replace(/^\./, "").toLowerCase();
+  } catch {}
 
-  // if (!quote && !keyContent) {
-    // const object = {
-      // caption: `Nhập link video hoặc reply nội dung video cần tách âm thanh và dùng lại lệnh ${prefix}${aliasCommand}.`,
-      // state: false,
-      // ttl: 30000,
-    // };
-    // await sendMessageStateQuote(api, message, object.caption, object.state, object.ttl);
-    // return;
-  // }
+  if (!urlExt) {
+    urlExt = String((await checkExstentionFileRemote(safeUrl)) || "")
+      .replace(/^\./, "")
+      .toLowerCase();
+  }
 
-  // if (keyContent) {
-    // ext = await checkExstentionFileRemote(keyContent);
-    // if (ext === 'mp4') {
-      // videoUrl = keyContent;
-    // } else if (ext === 'aac' || ext === 'm4a') {
-      // voiceUrl = keyContent;
-    // } else if (ext === 'mp3') {
-      // voiceUrl = await downloadAndConvertAudio(keyContent, api, message);
-    // } else {
-      // await sendMessageFromSQL(
-        // api,
-        // message,
-        // {
-          // success: false,
-          // message: `Chỉ hỗ trợ get voice cho định dạng video`,
-        // },
-        // false,
-        // 30000
-      // );
-      // return;
-    // }
-  // }
+  if (AUDIO_EXTENSIONS.has(urlExt)) {
+    return await downloadAudio(safeUrl, api, message);
+  }
 
-  // if (quote) {
-    // const attachData = quote.attach ? JSON.parse(quote.attach) : null;
-    // if (attachData?.href) {
-      // ext = await checkExstentionFileRemote(attachData.href);
-      // if (ext === 'mp4') {
-        // videoUrl = attachData.href;
-      // } else if (ext === 'aac' || ext === 'm4a') {
-        // voiceUrl = attachData.href;
-      // } else if (ext === 'mp3') {
-        // voiceUrl = await downloadAndConvertAudio(attachData.href, api, message);
-      // } else {
-        // await sendMessageFromSQL(
-          // api,
-          // message,
-          // {
-            // success: false,
-            // message: `Chỉ hỗ trợ get voice cho định dạng video`,
-          // },
-          // false,
-          // 30000
-        // );
-        // return;
-      // }
-    // } else {
-      // await sendMessageFromSQL(
-        // api,
-        // message,
-        // {
-          // success: false,
-          // message: `Không tìm thấy link đính kèm trong tin nhắn được reply!`,
-        // },
-        // false,
-        // 30000
-      // );
-      // return;
-    // }
-  // }
+  if (VIDEO_EXTENSIONS.has(urlExt)) {
+    return await extractAudioFromVideo(safeUrl, api, message);
+  }
 
-  // if (voiceUrl) {
-    // if (ext === 'mp3') {
-      // await sendVoiceMusic(api, message, { voiceUrl, caption: "Chuyển đổi voice từ mp3 thành công!!!" }, 1800000);
-    // } else {
-      // await sendVoiceMusic(api, message, { voiceUrl, caption: "Đã Là Định Dạng Voice!!!" }, 1800000);
-    // }
-    // return;
-  // } else {
-    // if (videoUrl) {
-      // try {
-        // const voiceUrl = await extractAudioFromVideo(videoUrl, api, message);
-        // await sendVoiceMusic(api, message, { voiceUrl, caption: "Chuyển đổi voice từ video thành công!!!" }, 1800000);
-      // } catch (error) {
-        // console.error("Lỗi khi tách âm thanh:", error);
-        // await sendMessageFromSQL(
-          // api,
-          // message,
-          // {
-            // success: false,
-            // message: `Đã xảy ra lỗi khi get voice, vui lòng thử lại với link khác.`,
-          // },
-          // false,
-          // 30000
-        // );
-      // }
-      // return;
-    // }
-  // }
-// }
-export async function handleGetVoiceCommand(api, message, aliasCommand) {
-  const { type, data: { uidFrom: senderID, msgId, cliMsgId, msgType }, threadId } = message;
-  const quote = message.data.quote;
+  // Hỗ trợ trích xuất âm thanh từ link nền tảng (YouTube/TikTok/SoundCloud/FB...) qua yt-dlp
+  const ytDlpBin = resolveYtDlpExecutableSync();
+  if (!ytDlpBin) {
+    return await extractAudioFromVideo(safeUrl, api, message);
+  }
+
+  fs.mkdirSync(tempDir, { recursive: true });
+  const jobId = randomUUID();
+  const outputTemplate = path.join(tempDir, `getvoice_ytdlp_${jobId}.%(ext)s`);
+  const ffmpegBin = getFfmpegExecutableSync();
+
+  const ytArgs = [
+    "--no-playlist",
+    "--max-filesize",
+    "50M",
+    "-f",
+    "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best",
+    "-o",
+    outputTemplate,
+  ];
+  if (ffmpegBin) {
+    ytArgs.push("--ffmpeg-location", ffmpegBin, "-x", "--audio-format", "m4a");
+  }
+  ytArgs.push(safeUrl);
+
+  const createdFiles = () =>
+    fs
+      .readdirSync(tempDir)
+      .filter((f) => f.startsWith(`getvoice_ytdlp_${jobId}.`))
+      .map((f) => path.join(tempDir, f));
+
+  let convertedM4a = null;
+  try {
+    await execFileAsync(ytDlpBin, ytArgs, {
+      timeout: 90000,
+      windowsHide: true,
+    });
+
+    const matches = createdFiles();
+    if (matches.length === 0) {
+      throw new Error("Không tải được dữ liệu âm thanh từ liên kết.");
+    }
+
+    let uploadTarget = matches[0];
+    const downloadedExt = path.extname(uploadTarget).replace(/^\./, "").toLowerCase();
+    if (!AUDIO_EXTENSIONS.has(downloadedExt) && ffmpegBin) {
+      convertedM4a = path.join(tempDir, `getvoice_conv_${jobId}.m4a`);
+      await execFileAsync(
+        ffmpegBin,
+        ["-y", "-i", uploadTarget, "-vn", "-c:a", "aac", "-q:a", "2", convertedM4a],
+        { timeout: 45000, windowsHide: true },
+      );
+      uploadTarget = convertedM4a;
+    }
+
+    return await uploadAudioFile(uploadTarget, api, message);
+  } finally {
+    for (const file of createdFiles()) {
+      await deleteFile(file).catch(() => {});
+    }
+    if (convertedM4a) {
+      await deleteFile(convertedM4a).catch(() => {});
+    }
+  }
+}
+
+export async function handleGetVoiceCommand(api, message, aliasCommand = "getvoice") {
+  const threadId = message.threadId;
+  const threadType = safeThreadType(message);
+  const quote = getQuoteData(message);
   const prefix = getGlobalPrefix();
-  const content = removeMention(message);
-  let keyContent = content.replace(`${prefix}${aliasCommand}`, "").trim();
+  const cmdName = aliasCommand || "getvoice";
+
+  let keyContent = extractCommandBody(message, prefix, cmdName);
   let voiceUrl = null;
   let videoUrl = null;
-  let ext = null;
   let isTextToSpeech = false;
 
-  // Kiểm tra nếu tin nhắn được reply có chứa file
+  // 1. Kiểm tra nếu tin nhắn được reply có chứa file hoặc văn bản
   if (quote) {
-    // Kiểm tra xem có phải là video không
     try {
-      const attachData = quote.attach ? JSON.parse(quote.attach) : null;
-      if (attachData?.href) {
-        // Kiểm tra đuôi file trực tiếp từ URL trước
-        const urlPath = new URL(attachData.href).pathname;
-        const urlExt = urlPath.split('.').pop().toLowerCase();
-        
-        // Danh sách các định dạng file
-        const audioFormats = ['aac', 'm4a', 'mp3', 'wav', 'ogg'];
-        const videoFormats = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv'];
-        // const imageFormats = ['jpg', 'jpeg', 'png', 'jxl', 'gif', 'webp'];
-        
-        // Kiểm tra định dạng từ URL
-        if (videoFormats.includes(urlExt)) {
-          videoUrl = attachData.href;
-          ext = urlExt;
-        } else if (audioFormats.includes(urlExt)) {
-          voiceUrl = attachData.href;
-          ext = urlExt;
+      const attachData = quote.attach
+        ? typeof quote.attach === "string"
+          ? JSON.parse(quote.attach)
+          : quote.attach
+        : null;
+      const rawHref =
+        attachData?.hdUrl ||
+        attachData?.href ||
+        attachData?.oriUrl ||
+        attachData?.normalUrl ||
+        quote.href ||
+        "";
+      const cleanHref = typeof rawHref === "string" ? rawHref.replace(/\\\//g, "/").trim() : "";
+
+      if (cleanHref) {
+        let urlExt = "";
+        try {
+          urlExt = path.extname(new URL(cleanHref).pathname).replace(/^\./, "").toLowerCase();
+        } catch {}
+
+        if (VIDEO_EXTENSIONS.has(urlExt)) {
+          videoUrl = cleanHref;
+        } else if (AUDIO_EXTENSIONS.has(urlExt)) {
+          voiceUrl = cleanHref;
         } else {
-          // Nếu không thể xác định từ URL, dùng phương thức kiểm tra cũ
-          ext = await checkExstentionFileRemote(attachData.href);
-          
-          // Phân loại file dựa trên kết quả kiểm tra
-          if (videoFormats.includes(ext)) {
-            videoUrl = attachData.href;
-          } else if (audioFormats.includes(ext)) {
-            voiceUrl = attachData.href;
+          const remoteExt = String((await checkExstentionFileRemote(cleanHref)) || "")
+            .replace(/^\./, "")
+            .toLowerCase();
+          if (VIDEO_EXTENSIONS.has(remoteExt)) {
+            videoUrl = cleanHref;
+          } else if (AUDIO_EXTENSIONS.has(remoteExt)) {
+            voiceUrl = cleanHref;
           }
         }
       }
 
-      // Nếu tin nhắn được reply chứa văn bản
-      if (quote.msg && !videoUrl && !voiceUrl) {
+      if (quote.msg && !videoUrl && !voiceUrl && !keyContent) {
         isTextToSpeech = true;
         keyContent = quote.msg;
       }
     } catch (error) {
-      console.error("Lỗi khi xử lý file đính kèm:", error);
+      console.error("[getvoice] Lỗi khi xử lý file đính kèm:", error);
     }
   }
 
-  // Xử lý văn bản thành giọng nói nếu không có video hoặc audio
+  // 2. Nếu không có quote media và đối số là một URL http(s):// -> Tách âm thanh từ link, KHÔNG đọc chuỗi URL!
+  if (!quote && !videoUrl && !voiceUrl && /^https?:\/\/\S+$/i.test(keyContent)) {
+    try {
+      const extractedVoiceUrl = await extractVoiceFromRemoteUrl(keyContent, api, message);
+      if (!extractedVoiceUrl) {
+        throw new Error("Không trích xuất được URL âm thanh");
+      }
+      await sendVoiceMusic(
+        api,
+        message,
+        {
+          voiceUrl: extractedVoiceUrl,
+          caption: "Tách âm thanh từ liên kết thành công!",
+        },
+        1800000,
+      );
+      return;
+    } catch (error) {
+      console.error("[getvoice] Lỗi khi tách âm thanh từ URL:", error?.message || error);
+      await sendMessageFromSQL(
+        api,
+        message,
+        {
+          success: false,
+          message: `Không thể tải hoặc tách âm thanh từ liên kết này (${error?.message || "lỗi xử lý media"}).`,
+        },
+        false,
+        30000,
+      );
+      return;
+    }
+  }
+
+  // 3. Chuyển văn bản thành giọng nói nếu không phải video/audio
   if (!videoUrl && !voiceUrl && (keyContent || isTextToSpeech)) {
     try {
-      const text = keyContent;
-      if (!text) {
-        await sendMessageStateQuote(api, message, 
-          `Vui lòng nhập nội dung hoặc reply tin nhắn cần chuyển thành giọng nói và dùng lệnh ${prefix}${aliasCommand}.`, 
-          false, 30000);
+      const chunks = splitTextIntoTtsChunks(keyContent, 200);
+      if (chunks.length === 0) {
+        await sendMessageStateQuote(
+          api,
+          message,
+          `Vui lòng nhập nội dung hoặc reply tin nhắn cần chuyển thành giọng nói và dùng lệnh ${prefix}${cmdName}.`,
+          false,
+          30000,
+        );
         return;
       }
 
-      // Chia nhỏ văn bản thành các phần tối đa 200 ký tự
-      const parts = text.match(/.{1,200}/g);
       const audioBuffers = [];
-      
-      // Xử lý từng phần văn bản
-      for (const part of parts) {
-        const audioUrl = await googleTTS.getAudioUrl(part, {
-          lang: 'vi',
-          slow: true,
-          host: 'https://translate.google.com',
+      for (const part of chunks) {
+        const audioUrl = googleTTS.getAudioUrl(part, {
+          lang: "vi",
+          slow: false,
+          host: "https://translate.google.com",
         });
-        
+
         const response = await axios({
-          method: 'GET',
+          method: "GET",
           url: audioUrl,
-          responseType: 'arraybuffer'
+          responseType: "arraybuffer",
+          timeout: 15000,
         });
         audioBuffers.push(Buffer.from(response.data));
       }
-      
-      // Tạo file tạm thời và ghi dữ liệu âm thanh
-      fs.mkdirSync(tempDir, { recursive: true });
-      const tempFile = path.join(tempDir, `temp_${Date.now()}.mp3`);
-      const combinedBuffer = Buffer.concat(audioBuffers);
-      fs.writeFileSync(tempFile, combinedBuffer);
-      try {
-        // Upload file âm thanh
-        const results = await api.uploadAttachment([tempFile], threadId, type);
-        voiceUrl = results[0].fileUrl;
 
-        // Gửi tin nhắn voice
-        await sendVoiceMusic(api, message, {
-          voiceUrl,
-          caption: "Chuyển đổi văn bản thành giọng nói thành công!"
-        }, 1800000);
+      fs.mkdirSync(tempDir, { recursive: true });
+      const tempFile = path.join(tempDir, `temp_${randomUUID()}.mp3`);
+      fs.writeFileSync(tempFile, Buffer.concat(audioBuffers));
+
+      try {
+        const results = await api.uploadAttachment([tempFile], threadId, threadType);
+        voiceUrl =
+          results?.[0]?.fileUrl || results?.[0]?.hdUrl || results?.[0]?.normalUrl || "";
+        if (!voiceUrl) {
+          throw new Error("Upload âm thanh TTS thất bại");
+        }
+
+        await sendVoiceMusic(
+          api,
+          message,
+          {
+            voiceUrl,
+            caption: "Chuyển đổi văn bản thành giọng nói thành công!",
+          },
+          1800000,
+        );
       } finally {
-        try {
-          if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-        } catch {}
+        await deleteFile(tempFile).catch(() => {});
       }
       return;
     } catch (error) {
-      console.error("Lỗi khi chuyển đổi văn bản thành giọng nói:", error);
+      console.error("[getvoice] Lỗi khi chuyển đổi văn bản thành giọng nói:", error);
       await sendMessageFromSQL(
         api,
         message,
         {
           success: false,
-          message: `Đã xảy ra lỗi khi chuyển đổi văn bản thành giọng nói, vui lòng thử lại.`,
+          message: "Đã xảy ra lỗi khi chuyển đổi văn bản thành giọng nói, vui lòng thử lại.",
         },
         false,
-        30000
+        30000,
       );
       return;
     }
   }
 
-  // Xử lý file voice có sẵn
+  // 4. Xử lý file voice có sẵn từ quote
   if (voiceUrl) {
-    await sendVoiceMusic(api, message, { voiceUrl, caption: "Đã Là Định Dạng Voice!" }, 1800000);
+    await sendVoiceMusic(api, message, { voiceUrl, caption: "Đã là định dạng Voice!" }, 1800000);
     return;
-  } 
-  // Xử lý file video
-  else if (videoUrl) {
+  }
+
+  // 5. Xử lý file video từ quote
+  if (videoUrl) {
     try {
-      const voiceUrl = await extractAudioFromVideo(videoUrl, api, message);
-      await sendVoiceMusic(api, message, { 
-        voiceUrl, 
-        caption: "Chuyển đổi voice từ video thành công!" 
-      }, 1800000);
+      const extracted = await extractAudioFromVideo(videoUrl, api, message);
+      await sendVoiceMusic(
+        api,
+        message,
+        {
+          voiceUrl: extracted,
+          caption: "Chuyển đổi voice từ video thành công!",
+        },
+        1800000,
+      );
     } catch (error) {
-      console.error("Lỗi khi tách âm thanh:", error);
+      console.error("[getvoice] Lỗi khi tách âm thanh:", error);
       await sendMessageFromSQL(
         api,
         message,
         {
           success: false,
-          message: `Đã xảy ra lỗi khi get voice, vui lòng thử lại với video khác.`,
+          message: "Đã xảy ra lỗi khi tách âm thanh từ video, vui lòng thử lại với video khác.",
         },
         false,
-        30000
+        30000,
       );
     }
     return;
   }
-  
-  // Trường hợp không có dữ liệu để xử lý
+
   await sendMessageStateQuote(
     api,
     message,
-    `Vui lòng nhập nội dung cần chuyển thành giọng nói hoặc reply video/audio/văn bản hợp lệ và dùng lệnh ${prefix}${aliasCommand}.`,
+    `Vui lòng nhập liên kết video, nội dung văn bản hoặc reply video/audio/văn bản hợp lệ và dùng lệnh ${prefix}${cmdName}.`,
     false,
-    30000
+    30000,
   );
 }

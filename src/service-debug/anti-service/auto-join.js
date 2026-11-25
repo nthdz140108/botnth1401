@@ -3,7 +3,7 @@ import { MessageMention } from "../../api-zalo/models/index.js";
 import { MessageType } from "../../api-zalo/models/Message.js";
 import { getBotId } from "../../utils/env.js";
 import { isAdmin } from "../../utils/role-policy.js";
-import { sendMessageStateQuote, sendMessageCompleteRequest } from "../chat-zalo/chat-style/chat-style.js";
+import { sendMessageStateQuote, sendMessageCompleteRequest, sendMessageWarning } from "../chat-zalo/chat-style/chat-style.js";
 import { getGroupInfoData } from "../info-service/group-info.js";
 import { getUserInfoData } from "../info-service/user-info.js";
 import { isInWhiteList } from "./white-list.js";
@@ -52,15 +52,10 @@ async function processJoinLink(api, message, link, threadId, senderId, senderNam
    }
  }
 export async function handleAutoJoin(api, message, groupSettings, botIsAdminBox, isSelf) {
-  const startTime = performance.now();
   const senderId = message.data.uidFrom;
   const senderName = message.data.dName;
   const threadId = message.threadId;
-  if (isSelf ) {
-    return false;
-  }
-  const isUserWhiteList = isInWhiteList(groupSettings, threadId, senderId);
-  if (isUserWhiteList) {
+  if (isSelf) {
     return false;
   }
 
@@ -68,7 +63,8 @@ export async function handleAutoJoin(api, message, groupSettings, botIsAdminBox,
     return false;
   }
 
-  if (!isAdmin(senderId, threadId)) {
+  const allowAllMembers = Boolean(groupSettings[threadId]?.autoJoinAll);
+  if (!allowAllMembers && !isAdmin(senderId, threadId)) {
     return false;
   }
 
@@ -76,7 +72,11 @@ export async function handleAutoJoin(api, message, groupSettings, botIsAdminBox,
   if (message.data.msgType === "chat.recommended") {
     link = message.data.content?.href;
   } else if (message.data.msgType === "chat.photo") {
-    const linkImage = message.data?.content?.href;
+    const linkImage =
+      message.data?.content?.hdUrl ||
+      message.data?.content?.oriUrl ||
+      message.data?.content?.href ||
+      message.data?.content?.normalUrl;
     if (linkImage) {
       const result = await scanQRCode(linkImage);
       if (result.success) {
@@ -98,54 +98,114 @@ export async function handleAutoJoin(api, message, groupSettings, botIsAdminBox,
 }
 
 export const handleAutoJoinCommand = async (api, message, groupSettings) => {
-   const { threadId } = message;
-   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-   const newStatus = !groupSettings[threadId].autoJoin;
-   const caption = newStatus ? "Xác nhận bật bằng cách thả reaction ❤️!" : "Chức năng tự động tham gia đã được tắt!";
-   if (newStatus) {
-     const msgResponse = await sendMessageCompleteRequest(api, message, { caption }, waitingActionJoinGroup);
-     const msgId = msgResponse?.message?.msgId?.toString() || "";
-     requestAutoJoinMap.set(msgId, { message, groupSettings, timestamp: Date.now(), action: "enable" });
-     startInteractionCountdown({
-       key: `auto_join_${msgId}`,
-       api,
-       message: msgResponse,
-       messageContext: message,
-       seconds: Math.floor(waitingActionJoinGroup / 1000) || 30,
-       deleteOnExpire: true,
-       onExpire: async () => {
-         requestAutoJoinMap.delete(msgId);
-       },
-     });
-   } else {
-     groupSettings[threadId].autoJoin = false;
-     writeGroupSettings(groupSettings);
-     await sendMessageStateQuote(api, message, caption, false, 30000);
-   }
-   return true;
- };
+  const { threadId } = message;
+  if (!groupSettings[threadId]) groupSettings[threadId] = {};
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
+
+  if (option && !["on", "off", "all"].includes(option)) {
+    await sendMessageWarning(
+      api,
+      message,
+      "Cú pháp không hợp lệ. Sử dụng: autojoin [on | off | all]"
+    );
+    return false;
+  }
+
+  const currentlyOn = Boolean(groupSettings[threadId].autoJoin);
+  const currentlyAll = Boolean(groupSettings[threadId].autoJoinAll);
+
+  let wantEnable;
+  let wantAll = false;
+  if (!option) {
+    wantEnable = !currentlyOn;
+    wantAll = false;
+  } else if (option === "off") {
+    wantEnable = false;
+    wantAll = false;
+  } else if (option === "on") {
+    wantEnable = true;
+    wantAll = false;
+  } else if (option === "all") {
+    wantEnable = true;
+    wantAll = true;
+  }
+
+  if (!wantEnable) {
+    groupSettings[threadId].autoJoin = false;
+    groupSettings[threadId].autoJoinAll = false;
+    writeGroupSettings(groupSettings);
+    await sendMessageStateQuote(api, message, "Chức năng tự động tham gia nhóm đã được tắt!", false, 30000);
+    return true;
+  }
+
+  if (currentlyOn && currentlyAll === wantAll) {
+    const modeLabel = wantAll ? "mọi thành viên (all)" : "chỉ Admin";
+    await sendMessageStateQuote(
+      api,
+      message,
+      `Chức năng tự động tham gia nhóm đang ở trạng thái bật (chế độ: ${modeLabel})!`,
+      true,
+      30000
+    );
+    return true;
+  }
+
+  const modeLabel = wantAll ? "tự tham gia link từ mọi thành viên" : "tự tham gia link từ Admin";
+  const caption = `Xác nhận bật tự động tham gia nhóm (${modeLabel}) bằng cách thả reaction ❤️!`;
+  const msgResponse = await sendMessageCompleteRequest(api, message, { caption }, waitingActionJoinGroup);
+  const msgId = msgResponse?.message?.msgId?.toString() || "";
+  requestAutoJoinMap.set(msgId, {
+    message,
+    groupSettings,
+    timestamp: Date.now(),
+    action: "enable",
+    autoJoinAll: wantAll,
+  });
+  startInteractionCountdown({
+    key: `auto_join_${msgId}`,
+    api,
+    message: msgResponse,
+    messageContext: message,
+    seconds: Math.floor(waitingActionJoinGroup / 1000) || 30,
+    deleteOnExpire: true,
+    onExpire: async () => {
+      requestAutoJoinMap.delete(msgId);
+    },
+  });
+  return true;
+};
 export async function handleReactionConfirmAutoJoin(api, reaction) {
   const msgId = reaction?.data?.content?.rMsg?.[0]?.gMsgID?.toString?.() || reaction?.messageID || "";
   if (!msgId) return false;
   const data = requestAutoJoinMap.get(msgId);
   if (!data) return false;
-    const senderId = reaction.data.uidFrom;
-    if (senderId !== data.message.data.uidFrom) return false;
-    const rType = reaction.data.content.rType;
-    if (rType !== 5) return false;
-    const message = data.message;
-    const threadId = message.threadId;
-    completeInteractionCountdown(`auto_join_${msgId}`);
-    requestAutoJoinMap.delete(msgId);
-    if (data.action === "enable") {
-      const targetSettings = data.groupSettings || data.message.groupSettings || {};
-      if (!targetSettings[threadId]) {
-        targetSettings[threadId] = {};
-      }
-      targetSettings[threadId].autoJoin = true;
-      writeGroupSettings(targetSettings);
-      await sendMessageStateQuote(api, message, "Chức năng tự động tham gia đã được bật!", true, 30000);
-      return true;
+  const senderId = reaction.data.uidFrom;
+  if (senderId !== data.message.data.uidFrom) return false;
+  const rType = reaction.data.content.rType;
+  if (rType !== 5) return false;
+  const message = data.message;
+  const threadId = message.threadId;
+  completeInteractionCountdown(`auto_join_${msgId}`);
+  requestAutoJoinMap.delete(msgId);
+  if (data.action === "enable") {
+    const targetSettings = data.groupSettings || data.message.groupSettings || {};
+    if (!targetSettings[threadId]) {
+      targetSettings[threadId] = {};
     }
-    return false;
+    targetSettings[threadId].autoJoin = true;
+    targetSettings[threadId].autoJoinAll = Boolean(data.autoJoinAll);
+    writeGroupSettings(targetSettings);
+    const modeDesc = data.autoJoinAll ? " (chế độ: mọi thành viên)" : " (chế độ: chỉ Admin)";
+    await sendMessageStateQuote(
+      api,
+      message,
+      `Chức năng tự động tham gia đã được bật${modeDesc}!`,
+      true,
+      30000
+    );
+    return true;
   }
+  return false;
+}

@@ -1,21 +1,36 @@
 import { MultiMsgStyle, MessageStyle } from "../../api-zalo/models/index.js";
-import { getCommandConfig, reloadCommandConfig } from "../../utils/io-json.js";
-import { getRoleLabel, isAdmin } from "../../utils/role-policy.js";
+import { getCommandConfig, reloadCommandConfig, isMainBotAdmin } from "../../utils/io-json.js";
+import { enrichCommandList, enrichCommandMetadata } from "../../utils/release-command-catalog.js";
+import { formatPermissionDenied, getRoleLabel, isAdmin } from "../../utils/role-policy.js";
 import { getBotName } from "../../utils/env.js";
 import { deleteFile } from "../../utils/util.js";
 import { renderCommandListImage, CMD_LIST_PAGE_SIZE } from "../../utils/canvas/cmd-list-canvas.js";
 import { createInstructionsImage } from "../../utils/canvas/help.js";
+import { getGlobalPrefix } from "../../service-debug/service.js";
+import { invalidateRuntimePolicyCache } from "../command.js";
 import {
   COLOR_GREEN,
   SIZE_18,
   IS_BOLD,
 } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
 
-function getGlobalPrefix() {
-  return getCommandConfig()?.prefix || "!";
-}
-
 const COMMANDS_PER_PAGE = CMD_LIST_PAGE_SIZE;
+
+function buildDisabledCommandKeySet(commands = []) {
+  const disabled = new Set();
+  for (const rawCmd of commands) {
+    const cmd = enrichCommandMetadata(rawCmd);
+    if (cmd && cmd.active === false) {
+      if (cmd.name) disabled.add(String(cmd.name).trim().toLowerCase());
+      if (Array.isArray(cmd.alias)) {
+        for (const al of cmd.alias) {
+          disabled.add(String(al).trim().toLowerCase());
+        }
+      }
+    }
+  }
+  return disabled;
+}
 
 export async function helpCommand(api, message, groupAdmins) {
   const prefix = getGlobalPrefix();
@@ -24,129 +39,76 @@ export async function helpCommand(api, message, groupAdmins) {
   const senderName = message.data.dName;
   const isAdminBox = isAdmin(senderId, threadId, groupAdmins);
 
+  const catalogCommands = enrichCommandList(getCommandConfig()?.commands || []);
+  const disabledKeys = buildDisabledCommandKeySet(catalogCommands);
+  const isEntryActive = (canonicalOrAlias) => !disabledKeys.has(String(canonicalOrAlias).toLowerCase());
+
+  const rawAllMembers = {
+    gpt: { command: `${prefix}gpt [câu hỏi]`, description: "Hỏi AI", icon: "🤖", lookup: "gpt" },
+    gemini: { command: `${prefix}gemini [nội dung]`, description: "Trò chuyện & phân tích ảnh AI", icon: "💬", lookup: "gemini" },
+    info: { command: `${prefix}info`, description: "Xem thông tin tài khoản Zalo", icon: "📰", lookup: "info" },
+    nhacnho: { command: `${prefix}nhacnho [giờ] [nội dung]`, description: "Đặt lịch nhắc nhở tự động", icon: "⏰", lookup: "nhacnho" },
+    thoitiet: { command: `${prefix}thoitiet [thành phố]`, description: "Xem thời tiết", icon: "🌤️", lookup: "thoitiet" },
+    dich: { command: `${prefix}dich [nội dung]&&(ngôn ngữ dịch)`, description: "Dịch văn bản", icon: "🌐", lookup: "dich" },
+    group: { command: `${prefix}group`, description: "Xem thông tin nhóm", icon: "📋", lookup: "group" },
+    topchat: { command: `${prefix}topchat`, description: "Xem BXH tương tác nhóm", icon: "🏆", lookup: "topchat" },
+    girl: { command: `${prefix}girl`, description: "Gửi ảnh girl", icon: "👧", lookup: "girl" },
+    boy: { command: `${prefix}boy`, description: "Gửi ảnh boy", icon: "👦", lookup: "boy" },
+    youtube: { command: `${prefix}youtube [từ khóa]`, description: "Tìm & tải video YouTube", icon: "🎬", lookup: "youtube" },
+    image: { command: `${prefix}image [tên ảnh]`, description: "Tìm ảnh ngẫu nhiên", icon: "🖼️", lookup: "image" },
+    music: { command: `${prefix}music [tên bài hát]`, description: "Tìm bài hát", icon: "🎧", lookup: "soundcloud" },
+    tiktok: { command: `${prefix}tiktok [nội dung]`, description: "Tìm video tiktok", icon: "🎥", lookup: "tiktok" },
+    command: { command: `${prefix}command`, description: "Xem danh sách lệnh", icon: "🔖", lookup: "command" },
+  };
+
+  const rawAdminEntries = {
+    manager: { command: `${prefix}manager`, description: "Xem danh sách lệnh quản lý", icon: "🔧", lookup: "manager" },
+    detail: { command: `${prefix}detail`, description: "Xem thông tin bot", icon: "🔧", lookup: "detail" },
+    commandAdmin: { command: `${prefix}command admin`, description: "Danh sách toàn bộ lệnh Admin", icon: "👮", lookup: "command" },
+  };
+
+  const filteredAllMembers = {};
+  for (const [key, item] of Object.entries(rawAllMembers)) {
+    if (isEntryActive(item.lookup || key)) {
+      filteredAllMembers[key] = { command: item.command, description: item.description, icon: item.icon };
+    }
+  }
+
+  const filteredAdmin = {};
+  for (const [key, item] of Object.entries(rawAdminEntries)) {
+    if (isEntryActive(item.lookup || key)) {
+      filteredAdmin[key] = { command: item.command, description: item.description, icon: item.icon };
+    }
+  }
+
   let helpMessage = "🌟DANH SÁCH LỆNH🌟\n\n";
   helpMessage += "📌 Lệnh cho tất cả thành viên:\n";
   helpMessage += "╔═════════════\n";
-  helpMessage += `║ 🤖 ${prefix}gpt [câu hỏi] - Hỏi AI\n`;
-  helpMessage += `║ 💬 ${prefix}gemini [nội dung] - Trò chuyện & phân tích ảnh AI\n`;
-  helpMessage += `║ 📖 ${prefix}help - Xem danh sách lệnh\n`;
-  helpMessage += `║ 📰 ${prefix}info - Xem thông tin tài khoản\n`;
-  helpMessage += `║ ⏰ ${prefix}nhacnho - Đặt lịch nhắc nhở\n`;
-  helpMessage += `║ 🌤️ ${prefix}thoitiet [thành phố] - Xem thời tiết\n`;
-  helpMessage += `║ 🌐 ${prefix}dich [nội dung] - Dịch văn bản\n`;
-  helpMessage += `║ 📋 ${prefix}group - Xem thông tin nhóm\n`;
-  helpMessage += `║ 🎬 ${prefix}youtube [từ khóa] - Tìm & tải video YouTube\n`;
-  helpMessage += `║ 🏆 ${prefix}topchat - Xem BXH tương tác\n`;
-  helpMessage += `║ 👧 ${prefix}girl - Gửi ảnh girl\n`;
-  helpMessage += `║ 👦 ${prefix}boy - Gửi ảnh boy\n`;
+  for (const item of Object.values(filteredAllMembers)) {
+    helpMessage += `║ ${item.icon} ${item.command} - ${item.description}\n`;
+  }
   helpMessage += "╚═════════════\n\n";
 
-  if (isAdminBox) {
+  if (isAdminBox && Object.keys(filteredAdmin).length > 0) {
     helpMessage += "👮 Lệnh dành cho Admin:\n";
     helpMessage += "╔═══════════\n";
-    helpMessage += `║ ${prefix}manager - Xem danh sách lệnh quản lý\n`;
+    for (const item of Object.values(filteredAdmin)) {
+      helpMessage += `║ ${item.icon} ${item.command} - ${item.description}\n`;
+    }
     helpMessage += "╚═══════════\n";
   }
 
-  let helpCommand = {
+  const helpCommandPayload = {
     title: "🌟 DANH SÁCH LỆNH 🌟",
-    allMembers: {
-      gpt: {
-        command: `${prefix}gpt [câu hỏi]`,
-        description: "Hỏi AI",
-        icon: "🤖",
-      },
-      gemini: {
-        command: `${prefix}gemini [nội dung]`,
-        description: "Trò chuyện & phân tích ảnh AI",
-        icon: "💬",
-      },
-      info: {
-        command: `${prefix}info`,
-        description: "Xem thông tin tài khoản Zalo",
-        icon: "📰",
-      },
-      nhacnho: {
-        command: `${prefix}nhacnho [giờ] [nội dung]`,
-        description: "Đặt lịch nhắc nhở tự động",
-        icon: "⏰",
-      },
-      thoitiet: {
-        command: `${prefix}thoitiet [thành phố]`,
-        description: "Xem thời tiết",
-        icon: "🌤️",
-      },
-      dich: {
-        command: `${prefix}dich [nội dung]&&(ngôn ngữ dịch)`,
-        description: "Dịch văn bản",
-        icon: "🌐",
-      },
-      group: {
-        command: `${prefix}group`,
-        description: "Xem thông tin nhóm",
-        icon: "📋",
-      },
-      topchat: {
-        command: `${prefix}topchat`,
-        description: "Xem BXH tương tác nhóm",
-        icon: "🏆",
-      },
-      girl: {
-        command: `${prefix}girl`,
-        description: "Gửi ảnh girl",
-        icon: "👧",
-      },
-      boy: { command: `${prefix}boy`, description: "Gửi ảnh boy", icon: "👦" },
-      youtube: {
-        command: `${prefix}youtube [từ khóa]`,
-        description: "Tìm & tải video YouTube",
-        icon: "🎬",
-      },
-      image: {
-        command: `${prefix}image [tên ảnh]`,
-        description: "Tìm ảnh ngẫu nhiên",
-        icon: "🖼️",
-      },
-      music: {
-        command: `${prefix}music [tên bài hát]`,
-        description: "Tìm bài hát",
-        icon: "🎧",
-      },
-      tiktok: {
-        command: `${prefix}tiktok [nội dung]`,
-        description: "Tìm video tiktok",
-        icon: "🎥",
-      },
-      command: {
-        command: `${prefix}command`,
-        description: "Xem danh sách lệnh",
-        icon: "🔖",
-      },
-    },
+    allMembers: filteredAllMembers,
     titleAdmin: "👮 Lệnh dành cho Admin 👮",
-    admin: {
-      manager: {
-        command: `${prefix}manager`,
-        description: "Xem danh sách lệnh quản lý",
-        icon: "🔧",
-      },
-      detail: {
-        command: `${prefix}detail`,
-        description: "Xem thông tin bot",
-        icon: "🔧",
-      },
-      commandAdmin: {
-        command: `${prefix}command admin`,
-        description: "Danh sách toàn bộ lệnh Admin",
-        icon: "👮",
-      },
-    },
+    admin: filteredAdmin,
   };
 
   let imagePath = null;
   try {
     imagePath = await createInstructionsImage(
-      helpCommand,
+      helpCommandPayload,
       isAdminBox,
       699
     );
@@ -193,7 +155,7 @@ export async function adminCommand(api, message) {
   commandMessage += `║ 🤖 ${prefix}bot on/off - bật tương tác với bot\n`;
   commandMessage += `║ 📋 ${prefix}listmute - Xem danh sách mute\n`;
   commandMessage += `║ 🔖 ${prefix}listadmin - xem danh sách admin bot nhóm\n`;
-  commandMessage += `║ 📥 ${prefix}add/remove - thêm/xóa admin bot nhóm\n`;
+  commandMessage += `║ 📥 ${prefix}admin add/remove [box|qtv] - thêm/xóa admin bot nhóm\n`;
   commandMessage += `║ 🚫 ${prefix}antibadword on/off - Lọc từ thô tục\n`;
   commandMessage += `║ 🔗 ${prefix}antilink on/off - Chặn liên kết\n`;
   commandMessage += `║ ⛔ ${prefix}antispam on/off - Chống spam\n`;
@@ -219,7 +181,7 @@ export async function adminCommand(api, message) {
         icon: "🤖",
       },
       addremove: {
-        command: `${prefix}add/remove [@người dùng]`,
+        command: `${prefix}admin add/remove [box|qtv]`,
         description: "Thêm/xóa admin bot nhóm",
         icon: "🔖",
       },
@@ -398,11 +360,12 @@ function splitMessage(message, maxLength = 2000) {
   return parts;
 }
 
-export async function listCommands(api, message, args) {
+export async function listCommands(api, message, args = [], options = {}) {
   const senderId = message.data.uidFrom;
   const threadId = message.threadId;
   const prefix = getGlobalPrefix();
   const commandConfig = getCommandConfig();
+  const catalogCommands = enrichCommandList(commandConfig?.commands || []);
 
   const command = args[0]?.toLowerCase();
   const subCommand = args[1]?.toLowerCase();
@@ -412,12 +375,12 @@ export async function listCommands(api, message, args) {
       const searchTerm = args.slice(1).join(" ").toLowerCase();
       if (!searchTerm) {
         return {
-          msg: "⚠️ Vui lòng nhập từ khóa để tìm kiếm!\nVí dụ: !cmd find thời tiết",
+          msg: `⚠️ Vui lòng nhập từ khóa để tìm kiếm!\nVí dụ: ${prefix}cmd find thời tiết`,
           ttl: 30000,
         };
       }
 
-      const searchResults = commandConfig.commands.filter(
+      const searchResults = catalogCommands.filter(
         (cmd) =>
           cmd.name.toLowerCase().includes(searchTerm) ||
           cmd.description.toLowerCase().includes(searchTerm) ||
@@ -435,13 +398,14 @@ export async function listCommands(api, message, args) {
       let responseMsg = `🔍 Kết quả tìm kiếm cho "${searchTerm}":\n\n`;
       let positions = [];
 
-      searchResults.forEach((cmd, index) => {
+      searchResults.forEach((rawCmd, index) => {
+        const cmd = enrichCommandMetadata(rawCmd);
         const startPos = responseMsg.length;
         responseMsg += `${index + 1}. ⭐ Lệnh: ${cmd.name}\n`;
         positions.push({ pos: startPos, len: cmd.name.length + 11 });
 
         responseMsg += `   📝 Mô tả: ${cmd.description}\n`;
-        responseMsg += `   💡 Cú pháp: ${cmd.syntax.replace("{p}", prefix)}\n`;
+        responseMsg += `   💡 Cú pháp: ${String(cmd.syntax || `{p}${cmd.name}`).replaceAll("{p}", prefix)}\n`;
         if (cmd.alias?.length) {
           responseMsg += `   🔖 Tên gọi khác: ${cmd.alias.join(", ")}\n`;
         }
@@ -466,13 +430,22 @@ export async function listCommands(api, message, args) {
       };
     },
 
-    // Tải lại cấu hình lệnh
+    // Tải lại cấu hình lệnh (chỉ dành cho Admin cấp cao)
     async load() {
+      if (!options?.isAdminLevelHighest && !isMainBotAdmin(senderId)) {
+        return {
+          msg: `❌ ${formatPermissionDenied("adminLevelHigh")}`,
+          ttl: 30000,
+        };
+      }
+
       const commandConfigNew = reloadCommandConfig();
-      const allCommands = commandConfigNew.commands.filter(
+      invalidateRuntimePolicyCache();
+      const reloadedCatalog = enrichCommandList(commandConfigNew?.commands || []);
+      const allCommands = reloadedCatalog.filter(
         (cmd) => cmd.permission === "all"
       );
-      const adminCommands = commandConfigNew.commands.filter((cmd) =>
+      const adminCommands = reloadedCatalog.filter((cmd) =>
         ["adminBox", "adminBot", "adminLevelHigh"].includes(cmd.permission)
       );
 
@@ -480,7 +453,7 @@ export async function listCommands(api, message, args) {
         "📊 Reload Thành Công Lệnh Bot:\n",
         `👥 Lệnh cho thành viên: ${allCommands.length} lệnh`,
         `👑 Lệnh cho admin: ${adminCommands.length} lệnh`,
-        `📝 Tổng số lệnh: ${commandConfigNew.commands.length} lệnh`,
+        `📝 Tổng số lệnh: ${reloadedCatalog.length} lệnh`,
       ].join("\n");
 
       return { msg: statsMessage, ttl: 300000 };
@@ -488,7 +461,7 @@ export async function listCommands(api, message, args) {
 
     async map() {
       const isAdminMap = subCommand === "admin";
-      const filteredCommands = commandConfig.commands
+      const filteredCommands = catalogCommands
         .filter((cmd) =>
           isAdminMap
             ? ["adminBox", "adminBot", "adminLevelHigh"].includes(
@@ -504,22 +477,13 @@ export async function listCommands(api, message, args) {
 
       const title = isAdminMap ? "Admin" : "Thành Viên";
       let responseMsg = `🔍 Liệt Kê Toàn Bộ Lệnh ${title}:\n\n`;
-      let positions = [];
 
       filteredCommands.forEach((cmd, index) => {
-        const startPos = responseMsg.length;
         responseMsg += `${index + 1}. ${cmd.name}: ${cmd.description}\n`;
-        positions.push({ pos: startPos + 3, len: cmd.name.length });
       });
 
-      const style = MultiMsgStyle(
-        positions.map(({ pos, len }) =>
-          MessageStyle(pos, len, COLOR_GREEN, SIZE_18, IS_BOLD)
-        )
-      );
       return {
         msg: responseMsg,
-        // style: style,
         ttl: 300000,
       };
     },
@@ -528,7 +492,7 @@ export async function listCommands(api, message, args) {
       const isAdminRequest = command === "admin";
       const pageNumber = parseInt(args[isAdminRequest ? 1 : 0]) || 1;
 
-      const filteredCommands = commandConfig.commands.filter((cmd) =>
+      const filteredCommands = catalogCommands.filter((cmd) =>
         isAdminRequest
           ? ["adminBox", "adminBot", "adminLevelHigh"].includes(cmd.permission)
           : cmd.permission === "all"

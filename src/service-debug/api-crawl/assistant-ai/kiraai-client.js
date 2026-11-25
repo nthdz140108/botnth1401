@@ -53,22 +53,25 @@ export function isKiraAiConfigured() {
   return typeof process.env.KIRA_API_KEY === "string" && process.env.KIRA_API_KEY.trim().length > 0;
 }
 
-function sanitizeError(error) {
-  if (!error) return new Error("KiraAI request failed");
+function sanitizeError(error, providerLabel = "KiraAI") {
+  if (!error) return new Error(`${providerLabel} request failed`);
+  if (error.code === "INVALID_RESPONSE" || error.code === "MISSING_API_KEY" || error.code === "INVALID_INPUT") {
+    return error;
+  }
   if (error.response) {
     const status = error.response.status;
     const message = error.response.data?.error?.message || error.response.data?.message;
-    const wrapped = new Error(`KiraAI HTTP ${status}${message ? `: ${String(message).slice(0, 200)}` : ""}`);
+    const wrapped = new Error(`${providerLabel} HTTP ${status}${message ? `: ${String(message).slice(0, 200)}` : ""}`);
     wrapped.code = `HTTP_${status}`;
     wrapped.status = status;
     return wrapped;
   }
   if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
-    const wrapped = new Error("KiraAI request timed out");
+    const wrapped = new Error(`${providerLabel} request timed out`);
     wrapped.code = "TIMEOUT";
     return wrapped;
   }
-  const wrapped = new Error("KiraAI request failed");
+  const wrapped = new Error(`${providerLabel} request failed`);
   wrapped.code = error.code || "NETWORK_ERROR";
   return wrapped;
 }
@@ -114,6 +117,60 @@ export async function callKiraAiChat(question, options = {}) {
     }
     return content;
   } catch (error) {
+    if (error?.code === "INVALID_RESPONSE") {
+      throw sanitizeError(error);
+    }
     throw sanitizeError(error);
+  }
+}
+
+export async function callOpenAiCompatibleChat({
+  messages,
+  apiKey,
+  baseUrl,
+  model,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  providerLabel = "OpenAI-Compatible",
+} = {}) {
+  const cleanKey = String(apiKey || "").trim();
+  if (!cleanKey) {
+    const error = new Error(`${providerLabel} API key is not configured`);
+    error.code = "MISSING_API_KEY";
+    throw error;
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    const error = new Error("Messages must be a non-empty array");
+    error.code = "INVALID_INPUT";
+    throw error;
+  }
+
+  const cleanBaseUrl = String(baseUrl || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+  const cleanModel = String(model || DEFAULT_MODEL).trim();
+
+  try {
+    const response = await axios.post(
+      `${cleanBaseUrl}/chat/completions`,
+      {
+        model: cleanModel,
+        messages,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${cleanKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: timeoutMs,
+      },
+    );
+
+    const content = response?.data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || content.trim().length === 0) {
+      const error = new Error(`${providerLabel} response missing choices[0].message.content`);
+      error.code = "INVALID_RESPONSE";
+      throw error;
+    }
+    return content.trim();
+  } catch (error) {
+    throw sanitizeError(error, providerLabel);
   }
 }

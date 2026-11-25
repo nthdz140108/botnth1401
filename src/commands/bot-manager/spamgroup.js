@@ -1,7 +1,7 @@
 import { getGlobalPrefix } from "../../service-debug/service.js";
-import { removeMention } from "../../utils/format-util.js";
 import { MessageType } from "../../api-zalo/models/Message.js";
 import { loadPendingTasks, removePendingTask, addPendingTask } from "../../skills/task-persistence.js";
+import { extractCommandBody, safeThreadType } from "../shared/command-input-utils.js";
 
 const spamSessions = new Map();
 const MIN_DELAY_MS = 1000;
@@ -59,32 +59,37 @@ export async function resumeSpamSessions(api) {
   }
 }
 
-export async function spamgroup(api, message) {
+export async function spamgroup(api, message, aliasCommand = "spamgroup") {
   const prefix = getGlobalPrefix();
   const threadId = message.threadId;
-  const content = removeMention(message);
+  const threadType = safeThreadType(message);
+  const safeAlias = typeof aliasCommand === "string" && aliasCommand ? aliasCommand : "spamgroup";
+  let args = extractCommandBody(message, prefix, safeAlias);
+  if (args.toLowerCase().startsWith(`${prefix}spamgr`.toLowerCase())) {
+    args = extractCommandBody(message, prefix, "spamgr");
+  } else if (args.toLowerCase().startsWith(`${prefix}spamgroup`.toLowerCase())) {
+    args = extractCommandBody(message, prefix, "spamgroup");
+  }
 
   const sendSyntaxError = () =>
     api.sendMessage(
       {
         msg:
           `⚠️ Cú pháp sai. Dùng:\n` +
-          `- ${prefix}spamgroup <nội dung>|<delay >= ${MIN_DELAY_MS}ms>[|<số lần <= ${MAX_REPEAT}>]\n` +
-          `- ${prefix}spamgroup delay|<giá trị mới >= ${MIN_DELAY_MS}>\n` +
-          `- ${prefix}spamgroup set|<ttl (ms)>\n` +
-          `- ${prefix}spamgroup stop`,
+          `- ${prefix}${safeAlias} <nội dung>|<delay >= ${MIN_DELAY_MS}ms>[|<số lần <= ${MAX_REPEAT}>]\n` +
+          `- ${prefix}${safeAlias} delay|<giá trị mới >= ${MIN_DELAY_MS}>\n` +
+          `- ${prefix}${safeAlias} set|<ttl (ms)>\n` +
+          `- ${prefix}${safeAlias} stop`,
         quote: message,
       },
       threadId,
-      message.type,
+      threadType,
       60000,
     );
 
-  if (content.trim().toLowerCase() === `${prefix}spamgroup`) {
+  if (!args) {
     return sendSyntaxError();
   }
-
-  const args = content.slice(`${prefix}spamgroup`.length).trim();
 
   let session = spamSessions.get(threadId);
   if (!session) {
@@ -103,15 +108,15 @@ export async function spamgroup(api, message) {
   if (args.toLowerCase() === "stop") {
     if (session.isSpamming) {
       stopSpamSession(threadId);
-      return api.sendMessage({ msg: "✅ Đã dừng spam.", quote: message }, threadId, message.type);
+      return api.sendMessage({ msg: "✅ Đã dừng spam.", quote: message }, threadId, threadType);
     }
-    return api.sendMessage({ msg: "⚠️ Không có spam nào đang chạy.", quote: message }, threadId, message.type);
+    return api.sendMessage({ msg: "⚠️ Không có spam nào đang chạy.", quote: message }, threadId, threadType);
   }
 
   if (args.toLowerCase().startsWith("delay|")) {
     const rawDelay = Number.parseInt(args.split("|")[1], 10);
     if (Number.isNaN(rawDelay) || rawDelay < 1) {
-      return api.sendMessage({ msg: "⚠️ Delay không hợp lệ.", quote: message }, threadId, message.type);
+      return api.sendMessage({ msg: "⚠️ Delay không hợp lệ.", quote: message }, threadId, threadType);
     }
     session.delay = Math.max(rawDelay, MIN_DELAY_MS);
     if (session.isSpamming) {
@@ -120,17 +125,17 @@ export async function spamgroup(api, message) {
     return api.sendMessage(
       { msg: `✅ Đã đổi delay thành ${session.delay}ms.`, quote: message },
       threadId,
-      message.type,
+      threadType,
     );
   }
 
   if (args.toLowerCase().startsWith("set|")) {
     const newTTL = Number.parseInt(args.split("|")[1], 10);
     if (Number.isNaN(newTTL) || newTTL < 0) {
-      return api.sendMessage({ msg: "⚠️ TTL không hợp lệ.", quote: message }, threadId, message.type);
+      return api.sendMessage({ msg: "⚠️ TTL không hợp lệ.", quote: message }, threadId, threadType);
     }
     session.ttl = newTTL;
-    return api.sendMessage({ msg: `✅ TTL đã đặt thành ${session.ttl}ms.`, quote: message }, threadId, message.type);
+    return api.sendMessage({ msg: `✅ TTL đã đặt thành ${session.ttl}ms.`, quote: message }, threadId, threadType);
   }
 
   if (args.includes("|")) {
@@ -166,7 +171,7 @@ export async function spamgroup(api, message) {
         quote: message,
       },
       threadId,
-      message.type,
+      threadType,
     );
   }
 

@@ -49,7 +49,7 @@ function memberMessages(roster) {
 
 export async function getUserCommand(api, message, context = {}) {
   if (message?.type !== MessageType.GroupMessage) {
-    await api.sendMessage({ msg: "Lệnh !getuser chỉ dùng được trong nhóm." }, message.threadId, message.type);
+    await api.sendMessage({ msg: "Lệnh !getuser chỉ dùng được trong nhóm.", ttl: 300000 }, message.threadId, message.type);
     return { status: "group_only" };
   }
 
@@ -70,7 +70,7 @@ export async function getUserCommand(api, message, context = {}) {
       if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
     try {
-      return await api.sendMessage({ msg }, threadId, MessageType.GroupMessage);
+      return await api.sendMessage({ msg, ttl: 300000 }, threadId, MessageType.GroupMessage);
     } finally {
       state.lastSentAt = Date.now();
     }

@@ -1,33 +1,48 @@
 import { appContext } from "../context.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { encodeAES, makeURL, request, handleZaloResponse } from "../utils.js";
-import { Zalo } from "../zalo.js";
 import { MessageType } from "../models/Message.js";
 import { API_TYPE, API_VERSION } from "../constants.js";
+
+function serializeMentionInfo(mention) {
+    if (!mention) return undefined;
+    if (typeof mention === "string") return mention;
+    return JSON.stringify(mention);
+}
 
 export function zSendLocalImageFactory(api) {
     /**
      * Gửi ảnh từ file local
-     * 
+     *
      * @param {string} imagePath Đường dẫn đến file ảnh cần gửi
      * @param {string|number} threadId ID của người dùng/nhóm cần gửi đến
-     * @param {MessageType} threadType MessageType.UserMessage hoặc MessageType.GroupMessage
+     * @param {MessageType} threadType MessageType.DirectMessage hoặc MessageType.GroupMessage
      * @param {number} [width=2560] Chiều rộng của ảnh
      * @param {number} [height=2560] Chiều cao của ảnh
      * @param {object} [message=null] Tin nhắn đi kèm với ảnh
      * @param {object} [customPayload=null] Tùy chọn payload tùy chỉnh
      * @param {number} [ttl=0] Thời gian tồn tại của tin nhắn
      * @throws {ZaloApiError}
-     * @returns {Promise<User|Group|object>} Đối tượng User/Group phản hồi hoặc dữ liệu lỗi
+     * @returns {Promise<object>} Phản hồi đã giải mã từ Zalo
      */
-    return async function sendLocalImage(imagePath, threadId, threadType, width = 2560, height = 2560, message = null, customPayload = null, ttl = 0) {
-        if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent)
+    return async function sendLocalImage(
+        imagePath,
+        threadId,
+        threadType,
+        width = 2560,
+        height = 2560,
+        message = null,
+        customPayload = null,
+        ttl = 0
+    ) {
+        if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent) {
             throw new ZaloApiError("Thiếu các trường bắt buộc trong app context");
-        
+        }
+
         const params = {
             zpw_ver: API_VERSION,
             zpw_type: API_TYPE,
-            nretry: "0"
+            nretry: "0",
         };
 
         let url;
@@ -43,8 +58,12 @@ export function zSendLocalImageFactory(api) {
             } else {
                 throw new ZaloApiError("Loại thread không hợp lệ");
             }
-            
-            payload = customPayload;
+
+            const clonedParams = { ...(customPayload.params || {}) };
+            if (clonedParams.mentionInfo && typeof clonedParams.mentionInfo !== "string") {
+                clonedParams.mentionInfo = serializeMentionInfo(clonedParams.mentionInfo);
+            }
+            payload = { ...customPayload, params: clonedParams };
         } else {
             const uploadImage = await api.uploadAttachment([imagePath], threadId, threadType);
             if (!uploadImage || uploadImage.length === 0) {
@@ -52,14 +71,13 @@ export function zSendLocalImageFactory(api) {
             }
 
             const imageData = uploadImage[0];
-            
             const now = Date.now();
             const payloadParams = {
                 photoId: imageData.photoId || Math.floor(now / 1000),
                 clientId: imageData.clientFileId || Math.floor(now - 1000),
                 desc: message?.text || "",
-                width: width,
-                height: height,
+                width,
+                height,
                 rawUrl: imageData.normalUrl,
                 thumbUrl: imageData.thumbUrl,
                 hdUrl: imageData.hdUrl,
@@ -68,12 +86,13 @@ export function zSendLocalImageFactory(api) {
                 hdSize: imageData.hdSize || "344622",
                 zsource: -1,
                 jcp: JSON.stringify({ sendSource: 1, convertible: "jxl" }),
-                ttl: ttl,
-                imei: appContext.imei
+                ttl,
+                imei: appContext.imei,
             };
 
-            if (message && message.mention) {
-                payloadParams.mentionInfo = message.mention;
+            const serializedMention = serializeMentionInfo(message?.mention);
+            if (serializedMention) {
+                payloadParams.mentionInfo = serializedMention;
             }
 
             if (threadType === MessageType.DirectMessage) {
@@ -99,32 +118,10 @@ export function zSendLocalImageFactory(api) {
             body: new URLSearchParams(payload),
         });
 
-        const data = await response.json();
-        
-        const results = data.error_code === 0 ? data.data : null;
-        
-        if (results) {
-            const decodedResults = api._decode ? api._decode(results) : results;
-            const finalResults = decodedResults.data ? decodedResults.data : decodedResults;
-            
-            if (finalResults === null) {
-                return { error_code: 1337, error_message: "Data is None" };
-            }
-            
-            let parsedResults = finalResults;
-            if (typeof finalResults === 'string') {
-                try {
-                    parsedResults = JSON.parse(finalResults);
-                } catch {
-                    return { error_code: 1337, error_message: finalResults };
-                }
-            }
-            
-            return parsedResults;
+        const result = await handleZaloResponse(response);
+        if (result.error) {
+            throw new ZaloApiError(result.error.message, result.error.code);
         }
-        
-        const errorCode = data.error_code;
-        const errorMessage = data.error_message || data.data;
-        throw new ZaloApiError(`Lỗi #${errorCode} khi gửi yêu cầu: ${errorMessage}`);
+        return result.data;
     };
 }

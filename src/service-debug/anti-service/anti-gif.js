@@ -29,10 +29,6 @@ export async function handleAntiGif(api, message, groupSettings) {
   const prefix = getGlobalPrefix();
   const content = removeMention(message).trim();
   const parts = content.split(/\s+/).filter(Boolean);
-  const rawCmd = (parts[0] || "").toLowerCase();
-  if (rawCmd !== `${prefix}antigif`.toLowerCase() && rawCmd !== `${prefix}chonggif`.toLowerCase()) {
-    return false;
-  }
 
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
 

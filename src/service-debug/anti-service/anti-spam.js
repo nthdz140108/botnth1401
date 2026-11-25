@@ -51,8 +51,9 @@ export async function antiSpam(
     const timestamps = userMessageTimestamps.get(userKey);
     timestamps.push({
       time: timestamp,
+      msgType: message.data.msgType,
       content: message.data.content,
-      length: message.data.content?.length || 0,
+      length: typeof message.data.content === "string" ? message.data.content.length : 0,
     });
 
     const latestTime = timestamps.reduce(
@@ -153,15 +154,25 @@ export function analyzeSpamBehavior(messages) {
     }
   }
 
+  // Bulk spam: >= 3 very long text messages (> 350 chars) in 30s OR >= 5 rapid media messages in 15s
   const longMessages = messages.filter((msg) => {
-    const contentLength =
-      typeof msg.content === "object"
-        ? JSON.stringify(msg.content).length
-        : msg.content?.length || 0;
-    return contentLength > 100;
+    if (typeof msg.content !== "string") return false;
+    return msg.content.length > 350;
   });
 
   if (longMessages.length >= MESSAGE_THRESHOLD_LONG) {
+    return { isSpam: true, type: SPAM_PATTERNS.BULK_MESSAGES };
+  }
+
+  const rapidMediaMessages = messages.filter((msg) => {
+    if (windowEnd - msg.time > 15000) return false;
+    const isMediaMsgType = Boolean(
+      msg.msgType && msg.msgType !== "webchat" && msg.msgType !== "chat.text"
+    );
+    return isMediaMsgType || (typeof msg.content === "object" && msg.content !== null);
+  });
+
+  if (rapidMediaMessages.length >= 5) {
     return { isSpam: true, type: SPAM_PATTERNS.BULK_MESSAGES };
   }
 
@@ -327,7 +338,7 @@ export async function handleAntiSpamCommand(
 ) {
   const threadId = message.threadId;
   const content = removeMention(message);
-  const status = content.split(" ")[1];
+  const status = content.trim().split(/\s+/)[1]?.toLowerCase();
 
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};

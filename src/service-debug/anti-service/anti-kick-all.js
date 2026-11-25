@@ -9,8 +9,8 @@ import { getGroupInfoData } from "../../service-debug/info-service/group-info.js
 import * as cv from "../../utils/canvas/index.js";
 
 const lock = { isLocked: false };
-const MASS_ACTION_THRESHOLD = 5;
-const MASS_ACTION_TIMEFRAME = 100000;
+const MASS_ACTION_THRESHOLD = 3;
+const MASS_ACTION_TIMEFRAME = 60000;
 const massActionTracker = new LRUCache({ max: 5000, ttl: MASS_ACTION_TIMEFRAME * 2 });
 const kickedUsers = new LRUCache({ max: 2000, ttl: 10000 });
 
@@ -52,9 +52,11 @@ export async function antiKickBlock(
       return false;
     }
 
+    const actorKey = `${threadId}:${senderId}`;
+
     if (
       isAdminBox ||
-      kickedUsers.has(senderId) ||
+      kickedUsers.has(actorKey) ||
       isSelf ||
       !botIsAdminBox ||
       isInWhiteList(groupSettings, threadId, senderId)
@@ -67,24 +69,20 @@ export async function antiKickBlock(
     }
 
     return await withLock(async () => {
-      const actionKey = `${senderId}_${threadId}_${actionType}`;
+      const actionKey = `${threadId}:${senderId}`;
       const currentTime = Date.now();
+      const prevTimestamps = (massActionTracker.get(actionKey) || []).filter(
+        (t) => currentTime - t <= MASS_ACTION_TIMEFRAME
+      );
+      prevTimestamps.push(currentTime);
+      massActionTracker.set(actionKey, prevTimestamps);
 
-      if (!massActionTracker.has(actionKey)) {
-        massActionTracker.set(actionKey, { count: 1, timestamp: currentTime });
-      } else {
-        const actionData = massActionTracker.get(actionKey);
-        if (currentTime - actionData.timestamp < MASS_ACTION_TIMEFRAME) {
-          actionData.count += 1;
-          if (actionData.count > MASS_ACTION_THRESHOLD) {
-            await api.blockUsers(threadId, [senderId]).catch(() => {});
-            kickedUsers.set(senderId, true);
-            await handleMassActionDetected(api, event, threadId, senderId, senderName, actionType);
-            return true;
-          }
-        } else {
-          massActionTracker.set(actionKey, { count: 1, timestamp: currentTime });
-        }
+      if (prevTimestamps.length >= MASS_ACTION_THRESHOLD) {
+        await api.blockUsers(threadId, [senderId]).catch(() => {});
+        kickedUsers.set(actorKey, true);
+        massActionTracker.delete(actionKey);
+        await handleMassActionDetected(api, event, threadId, senderId, senderName, actionType);
+        return true;
       }
 
       return false;
@@ -138,8 +136,8 @@ async function handleMassActionDetected(api, event, threadId, senderId, senderNa
     }
 
     const timer = setTimeout(() => {
-      kickedUsers.delete(senderId);
-      massActionTracker.delete(`${senderId}_${threadId}_${actionType}`);
+      kickedUsers.delete(`${threadId}:${senderId}`);
+      massActionTracker.delete(`${threadId}:${senderId}`);
     }, 5000);
     timer.unref?.();
   } catch (error) {
@@ -151,7 +149,7 @@ export async function handleAntiKickBlockCommand(api, message, groupSettings) {
   try {
     const threadId = message.threadId;
     const content = removeMention(message);
-    const status = content.split(" ")[1];
+    const status = content.trim().split(/\s+/)[1]?.toLowerCase();
 
     if (!groupSettings[threadId]) {
       groupSettings[threadId] = { antiKickBlock: false };

@@ -29,7 +29,7 @@ test("sendVideo source now routes remote URLs through local-first helpers", () =
   assert.match(source, /downloadVideoToTempFile\(videoUrl\)/);
   // Thumbnail ưu tiên nguồn local (localThumbnailSource) rồi mới tới localVideoPath
   assert.match(source, /const thumbnailSource = localThumbnailSource \|\| localVideoPath;/);
-  assert.match(source, /execFileAsync\("ffmpeg", \["-i", thumbnailSource/);
+  assert.match(source, /execFileAsync\((?:ffmpegBin|"ffmpeg"), \["-i", thumbnailSource/);
   assert.match(source, /cleanupPaths\.push\(localVideoPath\)/);
   assert.match(source, /finally \{/);
   assert.match(source, /removeTemporaryFile\(filePath\)/);

@@ -182,9 +182,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
 
     // Subcommands handling
     switch (parsed.action) {
-      case "help":
-        return await sendMessageComplete(api, message, helpargs, true, false);
-
       case "qtv": {
         const qtvMessage = `📋 HƯỚNG DẪN QUẢN TRỊ VIÊN BOT 📋
 

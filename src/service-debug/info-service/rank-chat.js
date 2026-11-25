@@ -2,8 +2,9 @@ import fs from "fs";
 import path from "path";
 import schedule from "node-schedule";
 import { MessageType } from "../../api-zalo/models/Message.js";
-import { getActiveRuntimeContext } from "../../utils/io-json.js";
+import { getActiveRuntimeContext, readCommandConfig } from "../../utils/io-json.js";
 import { getProjectRoot } from "../../utils/env.js";
+import { extractCleanArgs } from "../../commands/shared/command-input-utils.js";
 import { createRankStore, getRankStore } from "./rank-store.js";
 
 export function resolveRankInfoPath(customContext = null) {
@@ -114,8 +115,11 @@ export function updateUserRank(groupId, userId, userName, nameGroup, customConte
   storeFor(customContext).increment(groupId, userId, userName, nameGroup);
 }
 
-export async function handleRankCommand(api, message) {
+export async function handleRankCommand(api, message, aliasCommand = "topchat") {
   const threadId = message.threadId;
+  const prefix = readCommandConfig()?.prefix || "!";
+  const cleanArgs = extractCleanArgs(message, prefix, aliasCommand || "topchat");
+  const isMeQuery = cleanArgs[0]?.toLowerCase() === "me";
 
   const rankInfo = readRankInfo();
   const rawUsers = rankInfo.groups[threadId]?.users || [];
@@ -130,13 +134,45 @@ export async function handleRankCommand(api, message) {
     return;
   }
 
-  const sortedUsers = groupUsers.sort((a, b) => b.Rank - a.Rank);
+  const sortedUsers = [...groupUsers].sort((a, b) => b.Rank - a.Rank);
+  const senderId = String(message?.data?.uidFrom || "").trim();
+  const senderName = message?.data?.dName || "Bạn";
+
+  if (isMeQuery) {
+    const myIndex = senderId ? sortedUsers.findIndex((u) => String(u.UID) === senderId) : -1;
+    if (myIndex === -1) {
+      await api.sendMessage(
+        {
+          msg: `📊 Thống kê tương tác HÔM NAY của ${senderName}:\n• Bạn chưa có tin nhắn nào được ghi nhận hôm nay trong nhóm này.`,
+          quote: message,
+        },
+        threadId,
+        MessageType.GroupMessage
+      );
+      return;
+    }
+    const myEntry = sortedUsers[myIndex];
+    const meMsg =
+      `🏆 Thứ hạng tương tác HÔM NAY của ${myEntry.UserName || senderName}:\n` +
+      `• Hạng hiện tại: #${myIndex + 1}/${sortedUsers.length}\n` +
+      `• Số tin nhắn hôm nay: ${myEntry.Rank} tin nhắn`;
+    await api.sendMessage({ msg: meMsg, quote: message }, threadId, MessageType.GroupMessage);
+    return;
+  }
+
   const top10Users = sortedUsers.slice(0, 10);
 
-  let rankMessage = "🏆 Bảng xếp hạng tương tác top 10:\n\n";
+  let rankMessage = "🏆 Bảng xếp hạng tương tác HÔM NAY (Top 10)\n\n";
   top10Users.forEach((user, index) => {
     rankMessage += `${index + 1}. ${user.UserName}: ${user.Rank} tin nhắn\n`;
   });
+
+  if (senderId) {
+    const myIndex = sortedUsers.findIndex((u) => String(u.UID) === senderId);
+    if (myIndex >= 0) {
+      rankMessage += `\n📌 Hạng của bạn: #${myIndex + 1}/${sortedUsers.length} (${sortedUsers[myIndex].Rank} tin nhắn)`;
+    }
+  }
 
   await api.sendMessage({ msg: rankMessage, quote: message }, threadId, MessageType.GroupMessage);
 }

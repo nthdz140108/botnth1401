@@ -1,20 +1,24 @@
 import fs from 'fs';
 import path from 'path';
-import { sendMessageFactory } from '../../../api-zalo/apis/sendMessage.js';
 import { sendMessageStateQuote } from '../../../service-debug/chat-zalo/chat-style/chat-style.js';
-import { getGlobalPrefix } from '../../../service-debug/service.js';
+import { getActiveRuntimeContext } from '../../../utils/io-json.js';
 import { getProjectRoot } from '../../../utils/env.js';
+import { getQuotedUid, safeThreadType } from '../../shared/command-input-utils.js';
 
-const LES_TEST_FILE = path.join(getProjectRoot(), 'data', 'les_test_usage.json');
-
-function escapeRegExp(value) {
-  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function resolveLesUsagePath() {
+  const dataDir = getActiveRuntimeContext()?.dataDir;
+  const baseDir = dataDir
+    ? (path.isAbsolute(dataDir) ? dataDir : path.resolve(getProjectRoot(), dataDir))
+    : path.join(getProjectRoot(), 'data');
+  return path.join(baseDir, 'les_test_usage.json');
 }
 
 function loadUsageData() {
-  if (fs.existsSync(LES_TEST_FILE)) {
+  const filePath = resolveLesUsagePath();
+  if (fs.existsSync(filePath)) {
     try {
-      return JSON.parse(fs.readFileSync(LES_TEST_FILE, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (error) {
       console.error('Error reading les_test_usage.json:', error.message);
       return {};
@@ -25,14 +29,14 @@ function loadUsageData() {
 
 function saveUsageData(data) {
   try {
-    fs.mkdirSync(path.dirname(LES_TEST_FILE), { recursive: true });
-    fs.writeFileSync(LES_TEST_FILE, JSON.stringify(data, null, 2), 'utf8');
+    const filePath = resolveLesUsagePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
   } catch (error) {
     console.error('Error writing les_test_usage.json:', error.message);
   }
 }
 
-// Đối tượng mô tả lệnh les
 export const des = {
   name: 'les',
   version: '1.0.0',
@@ -42,32 +46,25 @@ export const des = {
   active: true,
 };
 
-// Hàm lấy tên người dùng từ input hoặc mentions
-function getUserName(content, mentions, userId) {
+function getUserName(content, mentions, userId, fallbackName = '') {
   try {
-    const mention = mentions.find(m => m.uid === userId);
-    if (mention && mention.name) {
-      return mention.name;
+    const mention = mentions.find((m) => String(m.uid) === String(userId));
+    if (mention?.name) return mention.name;
+    if (mention?.displayName) return mention.displayName;
+    if (typeof content === 'string' && mention && Number.isInteger(mention.pos) && Number.isInteger(mention.len)) {
+      const extracted = content.slice(mention.pos, mention.pos + mention.len).replace(/^@+/, '').trim();
+      if (extracted) return extracted;
     }
-    if (mention && mention.displayName) {
-      return mention.displayName;
-    }
-
-    const match = content.match(/@(.+)/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-
-    return `UID: ${userId}`;
-  } catch (error) {
-    console.error('Error in getUserName:', error.message);
-    return `UID: ${userId}`;
+    const match = String(content || '').match(/@([^\s]+)/);
+    if (match?.[1]) return match[1].trim();
+    return fallbackName || `UID: ${userId}`;
+  } catch {
+    return fallbackName || `UID: ${userId}`;
   }
 }
 
-// Hàm áp dụng style cho tin nhắn
 function applyMessageStyle(text) {
-  const COLORS = ["#f30505ff", "#15a85f", "#f27806", "#f7b503"];
+  const COLORS = ['#f30505ff', '#15a85f', '#f27806', '#f7b503'];
   const color = COLORS[Math.floor(Math.random() * COLORS.length)];
   return {
     text,
@@ -79,76 +76,62 @@ function applyMessageStyle(text) {
   };
 }
 
-// Hàm xử lý lệnh les
 export async function handleLesCommand(api, message) {
   const threadId = message.threadId;
-  const uid = message.data.uidFrom;
-  const content = message.data.content.trim();
-  const currentPrefix = await getGlobalPrefix();
-  const escapedPrefix = escapeRegExp(currentPrefix);
-  const sendMessage = sendMessageFactory(api);
+  const senderId = String(message.data?.uidFrom || '');
+  const senderName = message.data?.dName || 'Bạn';
+  const content = String(message.data?.content || '').trim();
+  const threadType = safeThreadType(message);
 
-  // Xác định xem threadId là nhóm hay cá nhân
-  let isGroup = threadId !== uid;
-  if (typeof message.isGroup !== 'undefined') {
-    isGroup = message.isGroup;
+  const mentions = Array.isArray(message.data?.mentions) ? message.data.mentions : [];
+  const quotedUid = getQuotedUid(message);
+
+  let targetUserId = senderId;
+  let isSelfTarget = true;
+  if (mentions.length > 0 && mentions[0]?.uid) {
+    targetUserId = String(mentions[0].uid);
+    isSelfTarget = targetUserId === senderId;
+  } else if (quotedUid) {
+    targetUserId = quotedUid;
+    isSelfTarget = targetUserId === senderId;
   }
 
-  // Kiểm tra lệnh hợp lệ (thoát ký tự đặc biệt của prefix)
-  const commandRegex = new RegExp(
-    `^${escapedPrefix}les(?:\\b|\\s*@)|@(.+)\\s*${escapedPrefix}les$`,
-    'i'
-  );
-  if (!content.match(commandRegex)) {
-    return sendMessage(
-      { msg: `❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}les @<tên người dùng> 🚨`, ttl: 60000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
-
-  // Kiểm tra mentions
-  const mentions = message.data.mentions || [];
-  if (!mentions.length) {
-    return sendMessage(
-      { msg: '❌ Vui lòng đề cập đến một người dùng bằng @<tên người dùng>! 🚨', ttl: 60000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
-
-  // Lấy user_id từ mention đầu tiên
-  const userId = mentions[0].uid;
-
-  // Lấy tên người được mention từ content
-  const name = getUserName(content, mentions, userId);
+  const targetName = isSelfTarget
+    ? senderName
+    : getUserName(content, mentions, targetUserId, message.data?.quote?.fromD || 'Người dùng');
 
   const usageData = loadUsageData();
   const now = new Date();
-  const probability = usageData[userId]?.lesPercentage ?? Math.floor(Math.random() * 101);
-  usageData[userId] = {
+  const oneDayInMs = 24 * 60 * 60 * 1000;
+  const existing = usageData[targetUserId];
+  const isFresh = existing && (now.getTime() - new Date(existing.lastUsed || 0).getTime() < oneDayInMs);
+
+  const probability = isFresh && typeof existing.lesPercentage === 'number'
+    ? existing.lesPercentage
+    : Math.floor(Math.random() * 101);
+
+  usageData[targetUserId] = {
     lesPercentage: probability,
-    count: (usageData[userId]?.count || 0) + 1,
+    count: isFresh ? (existing.count || 0) + 1 : 1,
     lastUsed: now.toISOString(),
   };
   saveUsageData(usageData);
 
-  const response = `🏳️‍🌈 Con được bạn tag có độ les là ${probability}%! 🏳️‍🌈`;
+  const response = isSelfTarget
+    ? `🏳️‍🌈 Độ les của ${targetName} là ${probability}%! 🏳️‍🌈`
+    : `🏳️‍🌈 Độ les của ${targetName} là ${probability}%! 🏳️‍🌈`;
 
-  // Thử gửi với style và mention (chỉ truyền mentions khi pos >= 0)
   try {
     const styledMessage = applyMessageStyle(response);
-    const pos = styledMessage.text.indexOf(name);
-    const mentionsParam = pos >= 0 ? [{
-      uid: userId,
-      length: name.length,
-      offset: pos,
-    }] : undefined;
+    const pos = styledMessage.text.indexOf(targetName);
+    const mentionsParam = pos >= 0 && targetUserId
+      ? [{ uid: targetUserId, length: targetName.length, offset: pos }]
+      : undefined;
     await sendMessageStateQuote(
       api,
       message,
       styledMessage.text,
-      isGroup,
+      true,
       60000,
       false,
       styledMessage.style,
@@ -156,10 +139,6 @@ export async function handleLesCommand(api, message) {
     );
   } catch (error) {
     console.error('Failed to send message with sendMessageStateQuote:', error.message);
-    await sendMessage(
-      { msg: response, ttl: 60000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
+    await api.sendMessage({ msg: response, quote: message, ttl: 60000 }, threadId, threadType);
   }
 }

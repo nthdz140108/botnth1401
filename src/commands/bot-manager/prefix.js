@@ -1,13 +1,22 @@
 import path from "path";
 import { getGlobalPrefix, setGlobalPrefix } from "../../service-debug/service.js";
-import { getBotInfo } from "../../utils/env.js";
+import { getBotInfoSync } from "../../utils/env.js";
+import { reloadCommandConfig } from "../../utils/io-json.js";
+import { removeMention } from "../../utils/format-util.js";
+import { resolveInstanceAuthorization } from "../../utils/instance-authorization.js";
 import {
   createBotRuntimeContext,
   updateCommandPrefixFile,
 } from "../../utils/bot-runtime-context.js";
+import { safeThreadType } from "../shared/command-input-utils.js";
+import { invalidateRuntimePolicyCache } from "../command.js";
+
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function getRuntimeCommandPaths() {
-  const botInfo = getBotInfo() || {};
+  const botInfo = getBotInfoSync() || {};
   const runtimeContext = createBotRuntimeContext(botInfo);
   const paths = [
     runtimeContext.commandConfigPath,
@@ -17,21 +26,21 @@ function getRuntimeCommandPaths() {
 }
 
 async function safeSendMessage(api, payload, threadId, messageType, quoteMessage) {
+  const resolvedType = messageType ?? safeThreadType(quoteMessage);
   try {
     if (api && typeof api.sendMessage === "function") {
       try {
         return await api.sendMessage(
           { ...payload, quote: quoteMessage },
           threadId,
-          messageType
+          resolvedType
         );
       } catch (quoteErr) {
-        // Fallback to sending without quote
         try {
           return await api.sendMessage(
             { ...payload, quote: undefined },
             threadId,
-            messageType
+            resolvedType
           );
         } catch (fallbackErr) {
           console.error("Lỗi khi gửi tin nhắn fallback prefix:", fallbackErr?.message || fallbackErr);
@@ -45,26 +54,25 @@ async function safeSendMessage(api, payload, threadId, messageType, quoteMessage
 }
 
 export async function handlePrefixCommand(api, message, isAdminLevelHighestOrThreadId, maybeAdmin) {
-  const isAdmin = typeof maybeAdmin === "boolean"
-    ? maybeAdmin
-    : (typeof isAdminLevelHighestOrThreadId === "boolean" ? isAdminLevelHighestOrThreadId : false);
+  const hasExplicitAdminBoolean =
+    typeof maybeAdmin === "boolean" || typeof isAdminLevelHighestOrThreadId === "boolean";
   const threadId = (typeof isAdminLevelHighestOrThreadId === "string" && isAdminLevelHighestOrThreadId)
     ? isAdminLevelHighestOrThreadId
     : (message?.threadId || message?.data?.idTo || message?.data?.threadId);
-  const messageType = message?.type;
+  const messageType = safeThreadType(message);
 
-  const rawContent = message?.data?.content || message?.content || "";
+  const cleanedMentionText = removeMention(message);
+  const rawContent = cleanedMentionText || message?.data?.content || message?.content || "";
   const content = typeof rawContent === "string" ? rawContent.trim() : "";
   const currentPrefix = getGlobalPrefix() || "!";
   const lowerContent = content.toLowerCase();
-  const lowerPrefix = currentPrefix.toLowerCase();
 
   const isBarePrefix = lowerContent === "prefix";
-  const isPrefixedPrefixQuery = lowerContent === `${lowerPrefix}prefix`;
-  const isPrefixedPrefixChange = lowerContent.startsWith(`${lowerPrefix}prefix `);
+  const prefixedMatch = content.match(
+    new RegExp(`^${escapeRegExp(currentPrefix)}prefix(?:\\s+([\\s\\S]*))?$`, "i")
+  );
 
-  // Bare "prefix" query or "<prefix>prefix" query without arguments
-  if (isBarePrefix || isPrefixedPrefixQuery) {
+  if (isBarePrefix) {
     await safeSendMessage(
       api,
       {
@@ -78,13 +86,13 @@ export async function handlePrefixCommand(api, message, isAdminLevelHighestOrThr
     return true;
   }
 
-  // Changing prefix MUST be prefixed with current prefix: "<currentPrefix>prefix <newPrefix>"
-  if (!isPrefixedPrefixChange) {
+  if (!prefixedMatch) {
     return false;
   }
 
-  const args = content.slice(currentPrefix.length + 6).trim(); // +6 for "prefix"
+  const args = (prefixedMatch[1] || "").trim();
 
+  // Bare "<prefix>prefix" (no arguments) in BOTH group and DM displays current prefix to any caller
   if (!args) {
     await safeSendMessage(
       api,
@@ -97,6 +105,19 @@ export async function handlePrefixCommand(api, message, isAdminLevelHighestOrThr
       message
     );
     return true;
+  }
+
+  let isAdmin = typeof maybeAdmin === "boolean"
+    ? maybeAdmin
+    : (typeof isAdminLevelHighestOrThreadId === "boolean" ? isAdminLevelHighestOrThreadId : false);
+
+  if (!hasExplicitAdminBoolean) {
+    const senderUid = String(message?.data?.uidFrom || message?.senderId || "").trim();
+    if (senderUid) {
+      isAdmin = Boolean(
+        resolveInstanceAuthorization({ senderId: senderUid, threadId: threadId || "" }).isAdminLevelHigh
+      );
+    }
   }
 
   if (!isAdmin) {
@@ -113,11 +134,11 @@ export async function handlePrefixCommand(api, message, isAdminLevelHighestOrThr
     return true;
   }
 
-  if (args.includes(" ")) {
+  if (/\s/.test(args)) {
     await safeSendMessage(
       api,
       {
-        msg: "❌ Prefix Không được chứa khoảng trắng!",
+        msg: "❌ Prefix không được chứa khoảng trắng!",
         ttl: 30000,
       },
       threadId,
@@ -130,6 +151,8 @@ export async function handlePrefixCommand(api, message, isAdminLevelHighestOrThr
   try {
     updatePrefix(args);
     setGlobalPrefix(args);
+    reloadCommandConfig();
+    invalidateRuntimePolicyCache();
   } catch (error) {
     console.error("Lỗi khi cập nhật prefix:", error);
     await safeSendMessage(
@@ -170,4 +193,3 @@ function updatePrefix(newPrefix) {
     throw error;
   }
 }
-

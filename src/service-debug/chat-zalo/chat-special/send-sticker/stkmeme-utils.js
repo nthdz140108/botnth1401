@@ -1,585 +1,461 @@
 import axios from "axios";
-import fs from "fs";
-import path from "path";
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import ffmpeg from "fluent-ffmpeg";
+import sharp from "sharp";
 import { getGlobalPrefix } from "../../../service.js";
 import { checkExstentionFileRemote, deleteFile, downloadFile } from "../../../../utils/util.js";
 import { MessageMention, MessageType } from "../../../../api-zalo/index.js";
 import { tempDir } from "../../../../utils/io-json.js";
-import { removeMention } from "../../../../utils/format-util.js";
 import { getVideoMetadata } from "../../../../api-zalo/utils.js";
-import { isAdmin } from "../../../../index.js";
-import { appContext } from "../../../../api-zalo/context.js";
-import ffmpeg from 'fluent-ffmpeg';
-import { configureFluentFfmpeg, getFfmpegExecutableSync } from "../../../../utils/runtime-dependencies.js";
-import sharp from 'sharp';
+import {
+  configureFluentFfmpeg,
+  getFfmpegExecutableSync,
+} from "../../../../utils/runtime-dependencies.js";
+import {
+  extractCommandBody,
+  safeThreadType,
+} from "../../../../commands/shared/command-input-utils.js";
 
 configureFluentFfmpeg();
 
-// Khóa API Tenor
-const TENOR_API_KEY = process.env.TENOR_API_KEY || "";
 const CLIENT_KEY = "my_bot_app";
+const TENOR_V1_PUBLIC_KEY = "LIVDSRZULELA";
 
-async function searchTenorSticker(query) {
-    try {
-        //console.log(`Tìm kiếm GIF trên Tenor với từ khóa: ${query}`);
-        const response = await axios.get('https://tenor.googleapis.com/v2/search', {
-            params: {
-                q: query,
-                key: TENOR_API_KEY,
-                client_key: CLIENT_KEY,
-                limit: 50,
-                contentfilter: 'high',
-            },
-            timeout: 10000,
-            headers: { 'User-Agent': 'TH_MYBOT/1.0 (Node.js)' },
-        });
-
-        const results = response.data.results;
-        if (!results || !Array.isArray(results) || results.length === 0) {
-            //console.log(`Không tìm thấy GIF nào cho từ khóa: ${query}`);
-            if (query.toLowerCase() === "ếch") {
-                //console.log(`Thử tìm kiếm với từ khóa thay thế: "frog"`);
-                return await searchTenorSticker("frog");
-            }
-            return null;
-        }
-
-        const validResults = results.filter(gif => {
-            if (!gif || !gif.media_formats || typeof gif.media_formats !== 'object') {
-                return false;
-            }
-            const formats = gif.media_formats;
-            return (
-                (formats.webp && formats.webp.url && formats.webp.url.trim()) ||
-                (formats.gif && formats.gif.url && formats.gif.url.trim()) ||
-                (formats.mediumgif && formats.mediumgif.url && formats.mediumgif.url.trim()) ||
-                (formats.nanogif && formats.nanogif.url && formats.nanogif.url.trim()) ||
-                (formats.mp4 && formats.mp4.url && formats.mp4.url.trim())
-            );
-        });
-
-        if (validResults.length === 0) {
-            //console.log(`Không có GIF hợp lệ cho từ khóa: ${query}`);
-            if (query.toLowerCase() === "ếch") {
-                //console.log(`Thử tìm kiếm với từ khóa thay thế: "frog"`);
-                return await searchTenorSticker("frog");
-            }
-            return null;
-        }
-
-        const randomIndex = Math.floor(Math.random() * validResults.length);
-        const media = validResults[randomIndex].media_formats;
-        const mediaUrl = media.webp?.url || media.gif?.url || media.mediumgif?.url || media.nanogif?.url || media.mp4?.url || null;
-        //console.log(`Đã chọn GIF ngẫu nhiên: ${mediaUrl}`);
-        return mediaUrl;
-    } catch (error) {
-        //console.error('Lỗi khi tìm kiếm GIF trên Tenor:', error.message);
-        return null;
-    }
+function normalizeTenorItem(item) {
+  if (!item || typeof item !== "object") return null;
+  if (item.media_formats && typeof item.media_formats === "object") {
+    return item.media_formats;
+  }
+  if (Array.isArray(item.media) && item.media[0] && typeof item.media[0] === "object") {
+    return item.media[0];
+  }
+  return null;
 }
 
-async function processAndSendSticker(api, message, mediaSource) {
-    const senderName = message.data.dName;
-    const senderId = message.data.uidFrom;
-    let pathSticker = path.join(tempDir, `sticker_${Date.now()}.temp`);
-    let pathWebp = path.join(tempDir, `sticker_${Date.now()}.webp`);
-    let isLocalFile = false;
-
-    try {
-        // Kiểm tra quyền truy cập thư mục tạm
-        try {
-            fs.accessSync(tempDir, fs.constants.W_OK);
-        } catch (error) {
-            throw new Error(`Không có quyền ghi vào thư mục ${tempDir}: ${error.message}`);
-        }
-
-        //console.log(`Xử lý mediaSource: ${mediaSource}`);
-        if (!isLocalFile) {
-            const mediaCheck = await isValidMediaUrl(mediaSource);
-            if (!mediaCheck.isValid) {
-                throw new Error(`URL media không hợp lệ: ${mediaSource}`);
-            }
-
-            const ext = await checkExstentionFileRemote(mediaSource);
-            pathSticker = path.join(tempDir, `sticker_${Date.now()}.${ext}`);
-            //console.log(`Tải file từ ${mediaSource} về ${pathSticker}`);
-            await downloadFile(mediaSource, pathSticker);
-
-            const stats = fs.statSync(pathSticker);
-            if (stats.size === 0) {
-                throw new Error(`File tải về rỗng: ${pathSticker}`);
-            }
-
-            // Nếu file đã là WebP, sử dụng trực tiếp
-            if (ext.toLowerCase() === 'webp') {
-                //console.log(`File đã là WebP, sử dụng ${pathSticker} làm ${pathWebp}`);
-                pathWebp = pathSticker;
-            } else {
-                // Chuyển đổi sang WebP
-                //console.log(`Chuyển đổi ${pathSticker} sang ${pathWebp}`);
-                await convertToWebp(pathSticker, pathWebp);
-            }
-        } else {
-            pathSticker = mediaSource;
-            //console.log(`Chuyển đổi ${pathSticker} sang ${pathWebp}`);
-            await convertToWebp(pathSticker, pathWebp);
-        }
-
-        // Kiểm tra file WebP đầu ra
-        if (!fs.existsSync(pathWebp) || fs.statSync(pathWebp).size === 0) {
-            throw new Error(`File WebP đầu ra rỗng hoặc không tồn tại: ${pathWebp}`);
-        }
-
-        const linkUploadZalo = await api.uploadAttachment([pathWebp], appContext.send2meId, MessageType.DirectMessage);
-        const stickerData = await getVideoMetadata(pathWebp);
-        const finalUrl = (linkUploadZalo[0].fileUrl || linkUploadZalo[0].normalUrl || linkUploadZalo[0].url || linkUploadZalo[0].mediaUrl) + "?CreatedBy=HàHuyHoàng.BOT";
-        await api.sendMessage(
-            {
-                msg: `${senderName} Sticker của bạn đây!`,
-                quote: message,
-                mentions: [MessageMention(senderId, senderName.length, 0)],
-                ttl: 300000,
-            },
-            message.threadId,
-            message.type
-        );
-
-        await api.sendCustomSticker(
-            message,
-            finalUrl,
-            finalUrl,
-            stickerData.width,
-            stickerData.height,
-            3600000
-        );
-
-        return true;
-    } catch (error) {
-        console.error("Lỗi khi xử lý sticker:", error);
-        throw error;
-    } finally {
-        if (pathSticker !== pathWebp) {
-            await deleteFile(pathSticker);
-        }
-        await deleteFile(pathWebp);
+function pickStickerMediaUrl(formats) {
+  if (!formats || typeof formats !== "object") return null;
+  const candidates = [
+    formats.webp?.url,
+    formats.tinywebp_transparent?.url,
+    formats.webp_transparent?.url,
+    formats.gif?.url,
+    formats.mediumgif?.url,
+    formats.nanogif?.url,
+    formats.mp4?.url,
+  ];
+  for (const url of candidates) {
+    if (typeof url === "string" && /^https?:\/\//i.test(url.trim())) {
+      return url.trim();
     }
+  }
+  return null;
 }
 
-async function isValidMediaUrl(url) {
+async function fetchTenorCandidates(query, limit = 50) {
+  const apiKey = String(process.env.TENOR_API_KEY || "").trim();
+  const headers = { "User-Agent": "TH_MYBOT/3.0 (Node.js)" };
+
+  if (apiKey && apiKey !== "API_KEY") {
     try {
-        const ext = await checkExstentionFileRemote(url);
-        if (!ext) {
-            return { isValid: false, isVideo: false };
-        }
-        if (ext === "mp4" || ext === "mov" || ext === "webm") {
-            return { isValid: true, isVideo: true };
-        } else if (ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp") {
-            return { isValid: true, isVideo: false };
-        } else {
-            return { isValid: false, isVideo: false };
-        }
-    } catch (error) {
-        console.error("Lỗi khi kiểm tra URL:", error);
-        return { isValid: false, isVideo: false };
+      const v2Resp = await axios.get("https://tenor.googleapis.com/v2/search", {
+        params: {
+          q: query,
+          key: apiKey,
+          client_key: CLIENT_KEY,
+          limit,
+          contentfilter: "high",
+        },
+        timeout: 10000,
+        headers,
+      });
+      const v2Items = Array.isArray(v2Resp.data?.results) ? v2Resp.data.results : [];
+      const urls = v2Items.map((item) => pickStickerMediaUrl(normalizeTenorItem(item))).filter(Boolean);
+      if (urls.length > 0) return urls;
+    } catch {
+      // Fallback sang Tenor v1 public endpoint bên dưới
     }
+  }
+
+  const v1Resp = await axios.get("https://g.tenor.com/v1/search", {
+    params: {
+      q: query,
+      key: TENOR_V1_PUBLIC_KEY,
+      limit: Math.min(50, Math.max(limit, 20)),
+      contentfilter: "high",
+    },
+    timeout: 10000,
+    headers,
+  });
+  const v1Items = Array.isArray(v1Resp.data?.results) ? v1Resp.data.results : [];
+  return v1Items.map((item) => pickStickerMediaUrl(normalizeTenorItem(item))).filter(Boolean);
 }
 
-export async function handleStkmemeCommand(api, message, aliasCommand = 'stkmeme') {
-    const threadId = message.threadId;
-    const threadType = message.type ?? MessageType.DirectMessage;
-    const senderId = message.data.uidFrom;
-    const senderName = message.data.dName || "Người dùng";
-    const prefix = getGlobalPrefix();
-    const content = message.data.content ? message.data.content.trim() : '';
-    const commandContent = content.replace(`${prefix}${aliasCommand}`, "").trim();
-    const rawArgs = commandContent.split(/\s+/);
-    const input = rawArgs.filter(a => !/^(-d|--debug|-debug)$/i.test(a)).join(" ").trim();
+function shuffleArray(list) {
+  const copy = [...list];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
-    if (!commandContent || !input) {
-        await api.sendMessage(
-            {
-                msg: `Vui lòng nhập từ khóa tìm kiếm sticker!\nVí dụ: ${prefix}${aliasCommand} [nội dung] [số lượng]`,
-                quote: message,
-                mentions: [MessageMention(senderId, senderName.length, 0)],
-                ttl: 30000,
-            },
-            threadId,
-            threadType
-        );
-        return 0;
+async function readWebpDimensions(webpPath) {
+  try {
+    const meta = await sharp(webpPath, { animated: true }).metadata();
+    if (meta?.width && meta?.height) {
+      return {
+        width: meta.width,
+        height: meta.pageHeight || meta.height,
+      };
+    }
+  } catch {}
+
+  try {
+    const videoMeta = await getVideoMetadata(webpPath);
+    if (videoMeta?.width && videoMeta?.height) {
+      return { width: videoMeta.width, height: videoMeta.height };
+    }
+  } catch {}
+
+  return { width: 512, height: 512 };
+}
+
+function resolveUploadedStickerUrl(uploadRes) {
+  const first = Array.isArray(uploadRes) ? uploadRes[0] : uploadRes;
+  if (!first || typeof first !== "object") return "";
+  const url = first.fileUrl || first.hdUrl || first.normalUrl || first.url || first.mediaUrl || "";
+  return typeof url === "string" ? url.trim() : "";
+}
+
+async function prepareSingleStickerFromUrl(api, message, mediaUrl) {
+  const threadType = safeThreadType(message, MessageType.DirectMessage);
+  const id = randomUUID();
+  let pathSticker = null;
+  let pathWebp = path.join(tempDir, `sticker_${id}.webp`);
+
+  try {
+    fs.mkdirSync(tempDir, { recursive: true });
+    let ext = "";
+    try {
+      ext = path.extname(new URL(mediaUrl).pathname).replace(/^\./, "").toLowerCase();
+    } catch {}
+    if (!ext) {
+      ext = String((await checkExstentionFileRemote(mediaUrl)) || "").toLowerCase();
+    }
+    if (!ext) {
+      throw new Error(`Không xác định được định dạng media: ${mediaUrl}`);
     }
 
-    // Tách từ khóa và số lượng
-    const args = input.split(/\s+/);
-    let query = input;
-    let count = 1; // Mặc định lấy 1 sticker nếu không chỉ định số lượng
-    const lastArg = args[args.length - 1];
+    pathSticker = path.join(tempDir, `sticker_src_${id}.${ext}`);
+    await downloadFile(mediaUrl, pathSticker);
+
+    const stats = fs.statSync(pathSticker);
+    if (!stats || stats.size === 0) {
+      throw new Error("File tải về rỗng.");
+    }
+
+    if (ext === "webp") {
+      pathWebp = pathSticker;
+    } else if (ext === "png" || ext === "jpg" || ext === "jpeg") {
+      await convertImageToWebp(pathSticker, pathWebp);
+    } else if (ext === "gif") {
+      try {
+        await sharp(pathSticker, { animated: true })
+          .resize(512, 512, { fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 76, loop: 0 })
+          .toFile(pathWebp);
+      } catch {
+        await convertToWebp(pathSticker, pathWebp);
+      }
+    } else {
+      await convertToWebp(pathSticker, pathWebp);
+    }
+
+    if (!fs.existsSync(pathWebp) || fs.statSync(pathWebp).size === 0) {
+      throw new Error("File WebP đầu ra rỗng hoặc không tồn tại.");
+    }
+
+    const linkUploadZalo = await api.uploadAttachment([pathWebp], message.threadId, threadType);
+    const finalUrl = resolveUploadedStickerUrl(linkUploadZalo);
+    if (!finalUrl) {
+      throw new Error("Upload sticker lên Zalo không trả về URL hợp lệ.");
+    }
+
+    const { width, height } = await readWebpDimensions(pathWebp);
+    return { url: finalUrl, width, height };
+  } finally {
+    if (pathSticker && pathSticker !== pathWebp) {
+      await deleteFile(pathSticker).catch(() => {});
+    }
+    if (pathWebp) {
+      await deleteFile(pathWebp).catch(() => {});
+    }
+  }
+}
+
+export async function handleStkmemeCommand(api, message, aliasCommand = "stkmeme") {
+  const threadId = message.threadId;
+  const threadType = safeThreadType(message, MessageType.DirectMessage);
+  const isGroup = threadType === MessageType.GroupMessage;
+  const senderId = message.data?.uidFrom;
+  const senderName = message.data?.dName || "Người dùng";
+  const prefix = getGlobalPrefix();
+  const cmdName = aliasCommand || "stkmeme";
+
+  const commandContent = extractCommandBody(message, prefix, cmdName);
+  const rawArgs = commandContent ? commandContent.split(/\s+/).filter(Boolean) : [];
+  const filteredArgs = rawArgs.filter((a) => !/^(-d|--debug|-debug)$/i.test(a));
+  const input = filteredArgs.join(" ").trim();
+
+  const buildMentions = () =>
+    isGroup && senderId ? [MessageMention(senderId, senderName.length, 0)] : undefined;
+
+  if (!input) {
+    await api.sendMessage(
+      {
+        msg: `${senderName}, vui lòng nhập từ khóa tìm kiếm sticker!\nVí dụ: ${prefix}${cmdName} mèo cute 2`,
+        quote: message,
+        mentions: buildMentions(),
+        ttl: 30000,
+      },
+      threadId,
+      threadType,
+    );
+    return 0;
+  }
+
+  // Chỉ tách số lượng ở cuối khi có >= 2 token (để !stkmeme 2026 tìm từ khóa "2026")
+  let query = input;
+  let count = 1;
+  if (filteredArgs.length >= 2) {
+    const lastArg = filteredArgs[filteredArgs.length - 1];
     if (/^\d+$/.test(lastArg)) {
-        count = parseInt(lastArg, 10);
-        query = args.slice(0, -1).join(" ").trim();
-        if (!query) {
-            await api.sendMessage(
-                {
-                    msg: `Vui lòng nhập từ khóa tìm kiếm sticker trước số lượng!\nVí dụ: ${prefix}${aliasCommand} funny 3`,
-                    quote: message,
-                    mentions: [MessageMention(senderId, senderName.length, 0)],
-                    ttl: 30000,
-                },
-                threadId,
-                threadType
-            );
-            return 0;
+      count = Number.parseInt(lastArg, 10);
+      query = filteredArgs.slice(0, -1).join(" ").trim();
+    }
+  }
+
+  const MAX_COUNT = 10;
+  if (count > MAX_COUNT) {
+    await api.sendMessage(
+      {
+        msg: `${senderName}, số lượng sticker tối đa là ${MAX_COUNT}! Hãy thử lại với số lượng nhỏ hơn.`,
+        quote: message,
+        mentions: buildMentions(),
+        ttl: 30000,
+      },
+      threadId,
+      threadType,
+    );
+    return 0;
+  }
+
+  if (count < 1) {
+    await api.sendMessage(
+      {
+        msg: `${senderName}, số lượng sticker phải là số nguyên dương!\nVí dụ: ${prefix}${cmdName} funny 3`,
+        quote: message,
+        mentions: buildMentions(),
+        ttl: 30000,
+      },
+      threadId,
+      threadType,
+    );
+    return 0;
+  }
+
+  await api.sendMessage(
+    {
+      msg: `${senderName}, đang tìm ${count > 1 ? count : "một"} sticker cho từ khóa "${query}", chờ chút nhé!`,
+      quote: message,
+      mentions: buildMentions(),
+      ttl: 10000,
+    },
+    threadId,
+    threadType,
+  );
+
+  try {
+    let validUrls = await fetchTenorCandidates(query, 50);
+    if (validUrls.length === 0 && query.toLowerCase() === "ếch") {
+      validUrls = await fetchTenorCandidates("frog", 50);
+    }
+
+    if (validUrls.length === 0) {
+      await api.sendMessage(
+        {
+          msg: `${senderName}, không tìm thấy sticker nào cho từ khóa "${query}"! Hãy thử từ khóa khác như "cat" hoặc "funny".`,
+          quote: message,
+          mentions: buildMentions(),
+          ttl: 30000,
+        },
+        threadId,
+        threadType,
+      );
+      return 0;
+    }
+
+    // Luôn xáo trộn ngẫu nhiên kể cả khi count === 1 (dù gõ !stkmeme cat hay !stkmeme cat 1)
+    const randomizedUrls = shuffleArray(validUrls);
+    const processedStickers = [];
+
+    for (const mediaUrl of randomizedUrls) {
+      if (processedStickers.length >= count) break;
+      try {
+        const prepared = await prepareSingleStickerFromUrl(api, message, mediaUrl);
+        if (prepared?.url) {
+          processedStickers.push(prepared);
         }
+      } catch (err) {
+        console.warn(`[stkmeme] Bỏ qua candidate lỗi (${mediaUrl}):`, err?.message || err);
+      }
     }
 
-    // Giới hạn số lượng tối đa
-    const MAX_COUNT = 10;
-    if (count > MAX_COUNT) {
-        await api.sendMessage(
-            {
-                msg: `${senderName}, Số lượng sticker tối đa là ${MAX_COUNT}! Hãy thử lại với số lượng nhỏ hơn.`,
-                quote: message,
-                mentions: [MessageMention(senderId, senderName.length, 0)],
-                ttl: 30000,
-            },
-            threadId,
-            threadType
-        );
-        return 0;
-    }
-
-    if (count < 1) {
-        await api.sendMessage(
-            {
-                msg: `${senderName}, Số lượng sticker phải là số dương!\nVí dụ: ${prefix}${aliasCommand} funny 3`,
-                quote: message,
-                mentions: [MessageMention(senderId, senderName.length, 0)],
-                ttl: 30000,
-            },
-            threadId,
-            threadType
-        );
-        return 0;
+    if (processedStickers.length === 0) {
+      await api.sendMessage(
+        {
+          msg: `${senderName}, không thể xử lý sticker nào cho từ khóa "${query}". Vui lòng thử lại sau!`,
+          quote: message,
+          mentions: buildMentions(),
+          ttl: 30000,
+        },
+        threadId,
+        threadType,
+      );
+      return 0;
     }
 
     await api.sendMessage(
-        {
-            msg: `${senderName}, Đang tìm ${count > 1 ? count : 'một'} sticker cho từ khóa "${query}", chờ chút nhé!`,
-            quote: message,
-            mentions: [MessageMention(senderId, senderName.length, 0)],
-            ttl: 6000,
-        },
-        threadId,
-        threadType
+      {
+        msg:
+          processedStickers.length === 1
+            ? `${senderName} Sticker của bạn đây!`
+            : `${senderName}, đây là ${processedStickers.length} sticker của bạn!`,
+        quote: message,
+        mentions: buildMentions(),
+        ttl: 300000,
+      },
+      threadId,
+      threadType,
     );
 
-    try {
-        // Lấy danh sách sticker từ Tenor
-        const response = await axios.get('https://tenor.googleapis.com/v2/search', {
-            params: {
-                q: query,
-                key: TENOR_API_KEY,
-                client_key: CLIENT_KEY,
-                limit: count > 1 ? count : 50, // Lấy 50 nếu không chỉ định số lượng để chọn ngẫu nhiên
-                contentfilter: 'high',
-            },
-            timeout: 10000,
-            headers: { 'User-Agent': 'TH_MYBOT/1.0 (Node.js)' },
-        });
-
-        const results = response.data.results;
-        if (!results || !Array.isArray(results) || results.length === 0) {
-            await api.sendMessage(
-                {
-                    msg: `${senderName}, Không tìm thấy GIF nào trên Tenor với từ khóa "${query}"! Hãy thử từ khóa khác như "funny" hoặc "cat".`,
-                    quote: message,
-                    mentions: [MessageMention(senderId, senderName.length, 0)],
-                    ttl: 30000,
-                },
-                threadId,
-                threadType
-            );
-            return 0;
-        }
-
-        const validResults = results.filter(gif => {
-            if (!gif || !gif.media_formats || typeof gif.media_formats !== 'object') {
-                return false;
-            }
-            const formats = gif.media_formats;
-            return (
-                (formats.webp && formats.webp.url && formats.webp.url.trim()) ||
-                (formats.gif && formats.gif.url && formats.gif.url.trim()) ||
-                (formats.mediumgif && formats.mediumgif.url && formats.mediumgif.url.trim()) ||
-                (formats.nanogif && formats.nanogif.url && formats.nanogif.url.trim()) ||
-                (formats.mp4 && formats.mp4.url && formats.mp4.url.trim())
-            );
-        });
-
-        if (validResults.length === 0) {
-            await api.sendMessage(
-                {
-                    msg: `${senderName}, Không tìm thấy GIF hợp lệ nào trên Tenor với từ khóa "${query}"! Hãy thử từ khóa khác như "funny" hoặc "cat".`,
-                    quote: message,
-                    mentions: [MessageMention(senderId, senderName.length, 0)],
-                    ttl: 30000,
-                },
-                threadId,
-                threadType
-            );
-            return 0;
-        }
-
-        // Xử lý theo số lượng
-        if (count === 1 && args.length === 1) {
-            // Trường hợp không chỉ định số lượng: chọn ngẫu nhiên 1 sticker
-            const randomIndex = Math.floor(Math.random() * validResults.length);
-            const media = validResults[randomIndex].media_formats;
-            const mediaUrl = media.webp?.url || media.gif?.url || media.mediumgif?.url || media.nanogif?.url || media.mp4?.url || null;
-            if (mediaUrl) {
-                await processAndSendSticker(api, message, mediaUrl);
-            } else {
-                await api.sendMessage(
-                    {
-                        msg: `${senderName}, Không tìm thấy sticker hợp lệ nào cho từ khóa "${query}"! Hãy thử từ khóa khác.`,
-                        quote: message,
-                        mentions: [MessageMention(senderId, senderName.length, 0)],
-                        ttl: 30000,
-                    },
-                    threadId,
-                    threadType
-                );
-            }
-        } else {
-            // Trường hợp có số lượng: xử lý và gửi tất cả sticker cùng lúc
-            const stickerUrls = validResults.slice(0, count).map(gif => {
-                const media = gif.media_formats;
-                return media.webp?.url || media.gif?.url || media.mediumgif?.url || media.nanogif?.url || media.mp4?.url || null;
-            }).filter(url => url);
-
-            if (stickerUrls.length === 0) {
-                await api.sendMessage(
-                    {
-                        msg: `${senderName}, Không tìm thấy sticker hợp lệ nào cho từ khóa "${query}"! Hãy thử từ khóa khác.`,
-                        quote: message,
-                        mentions: [MessageMention(senderId, senderName.length, 0)],
-                        ttl: 30000,
-                    },
-                    threadId,
-                    threadType
-                );
-                return 0;
-            }
-
-            // Xử lý tất cả sticker trước khi gửi
-            const processedStickers = [];
-            for (const mediaUrl of stickerUrls) {
-                const pathSticker = path.join(tempDir, `sticker_${Date.now()}_${Math.random().toString(36).substring(2, 15)}.temp`);
-                const pathWebp = path.join(tempDir, `sticker_${Date.now()}_${Math.random().toString(36).substring(2, 15)}.webp`);
-
-                try {
-                    const mediaCheck = await isValidMediaUrl(mediaUrl);
-                    if (!mediaCheck.isValid) {
-                        continue;
-                    }
-
-                    const ext = await checkExstentionFileRemote(mediaUrl);
-                    await downloadFile(mediaUrl, pathSticker);
-
-                    const stats = fs.statSync(pathSticker);
-                    if (stats.size === 0) {
-                        await deleteFile(pathSticker);
-                        continue;
-                    }
-
-                    if (ext.toLowerCase() === 'webp') {
-                        fs.copyFileSync(pathSticker, pathWebp);
-                    } else {
-                        await convertToWebp(pathSticker, pathWebp);
-                    }
-
-                    if (!fs.existsSync(pathWebp) || fs.statSync(pathWebp).size === 0) {
-                        await deleteFile(pathSticker);
-                        await deleteFile(pathWebp);
-                        continue;
-                    }
-
-                    const linkUploadZalo = await api.uploadAttachment([pathWebp], appContext.send2meId, MessageType.DirectMessage);
-                    const stickerData = await getVideoMetadata(pathWebp);
-                    const finalUrl = (linkUploadZalo[0].fileUrl || linkUploadZalo[0].normalUrl || linkUploadZalo[0].url || linkUploadZalo[0].mediaUrl) + "?CreatedBy=HàHuyHoàng.BOT";
-                    processedStickers.push({ url: finalUrl, width: stickerData.width, height: stickerData.height });
-
-                    await deleteFile(pathSticker);
-                    await deleteFile(pathWebp);
-                } catch (error) {
-                    console.error(`Lỗi khi xử lý sticker ${mediaUrl}:`, error);
-                    await deleteFile(pathSticker);
-                    await deleteFile(pathWebp);
-                    continue;
-                }
-            }
-
-            if (processedStickers.length === 0) {
-                await api.sendMessage(
-                    {
-                        msg: `${senderName}, Không thể xử lý sticker nào cho từ khóa "${query}"! Hãy thử lại.`,
-                        quote: message,
-                        mentions: [MessageMention(senderId, senderName.length, 0)],
-                        ttl: 30000,
-                    },
-                    threadId,
-                    threadType
-                );
-                return 0;
-            }
-
-            // Gửi tất cả sticker cùng lúc
-            await api.sendMessage(
-                {
-                    msg: `${senderName}, Đây là ${processedStickers.length} sticker của bạn!`,
-                    quote: message,
-                    mentions: [MessageMention(senderId, senderName.length, 0)],
-                    ttl: 300000,
-                },
-                threadId,
-                threadType
-            );
-
-            for (const sticker of processedStickers) {
-                await api.sendCustomSticker(
-                    message,
-                    sticker.url,
-                    sticker.url,
-                    sticker.width,
-                    sticker.height,
-                    3600000
-                );
-            }
-        }
-    } catch (error) {
-        let errorMessage = `${senderName}, Lỗi khi xử lý sticker: ${error.message}`;
-        if (error.message.includes("File đầu vào rỗng") || error.message.includes("không tồn tại")) {
-            errorMessage = `${senderName}, File GIF từ Tenor không hợp lệ hoặc không tải được. Hãy thử từ khóa khác.`;
-        } else if (error.message.includes("Lỗi khi chuyển đổi sang WebP")) {
-            errorMessage = `${senderName}, Lỗi khi chuyển đổi GIF sang sticker. Vui lòng thử lại sau.`;
-        } else if (error.message.includes("không hợp lệ")) {
-            errorMessage = `${senderName}, File từ Tenor không hợp lệ. Hãy thử từ khóa khác.`;
-        }
-        await api.sendMessage(
-            {
-                msg: errorMessage,
-                quote: message,
-                mentions: [MessageMention(senderId, senderName.length, 0)],
-                ttl: 30000,
-            },
-            threadId,
-            threadType
-        );
+    for (const sticker of processedStickers) {
+      await api.sendCustomSticker(
+        message,
+        sticker.url,
+        sticker.url,
+        sticker.width,
+        sticker.height,
+        3600000,
+      );
     }
+  } catch (error) {
+    await api.sendMessage(
+      {
+        msg: `${senderName}, lỗi khi tìm kiếm hoặc gửi sticker: ${error?.message || "Không xác định"}`,
+        quote: message,
+        mentions: buildMentions(),
+        ttl: 30000,
+      },
+      threadId,
+      threadType,
+    );
+  }
 
-    return 0;
+  return 0;
 }
 
 export async function convertToWebp(inputPath, outputPath) {
-    return new Promise((resolve, reject) => {
-        try {
-            // Kiểm tra file đầu vào
-            if (!fs.existsSync(inputPath)) {
-                throw new Error(`File đầu vào không tồn tại: ${inputPath}`);
-            }
-            const stats = fs.statSync(inputPath);
-            if (stats.size === 0) {
-                throw new Error(`File đầu vào rỗng: ${inputPath}`);
-            }
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`File đầu vào không tồn tại: ${inputPath}`);
+  }
+  const stats = fs.statSync(inputPath);
+  if (stats.size === 0) {
+    throw new Error(`File đầu vào rỗng: ${inputPath}`);
+  }
 
-            // Kiểm tra nếu file đầu vào đã là WebP
-            const ext = path.extname(inputPath).toLowerCase();
-            if (ext === '.webp') {
-                //console.log(`File đầu vào đã là WebP, sao chép sang ${outputPath}`);
-                fs.copyFileSync(inputPath, outputPath);
-                if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-                    throw new Error(`Sao chép file WebP thất bại: ${outputPath}`);
-                }
-                resolve(true);
-                return;
-            }
+  const ext = path.extname(inputPath).toLowerCase();
+  if (ext === ".webp") {
+    fs.copyFileSync(inputPath, outputPath);
+    return true;
+  }
 
-            // Xác định tùy chọn FFmpeg dựa trên định dạng đầu vào
-            let options = [
-                '-c:v', 'libwebp',
-                '-lossless', '0',
-                '-compression_level', '6',
-                '-q:v', '60',
-                '-loop', '0',
-                '-preset', 'default',
-                '-an'
-            ];
+  if (ext === ".png" || ext === ".jpg" || ext === ".jpeg") {
+    await convertImageToWebp(inputPath, outputPath);
+    return true;
+  }
 
-            if (ext === '.mp4' || ext === '.mov' || ext === '.webm') {
-                options.push('-vf', 'fps=10,scale=512:-2:flags=lanczos');
-            } else if (ext === '.gif') {
-                options.push('-vf', 'scale=512:-2:flags=lanczos');
-            } else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
-                options = options.concat(['-vf', 'scale=512:-2:flags=fast_bilinear']);
-            } else {
-                throw new Error(`Định dạng file không được hỗ trợ: ${ext}`);
-            }
+  return new Promise((resolve, reject) => {
+    let options = [
+      "-c:v",
+      "libwebp",
+      "-lossless",
+      "0",
+      "-compression_level",
+      "6",
+      "-q:v",
+      "60",
+      "-loop",
+      "0",
+      "-preset",
+      "default",
+      "-an",
+    ];
 
-            configureFluentFfmpeg();
-            const cmd = ffmpeg(inputPath);
-            const ffmpegBin = getFfmpegExecutableSync();
-            if (ffmpegBin) cmd.setFfmpegPath(ffmpegBin);
-            cmd
-                .outputOptions(options)
-                .toFormat('webp')
-                .on('start', commandLine => {
-                    console.log(`FFmpeg command: ${commandLine}`);
-                })
-                .on('end', () => {
-                    console.log(`Chuyển đổi WebP thành công: ${outputPath}`);
-                    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-                        return reject(new Error(`File WebP đầu ra rỗng hoặc không tồn tại: ${outputPath}`));
-                    }
-                    resolve(true);
-                })
-                .on('error', (err) => {
-                    console.error(`Lỗi FFmpeg: ${err.message}`);
-                    reject(new Error(`Lỗi khi chuyển đổi sang WebP: ${err.message}`));
-                })
-                .save(outputPath);
-        } catch (error) {
-            console.error(`Lỗi khi xử lý file đầu vào: ${error.message}`);
-            reject(error);
+    if (ext === ".mp4" || ext === ".mov" || ext === ".webm") {
+      options.push("-vf", "fps=10,scale=512:-2:flags=lanczos");
+    } else if (ext === ".gif") {
+      options.push("-vf", "scale=512:-2:flags=lanczos");
+    } else {
+      return reject(new Error(`Định dạng file không được hỗ trợ: ${ext}`));
+    }
+
+    configureFluentFfmpeg();
+    const cmd = ffmpeg(inputPath);
+    const ffmpegBin = getFfmpegExecutableSync() || "ffmpeg";
+    cmd.setFfmpegPath(ffmpegBin);
+    cmd
+      .outputOptions(options)
+      .toFormat("webp")
+      .on("end", () => {
+        if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+          return reject(new Error(`File WebP đầu ra rỗng hoặc không tồn tại: ${outputPath}`));
         }
-    });
+        resolve(true);
+      })
+      .on("error", (err) => {
+        reject(new Error(`Lỗi khi chuyển đổi sang WebP: ${err.message}`));
+      })
+      .save(outputPath);
+  });
 }
 
-
-
 export async function convertImageToWebp(inputPath, outputPath) {
-    if (!fs.existsSync(inputPath)) {
-        throw new Error(`File input does not exist: ${inputPath}`);
-    }
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`File input does not exist: ${inputPath}`);
+  }
 
-    const stats = fs.statSync(inputPath);
-    if (stats.size === 0) {
-        throw new Error(`File input is empty: ${inputPath}`);
-    }
+  const stats = fs.statSync(inputPath);
+  if (stats.size === 0) {
+    throw new Error(`File input is empty: ${inputPath}`);
+  }
 
-    await sharp(inputPath)
-        .resize(512, 512, {
-            fit: 'inside',
-            withoutEnlargement: true,
-        })
-        .webp({
-            quality: 80,
-            effort: 6,
-        })
-        .toFile(outputPath);
+  await sharp(inputPath)
+    .resize(512, 512, {
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .webp({
+      quality: 80,
+      effort: 6,
+    })
+    .toFile(outputPath);
 
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-        throw new Error(`File WebP output is empty or missing: ${outputPath}`);
-    }
+  if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+    throw new Error(`File WebP output is empty or missing: ${outputPath}`);
+  }
 
-    return true;
+  return true;
 }

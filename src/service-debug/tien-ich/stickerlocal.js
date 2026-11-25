@@ -1,64 +1,71 @@
 import { MessageType } from "../../api-zalo/index.js";
 import { removeMention } from "../../utils/format-util.js";
+import { safeThreadType } from "../../commands/shared/command-input-utils.js";
 import { sendMessageStateQuote } from "../chat-zalo/chat-style/chat-style.js";
 
-// Hàm xử lý lệnh gửi sticker theo ID
 export async function handleStickerLocalCommand(api, message) {
   const threadId = message?.threadId || message?.data?.idTo;
-
   if (!threadId) {
-    // console.warn(`[SendStickerLocal] Missing threadId`);
     return;
   }
 
-  // Lấy nội dung tin nhắn và trích xuất ID sticker
-  const content = removeMention(message);
-  const args = content.split(" ").slice(1); // Bỏ qua lệnh, lấy các tham số
-  const stickerId = args[0] ? parseInt(args[0], 10) : null;
+  const threadType = safeThreadType(message, MessageType.GroupMessage);
+  const content = (removeMention(message) || message?.data?.content || "").trim();
+  const args = content ? content.split(/\s+/).slice(1) : [];
+  const rawId = args[0] ?? "";
+  const stickerId = /^\d+$/.test(rawId) ? Number.parseInt(rawId, 10) : Number.NaN;
 
-  // Kiểm tra ID sticker hợp lệ
-  if (!stickerId || isNaN(stickerId)) {
+  if (!Number.isInteger(stickerId) || stickerId <= 0) {
     try {
       await sendMessageStateQuote(
         api,
         message,
-        "Vui lòng cung cấp ID sticker hợp lệ (số nguyên)!",
+        "Vui lòng cung cấp ID sticker hợp lệ (số nguyên dương lớn hơn 0)!",
         false,
-        300000
+        300000,
       );
-      // console.log(`[SendStickerLocal] Sent invalid ID warning for thread ${threadId}`);
-    } catch (error) {
-      // console.error(`[SendStickerLocal] Error sending invalid ID warning: ${error.message}`);
-    }
+    } catch {}
     return;
   }
 
-  // Gửi sticker
-  const sticker = { id: stickerId, cateId: 1, type: 1 };
+  let cateId = 1;
+  let stickerType = 1;
   try {
-    await api.sendSticker(sticker, threadId, MessageType.GroupMessage, 86400000);
-    // console.log(`[SendStickerLocal] Sent sticker ${stickerId} to thread ${threadId}`);
+    const detailList = await api.getStickersDetail?.(stickerId);
+    const detail = Array.isArray(detailList) ? detailList[0] : detailList;
+    if (detail && typeof detail === "object") {
+      const resolvedCateId = Number(detail.cateId ?? detail.catId);
+      const resolvedType = Number(detail.type);
+      if (Number.isInteger(resolvedCateId) && resolvedCateId > 0) {
+        cateId = resolvedCateId;
+      }
+      if (Number.isInteger(resolvedType) && resolvedType > 0) {
+        stickerType = resolvedType;
+      }
+    }
+  } catch {
+    // Fallback { cateId: 1, type: 1 } nếu API chi tiết không khả dụng
+  }
 
-    // Gửi thông báo xác nhận
+  const sticker = { id: stickerId, cateId, type: stickerType };
+  try {
+    await api.sendSticker(sticker, threadId, threadType, 86400000);
     await sendMessageStateQuote(
       api,
       message,
       `Đã gửi sticker với ID ${stickerId}!`,
       true,
-      300000
+      300000,
     );
-  } catch (error) {
-    // console.error(`[SendStickerLocal] Error sending sticker to thread ${threadId}: ${error.message}`);
+  } catch {
     try {
       await sendMessageStateQuote(
         api,
         message,
         `Không thể gửi sticker với ID ${stickerId}. Vui lòng kiểm tra lại ID!`,
         false,
-        300000
+        300000,
       );
-    } catch (sendError) {
-      // console.error(`[SendStickerLocal] Error sending error message: ${sendError.message}`);
-    }
+    } catch {}
   }
 }

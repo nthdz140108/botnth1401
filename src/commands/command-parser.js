@@ -1,4 +1,4 @@
-const SPECIAL_COMMANDS = Object.freeze(["todo", "learnnow", "sendp"]);
+const SPECIAL_COMMANDS = Object.freeze(["todo", "learnnow", "sendp", "sendprivate"]);
 
 export function parseCommandContent(content, prefix) {
   if (typeof content !== "string" || typeof prefix !== "string") return null;

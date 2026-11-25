@@ -1,4 +1,13 @@
+import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import fs from 'fs';
+import path from 'path';
+import { createCanvas, loadImage } from "canvas";
+import * as cv from "../../utils/canvas/index.js";
+import { ensureCanvasFontsRegistered } from "../../utils/canvas/register-fonts.js";
+import { deleteFile, loadImageBuffer } from '../../utils/util.js';
+import { formatDate } from '../../utils/format-util.js';
+import { tempDir } from '../../utils/io-json.js';
 import { sendMessageCompleteRequest, sendMessageTag } from '../chat-zalo/chat-style/chat-style.js';
 
 async function runCloudflareSpeedTest() {
@@ -47,7 +56,6 @@ async function runCloudflareSpeedTest() {
     }
     const dlBuf = await dlRes.arrayBuffer();
     const dlSeconds = Math.max(0.05, (performance.now() - dlStart) / 1000);
-    // speedtest-net bandwidth is in bytes/sec (divided by 1_000_000 in createSpeedTestImage for MB/s)
     const downloadBandwidth = Math.round(dlBuf.byteLength / dlSeconds);
 
     // 3. Measure Upload (2 MB payload)
@@ -55,6 +63,7 @@ async function runCloudflareSpeedTest() {
     const ulPayload = new Uint8Array(ulBytes);
     const ulStart = performance.now();
     let uploadBandwidth = 0;
+    let uploadFailed = false;
     try {
         const ulRes = await fetch("https://speed.cloudflare.com/__up", {
             method: "POST",
@@ -62,17 +71,21 @@ async function runCloudflareSpeedTest() {
             headers: { "Content-Type": "application/octet-stream" },
             signal: AbortSignal.timeout(15000),
         });
+        if (!ulRes.ok) {
+            throw new Error(`Upload probe HTTP ${ulRes.status}`);
+        }
         await ulRes.text();
         const ulSeconds = Math.max(0.05, (performance.now() - ulStart) / 1000);
         uploadBandwidth = Math.round(ulBytes / ulSeconds);
     } catch {
-        uploadBandwidth = Math.round(downloadBandwidth * 0.4);
+        uploadBandwidth = 0;
+        uploadFailed = true;
     }
 
     return {
         isp: meta.asOrganization || "Cloudflare Network",
         download: { bandwidth: downloadBandwidth },
-        upload: { bandwidth: uploadBandwidth },
+        upload: { bandwidth: uploadBandwidth, failed: uploadFailed },
         ping: { latency },
         packetLoss,
         interface: { isVpn: false },
@@ -88,37 +101,43 @@ async function runCloudflareSpeedTest() {
 async function getSpeedTest() {
     return runCloudflareSpeedTest;
 }
-import fs from 'fs';
-import path from 'path';
-import { createCanvas, loadImage } from "canvas";
-import * as cv from "../../utils/canvas/index.js";
-import { deleteFile, loadImageBuffer } from '../../utils/util.js';
-import { formatDate } from '../../utils/format-util.js';
-import { tempDir } from '../../utils/io-json.js';
 
 const TIME_TO_LIVE_MESSAGE = 600000;
 const TEST_DURATION = 20000;
 
 const linkLogoISP = {
 	"VNPT": "https://files.catbox.moe/cbwnrq.jpg",
-	"FPT Telecom": "https://files.catbox.moe/cbwnrq.jpg",
+	"FPT": "https://files.catbox.moe/cbwnrq.jpg",
 	"Viettel": "https://files.catbox.moe/cbwnrq.jpg",
-	"CMC Telecom": "https://files.catbox.moe/cbwnrq.jpg",
-	"Google Cloud": "https://files.catbox.moe/cbwnrq.jpg",
-	"Vpsttt Computer Company": "https://files.catbox.moe/cbwnrq.jpg",
-	"Hoang Dieu Cloud Computing Company": "https://files.catbox.moe/cbwnrq.jpg",
+	"Mobifone": "https://files.catbox.moe/cbwnrq.jpg",
+	"CMC": "https://files.catbox.moe/cbwnrq.jpg",
+	"Google": "https://files.catbox.moe/cbwnrq.jpg",
+	"Vpsttt": "https://files.catbox.moe/cbwnrq.jpg",
+	"Hoang Dieu": "https://files.catbox.moe/cbwnrq.jpg",
 	"VNCloud": "https://files.catbox.moe/cbwnrq.jpg",
-}
+};
 
 const linkCoverIPS = {
 	"VNPT": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
-	"FPT Telecom": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"FPT": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
 	"Viettel": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
-	"CMC Telecom": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
-	"Google Cloud": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
-	"Vpsttt Computer Company": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
-	"Hoang Dieu Cloud Computing Company": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"Mobifone": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"CMC": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"Google": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"Vpsttt": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+	"Hoang Dieu": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
 	"VNCloud": "https://i.postimg.cc/9MYVJ0wg/avt.jpg",
+};
+
+function resolveIspAssetUrl(ispName, assetMap) {
+    const normalized = String(ispName || "").toLowerCase();
+    if (!normalized) return null;
+    for (const [key, url] of Object.entries(assetMap)) {
+        if (normalized.includes(key.toLowerCase())) {
+            return url;
+        }
+    }
+    return null;
 }
 
 // ========================= TRẠNG THÁI =========================
@@ -140,15 +159,18 @@ function evaluateSpeed(speed) {
 
 // ========================= VẼ ẢNH KẾT QUẢ =========================
 export async function createSpeedTestImage(result) {
+    ensureCanvasFontsRegistered();
     const width = 1000, height = 430;
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext("2d");
     const ispName = result.isp || "Unknown ISP";
+    const coverUrl = resolveIspAssetUrl(ispName, linkCoverIPS);
+    const logoUrl = resolveIspAssetUrl(ispName, linkLogoISP);
 
     // === Vẽ nền ===
     try {
-        if (linkCoverIPS[ispName]) {
-            const coverBuffer = await loadImageBuffer(linkCoverIPS[ispName]);
+        if (coverUrl) {
+            const coverBuffer = await loadImageBuffer(coverUrl);
             if (!coverBuffer) throw new Error("Failed to load cover image");
             const cover = await loadImage(coverBuffer);
             const scale = Math.max(width / cover.width, height / cover.height);
@@ -197,8 +219,8 @@ export async function createSpeedTestImage(result) {
 
     // Logo ISP (từ URL)
     try {
-        if (linkLogoISP[ispName]) {
-            const image = await loadImage(linkLogoISP[ispName]);
+        if (logoUrl) {
+            const image = await loadImage(logoUrl);
             const square = Math.min(image.width, image.height);
             ctx.save();
             ctx.beginPath();
@@ -248,14 +270,16 @@ export async function createSpeedTestImage(result) {
     let y = 110;
 
     const download = (result.download.bandwidth / 1000000).toFixed(2);
-    const upload = (result.upload.bandwidth / 1000000).toFixed(2);
+    const uploadBandwidth = Number(result.upload?.bandwidth || 0);
+    const uploadFailed = Boolean(result.upload?.failed || uploadBandwidth <= 0);
+    const upload = (uploadBandwidth / 1000000).toFixed(2);
     const ping = Math.round(result.ping.latency);
     const loss = result.packetLoss;
     const isVpn = result.interface?.isVpn || false;
 
     const fields = [
-        { label: "📥 Download", value: `${download} MB/s (${evaluateSpeed(download)})` },
-        { label: "📤 Upload", value: `${upload} MB/s (${evaluateSpeed(upload)})` },
+        { label: "📥 Download", value: `${download} MB/s (${evaluateSpeed(Number(download))})` },
+        { label: "📤 Upload", value: uploadFailed ? "0 Mbps (Không đo được)" : `${upload} MB/s (${evaluateSpeed(Number(upload))})` },
         { label: "🏓 Ping", value: `${ping}ms${loss !== undefined ? ` | ${loss}% Packet Loss` : ""}` },
         { label: "🌍 Server", value: result.server?.name || 'N/A' },
         { label: "🌍 Location", value: `${result.server?.location || 'N/A'} (${result.server?.country || 'N/A'})` },
@@ -275,7 +299,7 @@ export async function createSpeedTestImage(result) {
     });
 
 	fs.mkdirSync(tempDir, { recursive: true });
-	const filePath = path.join(tempDir, `speedtest_${Date.now()}.png`);
+	const filePath = path.join(tempDir, `speedtest_${crypto.randomUUID()}.png`);
     const out = fs.createWriteStream(filePath);
     const stream = canvas.createPNGStream();
     stream.pipe(out);
@@ -351,7 +375,7 @@ export async function handleSpeedTestCommand(api, message) {
         isTestingSpeed = false;
         currentTester = { id: null, threadId: null, name: null };
         otherThreadRequester = {};
-        if (imagePath) deleteFile(imagePath);
+        if (imagePath) await deleteFile(imagePath);
     }
 }
 

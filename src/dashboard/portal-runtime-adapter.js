@@ -3,6 +3,7 @@ import path from 'node:path';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
+import {pathToFileURL} from 'node:url';
 import {applyTenantCommandPatches,readTenantCommand,tenantCommandNames,tenantCommandSummary,validateTenantCommandPatch} from './portal-command-studio.js';
 import {writeJsonAtomic} from '../commands/mybot/System/json-state.js';
 import {defaultIdentityFetcher} from './runtime-status-resolver.js';
@@ -33,7 +34,9 @@ export function createPortalRuntimeAdapter({root,registry,actions,qrManager,secr
  async function verify(b){
   // Login probes run in a separate process: Zalo's implementation has process-global appContext.
   const credential=path.join(root,'mybot','credentials',`${b.runtime_id}.json`);
-  const program=`import fs from 'node:fs';import {Zalo} from './src/api-zalo/zalo.js';import {getZaloRuntimeConfig} from './src/api-zalo/zalo-config.js';const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));c.userAgent ||= getZaloRuntimeConfig().userAgent;const api=await new Zalo(c).login();let meta={};try{const acc=await api.fetchAccountInfo?.();const p=acc?.profile||acc||{};meta={name:p.displayName||p.zaloName||null,avatar:p.avatar||null};}catch{}process.stdout.write('PORTAL_VERIFY='+JSON.stringify({uid:String(api.getOwnId()),...meta})+'\\n');process.exit(0);`;
+  const zaloModUrl=JSON.stringify(pathToFileURL(path.join(root,'src','api-zalo','zalo.js')).href);
+  const zaloCfgUrl=JSON.stringify(pathToFileURL(path.join(root,'src','api-zalo','zalo-config.js')).href);
+  const program=`import fs from 'node:fs';const {Zalo}=await import(${zaloModUrl});const {getZaloRuntimeConfig}=await import(${zaloCfgUrl});const c=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));c.userAgent ||= getZaloRuntimeConfig().userAgent;const api=await new Zalo(c).login();let meta={};try{const acc=await api.fetchAccountInfo?.();const p=acc?.profile||acc||{};meta={name:p.displayName||p.zaloName||null,avatar:p.avatar||null};}catch{}process.stdout.write('PORTAL_VERIFY='+JSON.stringify({uid:String(api.getOwnId()),...meta})+'\\n');process.exit(0);`;
   return new Promise((resolve,reject)=>{const child=spawn(process.execPath,['--input-type=module','-e',program,credential],{cwd:root,windowsHide:true,stdio:['ignore','pipe','ignore']});let output='';const timer=setTimeout(()=>{child.kill();reject(portalError('UID_VERIFICATION_TIMEOUT',504));},45000);child.stdout.on('data',c=>{output=(output+c).slice(-4096);});child.once('error',e=>{clearTimeout(timer);reject(e);});child.once('exit',code=>{clearTimeout(timer);const raw=output.match(/PORTAL_VERIFY=(\{[^\n]+\})/)?.[1];let parsed=null;try{if(raw)parsed=JSON.parse(raw);}catch{}const uid=parsed?.uid;if(code===0&&uid&&/^\d+$/.test(uid)){try{const botFile=path.join(root,'mybot','bots',`${b.runtime_id}.json`);if(fs.existsSync(botFile)){const info=read(botFile);if(parsed.name)info.zaloName=String(parsed.name).slice(0,120);if(parsed.avatar)info.zaloAvatar=String(parsed.avatar).slice(0,500);writeJsonAtomic(botFile,info);}}catch{}resolve(uid);}else reject(portalError('UID_NOT_VERIFIED',403));});});
  }
  async function request(b,kind,payload){

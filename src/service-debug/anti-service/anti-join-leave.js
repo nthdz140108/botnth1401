@@ -5,17 +5,29 @@ import { isInWhiteList } from "./white-list.js";
 import { sendMessageStateQuote } from "../chat-zalo/chat-style/chat-style.js";
 import { removeMention } from "../../utils/format-util.js";
 
-const JOIN_THRESHOLD = 1; 
-const JOIN_TIME_WINDOW = 1000; 
-const LONG_TIME_WINDOW = 30000; 
-const LONG_THRESHOLD = 1; 
-const JOIN_LEAVE_THRESHOLD = 1; 
+const JOIN_THRESHOLD = 1;
+const JOIN_TIME_WINDOW = 1000;
+const LEAVE_TIME_WINDOW = 30000;
+const LONG_TIME_WINDOW = 30000;
+const LONG_THRESHOLD = 1;
+const JOIN_LEAVE_THRESHOLD = 1;
 const KICKED_USER_TIMEOUT = 1000;
 
 const userJoinTimestamps = new LRUCache({ max: 5000, ttl: LONG_TIME_WINDOW * 2 });
-const userLeaveTimestamps = new LRUCache({ max: 5000, ttl: JOIN_TIME_WINDOW * 10 });
+const userLeaveTimestamps = new LRUCache({ max: 5000, ttl: LEAVE_TIME_WINDOW * 2 });
 const kickedUsers = new LRUCache({ max: 2000, ttl: 10000 });
 let isLocked = false; // Trạng thái khóa
+
+export function recordMemberLeaveTimestamp(threadId, userId, timestamp = Date.now()) {
+  if (!threadId || !userId) return;
+  const memberKey = `${threadId}:${userId}`;
+  const now = Number(timestamp) || Date.now();
+  const prev = (userLeaveTimestamps.get(memberKey) || []).filter(
+    (entry) => now - entry.time <= LEAVE_TIME_WINDOW
+  );
+  prev.push({ time: now });
+  userLeaveTimestamps.set(memberKey, prev);
+}
 
 /**
  * Thực thi hàm với cơ chế khóa mutex
@@ -65,10 +77,12 @@ export async function antiJoinLeave(
 
     if (!senderId || !threadId || isNaN(timestamp)) return false;
 
+    const memberKey = `${threadId}:${senderId}`;
+
     // Thoát sớm nếu thỏa mãn các điều kiện
     if (
       isAdminBox ||
-      kickedUsers.has(senderId) ||
+      kickedUsers.has(memberKey) ||
       isSelf ||
       !botIsAdminBox ||
       isInWhiteList(groupSettings, threadId, senderId) ||
@@ -83,10 +97,10 @@ export async function antiJoinLeave(
     }
 
     return await withLock(async () => {
-      const joinTimestamps = userJoinTimestamps.get(senderId) || [];
-      const leaveTimestamps = userLeaveTimestamps.get(senderId) || [];
+      const joinTimestamps = userJoinTimestamps.get(memberKey) || [];
+      const leaveTimestamps = userLeaveTimestamps.get(memberKey) || [];
 
-      // Ghi lại dấu thời gian
+      // Ghi lại dấu thời gian theo từng nhóm
       if (type === GroupEventType.JOIN) {
         joinTimestamps.push({ time: timestamp });
       } else if (type === GroupEventType.LEAVE) {
@@ -99,29 +113,34 @@ export async function antiJoinLeave(
         join => currentTime - join.time <= JOIN_TIME_WINDOW
       );
       const recentLeaves = leaveTimestamps.filter(
-        leave => currentTime - leave.time <= JOIN_TIME_WINDOW
+        leave => currentTime - leave.time <= LEAVE_TIME_WINDOW
       );
       const longTermJoins = joinTimestamps.filter(
         join => currentTime - join.time <= LONG_TIME_WINDOW
       );
 
-      // Cập nhật bộ nhớ
-      userJoinTimestamps.set(senderId, longTermJoins);
-      userLeaveTimestamps.set(senderId, recentLeaves);
+      // Cập nhật bộ nhớ cô lập theo nhóm
+      userJoinTimestamps.set(memberKey, longTermJoins);
+      userLeaveTimestamps.set(memberKey, recentLeaves);
 
-      // Kiểm tra ngưỡng spam
-      const totalJoinLeave = recentJoins.length + recentLeaves.length;
+      // Nếu đây là sự kiện LEAVE, chỉ ghi nhận timestamp để bắt khi vào lại
+      if (type === GroupEventType.LEAVE) {
+        return false;
+      }
+
+      // Kiểm tra ngưỡng spam khi JOIN
+      const totalJoinLeave = longTermJoins.length + recentLeaves.length;
       if (
         recentJoins.length > JOIN_THRESHOLD ||
         totalJoinLeave > JOIN_LEAVE_THRESHOLD ||
         longTermJoins.length > LONG_THRESHOLD
       ) {
         await api.blockUsers(threadId, [senderId]);
-        kickedUsers.set(senderId, true);
+        kickedUsers.set(memberKey, true);
         console.log(
           `Chặn ${senderId} (${senderName}) trong nhóm ${threadId}. ` +
           `Lý do: ${recentJoins.length} lần tham gia, ${recentLeaves.length} lần rời ` +
-          `trong ${JOIN_TIME_WINDOW}ms, ${longTermJoins.length} lần tham gia trong ${LONG_TIME_WINDOW}ms`
+          `trong ${LEAVE_TIME_WINDOW}ms, ${longTermJoins.length} lần tham gia trong ${LONG_TIME_WINDOW}ms`
         );
         await handleJoinLeaveDetected(api, threadId, senderId, senderName, recentJoins, recentLeaves);
         return true;
@@ -158,28 +177,22 @@ async function handleJoinLeaveDetected(api, threadId, senderId, senderName, rece
     console.error("Lỗi khi gửi thông báo tham gia-rời:", error);
   }
 
+  const memberKey = `${threadId}:${senderId}`;
   const timer = setTimeout(() => {
-    kickedUsers.delete(senderId);
-    userJoinTimestamps.delete(senderId);
-    userLeaveTimestamps.delete(senderId);
+    kickedUsers.delete(memberKey);
+    userJoinTimestamps.delete(memberKey);
+    userLeaveTimestamps.delete(memberKey);
   }, KICKED_USER_TIMEOUT);
   timer.unref?.();
 }
 
-/**
- * Xử lý lệnh bật/tắt chức năng chống spam tham gia-rời
- * @param {Object} api - Đối tượng API của Zalo
- * @param {Object} message - Đối tượng tin nhắn
- * @param {Object} groupSettings - Cài đặt nhóm
- * @returns {Promise<boolean>} Trạng thái thành công
- */
 export async function handleAntiJoinLeaveCommand(api, message, groupSettings) {
   try {
     if (!api || !message || !groupSettings) return false;
 
     const { threadId } = message;
     const content = removeMention(message);
-    const status = content.split(" ")[1]?.toLowerCase();
+    const status = content.trim().split(/\s+/)[1]?.toLowerCase();
 
     if (!groupSettings[threadId]) {
       groupSettings[threadId] = { antiJoinLeave: false };

@@ -4,12 +4,16 @@
 
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { appContext } from "../context.js";
+import { API_TYPE, API_VERSION } from "../constants.js";
 import { encodeAES, request, handleZaloResponse, makeURL } from "../utils.js";
 
 export function getPendingFriendRequestsFactory(api) {
+    if (!api?.zpwServiceMap?.friend?.[0]) {
+        throw new ZaloApiError("Missing friend endpoint (zpwServiceMap.friend[0])");
+    }
     const serviceURL = makeURL(`${api.zpwServiceMap.friend[0]}/api/friend/recommendsv2/list`, {
-        zpw_ver: api.API_VERSION,
-        zpw_type: api.API_TYPE,
+        zpw_ver: API_VERSION,
+        zpw_type: API_TYPE,
     });
 
     return async function getPendingFriendRequests() {
@@ -27,13 +31,13 @@ export function getPendingFriendRequestsFactory(api) {
         const response = await request(finalURL.toString(), { method: "GET" });
         const result = await handleZaloResponse(response);
 
-        if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
+        if (result?.error) throw new ZaloApiError(result.error.message, result.error.code);
 
         // LỌC CHÍNH XÁC recommItemType === 2 → lời mời đang chờ
-        const pendingRequests = (result.data?.recommItems || [])
-            .filter(item => item.recommItemType === 2)
+        const pendingRequests = (result?.data?.recommItems || [])
+            .filter(item => item?.recommItemType === 2)
             .map(item => {
-                const info = item.dataInfo;
+                const info = item?.dataInfo || item || {};
                 return {
                     userId: info.userId,
                     displayName: info.displayName || info.zaloName || "Người dùng",

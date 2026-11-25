@@ -1,35 +1,61 @@
 import axios from "axios";
 import { getGlobalPrefix } from "../../service.js";
-import { getContent } from "../../../utils/format-util.js";
+import {
+  extractCommandBody,
+  safeThreadType,
+} from "../../../commands/shared/command-input-utils.js";
 
-const SIMSIMI_API_KEY = process.env.SIMSIMI_API_KEY || "";
 const SIMSIMI_API_URL = "https://wsapi.simsimi.com/190410/talk";
 
-export async function chatWithSimsimi(api, message) {
-  let content = getContent(message);
+function getSimsimiApiKey() {
+  return String(process.env.SIMSIMI_API_KEY || "").trim();
+}
+
+export async function chatWithSimsimi(api, message, aliasCommand = "simsimi") {
   const prefix = getGlobalPrefix();
-  
-  const chatMessage = content.replace(`${prefix}chat`, "").trim();
+  const threadId = message.threadId;
+  const threadType = safeThreadType(message);
+
+  let chatMessage = extractCommandBody(message, prefix, aliasCommand || "simsimi");
+  chatMessage = chatMessage.replace(/^(?:simsimi|sim|chat)\b\s*/i, "").trim();
 
   if (!chatMessage) {
     await api.sendMessage(
-      { msg: "Vui lòng nhập nội dung để trò chuyện. Ví dụ: !chat Xin chào", quote: message },
-      message.threadId,
-      message.type
+      {
+        msg: `Vui lòng nhập nội dung để trò chuyện. Ví dụ: ${prefix}${aliasCommand || "simsimi"} Xin chào`,
+        quote: message,
+        ttl: 60000,
+      },
+      threadId,
+      threadType
+    );
+    return;
+  }
+
+  const apiKey = getSimsimiApiKey();
+  if (!apiKey) {
+    await api.sendMessage(
+      {
+        msg: "Chưa cấu hình SIMSIMI_API_KEY để sử dụng tính năng SimSimi.",
+        quote: message,
+        ttl: 60000,
+      },
+      threadId,
+      threadType
     );
     return;
   }
 
   try {
-    const simsimiReply = await getSimsimiReply(chatMessage);
-    await sendSimsimiReply(api, message, message.threadId, simsimiReply);
+    const simsimiReply = await getSimsimiReply(chatMessage, apiKey);
+    await sendSimsimiReply(api, message, threadId, threadType, simsimiReply);
   } catch (error) {
     console.error("Lỗi khi gọi API Simsimi:", error.response ? error.response.data : error.message);
-    await sendErrorMessage(api, message, message.threadId);
+    await sendErrorMessage(api, message, threadId, threadType);
   }
 }
 
-async function getSimsimiReply(chatMessage) {
+async function getSimsimiReply(chatMessage, apiKey) {
   const response = await axios.post(
     SIMSIMI_API_URL,
     {
@@ -40,13 +66,13 @@ async function getSimsimiReply(chatMessage) {
     {
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": SIMSIMI_API_KEY,
+        "x-api-key": apiKey,
       },
+      timeout: 12000,
     }
   );
 
-  const simsimiReply = response.data.atext;
-
+  const simsimiReply = response.data?.atext;
   if (!simsimiReply) {
     throw new Error("Không nhận được phản hồi từ Simsimi");
   }
@@ -54,15 +80,15 @@ async function getSimsimiReply(chatMessage) {
   return simsimiReply;
 }
 
-async function sendSimsimiReply(api, message, threadId, simsimiReply) {
-  let simReply = `Sim: ${simsimiReply}`;
-  await api.sendMessage({ msg: simReply, quote: message, ttl: 180000}, threadId, message.type);
+async function sendSimsimiReply(api, message, threadId, threadType, simsimiReply) {
+  const simReply = `Sim: ${simsimiReply}`;
+  await api.sendMessage({ msg: simReply, quote: message, ttl: 180000 }, threadId, threadType);
 }
 
-async function sendErrorMessage(api, message, threadId) {
+async function sendErrorMessage(api, message, threadId, threadType) {
   await api.sendMessage(
-    { msg: "Xin lỗi, tôi Không thể trả lời lúc này. Vui lòng thử lại sau.", quote: message },
+    { msg: "Xin lỗi, tôi không thể trả lời lúc này. Vui lòng thử lại sau.", quote: message },
     threadId,
-    message.type
+    threadType
   );
 }

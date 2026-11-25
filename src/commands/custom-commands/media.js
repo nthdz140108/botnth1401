@@ -83,11 +83,16 @@ export async function resolveMediaFromMessage(api, message, dependencies = {}) {
     [{ url }],
     { tempDir: tempBase },
   );
-  const stat = await fs.promises.stat(filePath);
-  const buffer = await fs.promises.readFile(filePath);
-  const detected = await fileTypeFromBuffer(buffer).catch(() => null);
-  const { kind } = validateDownloadedMedia(buffer, mediaType, detected);
-  return { filePath, mediaType: detected?.mime || mediaType, kind, size: stat.size, url };
+  try {
+    const stat = await fs.promises.stat(filePath);
+    const buffer = await fs.promises.readFile(filePath);
+    const detected = await fileTypeFromBuffer(buffer).catch(() => null);
+    const { kind } = validateDownloadedMedia(buffer, mediaType, detected);
+    return { filePath, mediaType: detected?.mime || mediaType, kind, size: stat.size, url };
+  } catch (error) {
+    await cleanupTempFile(filePath);
+    throw error;
+  }
 }
 
 export function mediaKindToMime(kind) {

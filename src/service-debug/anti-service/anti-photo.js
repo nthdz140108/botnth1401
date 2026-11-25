@@ -15,14 +15,15 @@ const kickedUsers = new Set();
 export async function handleAntiPhotoVideo(api, message, groupSettings) {
   const threadId = message.threadId;
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-  const content = removeMention(message);
-  const parts = content.split(" ");
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
 
   if (parts.length === 1) {
     groupSettings[threadId].antiPhotoVideo = !groupSettings[threadId].antiPhotoVideo;
-  } else if (parts[1] === "on") {
+  } else if (option === "on") {
     groupSettings[threadId].antiPhotoVideo = true;
-  } else if (parts[1] === "off") {
+  } else if (option === "off") {
     groupSettings[threadId].antiPhotoVideo = false;
   } else {
     const caption = "Cú pháp không hợp lệ. Sử dụng antiphoto hoặc antiphoto on/off";
@@ -31,7 +32,7 @@ export async function handleAntiPhotoVideo(api, message, groupSettings) {
   }
 
   const status = groupSettings[threadId].antiPhotoVideo ? "bật" : "tắt";
-  const caption = `Chế độ chống photo đã được ${status}!`;
+  const caption = `Chế độ chống gửi ảnh đã được ${status}!`;
   await sendMessageStateQuote(api, message, caption, groupSettings[threadId].antiPhotoVideo, 300000);
 
   return true;
@@ -42,10 +43,11 @@ export async function enforceAntiPhotoVideo(api, message, isAdminBox, groupSetti
   const msgType = message.data.msgType;
   const senderId = message.data.uidFrom;
   const senderName = message.data.dName;
+  const userKey = `${threadId}:${senderId}`;
 
-  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(senderId) || isInWhiteList(groupSettings, threadId, senderId)) return false;
+  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(userKey) || isInWhiteList(groupSettings, threadId, senderId)) return false;
 
-  if (groupSettings[threadId]?.antiPhotoVideo && (msgType === "chat.photo" || msgType === "chat.video.msg")) {
+  if (groupSettings[threadId]?.antiPhotoVideo && msgType === "chat.photo") {
     try {
       await api.deleteMessage(message, false);
 
@@ -68,7 +70,7 @@ export async function enforceAntiPhotoVideo(api, message, isAdminBox, groupSetti
       }
       return true;
     } catch (error) {
-      console.error("Lỗi khi xóa tin nhắn ảnh/video:", error);
+      console.error("Lỗi khi xóa tin nhắn ảnh:", error);
       return false;
     }
   }
@@ -83,14 +85,15 @@ async function handleWarning(
   senderId,
   senderName
 ) {
-  if (!userWarnings.has(senderId)) {
-    userWarnings.set(senderId, {
+  const userKey = `${threadId}:${senderId}`;
+  if (!userWarnings.has(userKey)) {
+    userWarnings.set(userKey, {
       count: 0,
       lastWarningTime: Date.now(),
     });
   }
 
-  const warning = userWarnings.get(senderId);
+  const warning = userWarnings.get(userKey);
   const currentTime = Date.now();
 
   const warningReductions = Math.floor(
@@ -104,7 +107,7 @@ async function handleWarning(
   warning.lastWarningTime = currentTime;
 
   if (warning.count < 5) {
-    let caption = `⚠️ Cảnh cáo ${senderName}!\nAi cho mày gửi ảnh/viceo ở đây!!!`;
+    let caption = `⚠️ Cảnh cáo ${senderName}!\nAi cho mày gửi ảnh ở đây!!!`;
     if (warning.count === 3) {
       caption = `⚠️ Cảnh cáo ${senderName}!\nTao xút Mày ra khỏi box bây giờ!`;
     }
@@ -121,7 +124,7 @@ async function handleWarning(
     );
     return { shouldBlock: false };
   } else {
-    userWarnings.delete(senderId);
+    userWarnings.delete(userKey);
     return { shouldBlock: true };
   }
 }
@@ -133,14 +136,15 @@ async function handleViolationDetected(
   senderId,
   senderName
 ) {
-  kickedUsers.add(senderId);
+  const userKey = `${threadId}:${senderId}`;
+  kickedUsers.add(userKey);
   try {
     await api.blockUsers(threadId, [senderId]);
   } catch (error) {
     console.error("Lỗi khi xử lý kick vi phạm:", error);
   } finally {
     setTimeout(() => {
-      kickedUsers.delete(senderId);
+      kickedUsers.delete(userKey);
     }, 5000).unref?.();
   }
 }

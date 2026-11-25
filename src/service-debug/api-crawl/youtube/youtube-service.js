@@ -5,10 +5,10 @@ import path from "path";
 import schedule from "node-schedule";
 import { Worker } from "worker_threads";
 
-
 import { MessageMention } from "../../../api-zalo/index.js";
 import { deleteFile } from "../../../utils/util.js";
 import { removeMention } from "../../../utils/format-util.js";
+import { extractCommandBody } from "../../../commands/shared/command-input-utils.js";
 import { getGlobalPrefix } from "../../service.js";
 import {
   sendMessageCompleteRequest,
@@ -47,21 +47,12 @@ import {
   runYoutubeVideoInfo,
   runYoutubeSearch,
 } from "./youtube-core.js";
+import { resolveYtDlpCommand } from "./youtube-runtime.js";
 import { getYoutubeAuthOptions } from "./youtube-auth.js";
 import {
   createDownloadProgress,
   extractMessageId,
 } from "../../../utils/interaction-countdown.js";
-
-const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0",
-  "Mozilla/5.0 (Linux; Android 14; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-  "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-];
 
 const CONFIG = {
   maxResults: 10,
@@ -117,7 +108,7 @@ export const getVideoFormat = (qualityParam) => {
     case "high":
       return { format: YOUTUBE_FORMAT_1080, qualityText: "1080p", timeNotify: 16000 };
     case "max":
-      return { format: YOUTUBE_FORMAT_MAX, qualityText: "Cao nhat", timeNotify: 24000 };
+      return { format: YOUTUBE_FORMAT_MAX, qualityText: "Cao nhất", timeNotify: 24000 };
     default:
       return { format: YOUTUBE_FORMAT_720, qualityText: "720p", timeNotify: 10000 };
   }
@@ -141,7 +132,7 @@ export const getVideoFormatByQuality = (qualityParam) => {
 export const getYoutubeVideoInfo = async (videoUrl) => {
   try {
     const videoInfo = await runYoutubeVideoInfo(videoUrl);
-    if (!videoInfo) throw new Error("Khong the lay thong tin video");
+    if (!videoInfo) throw new Error("Không thể lấy thông tin video");
     return {
       videoId: videoInfo.videoId,
       title: videoInfo.title,
@@ -178,30 +169,54 @@ export const downloadYoutubeVideo = async (videoUrl, videoId, format) => {
 };
 
 const convertPublishedTimeToVietnamese = (publishedTime) => {
-  if (!publishedTime) return "Khong xac dinh";
+  if (!publishedTime) return "Không xác định";
   const timeMap = {
-    "second ago": "giay truoc",
-    "seconds ago": "giay truoc",
-    "minute ago": "phut truoc",
-    "minutes ago": "phut truoc",
-    "hour ago": "gio truoc",
-    "hours ago": "gio truoc",
-    "day ago": "ngay truoc",
-    "days ago": "ngay truoc",
-    "week ago": "tuan truoc",
-    "weeks ago": "tuan truoc",
-    "month ago": "thang truoc",
-    "months ago": "thang truoc",
-    "year ago": "nam truoc",
-    "years ago": "nam truoc",
+    "seconds ago": "giây trước",
+    "second ago": "giây trước",
+    "minutes ago": "phút trước",
+    "minute ago": "phút trước",
+    "hours ago": "giờ trước",
+    "hour ago": "giờ trước",
+    "days ago": "ngày trước",
+    "day ago": "ngày trước",
+    "weeks ago": "tuần trước",
+    "week ago": "tuần trước",
+    "months ago": "tháng trước",
+    "month ago": "tháng trước",
+    "years ago": "năm trước",
+    "year ago": "năm trước",
   };
   let vietnameseTime = String(publishedTime);
-  for (const [eng, viet] of Object.entries(timeMap)) vietnameseTime = vietnameseTime.replace(eng, viet);
+  for (const [eng, viet] of Object.entries(timeMap)) {
+    vietnameseTime = vietnameseTime.replace(eng, viet);
+  }
   return vietnameseTime;
 };
 
-if (process.env.NODE_ENV !== "test") {
-  // Dọn dẹp map nội bộ đã bị loại bỏ: lifecycle bảng chọn do store chung quản lý.
+function formatYoutubeDiagnosticCaption(error) {
+  if (error?.stage === "upload") {
+    return "Tải lên video thất bại. Vui lòng thử lại sau.";
+  }
+  if (error?.stage === "send") {
+    return "Không thể gửi video sau khi tải lên. Vui lòng thử lại sau.";
+  }
+  if (!resolveYtDlpCommand().available) {
+    return "Máy chủ chưa cài đặt công cụ yt-dlp (.runtime/bin/yt-dlp hoặc PATH). Vui lòng chạy bộ cài công cụ media rồi thử lại.";
+  }
+  const kind = error?.kind || classifyYoutubeError(error);
+  if (kind === "unavailable") {
+    return "Video này hiện không khả dụng (riêng tư, giới hạn vùng hoặc bản quyền). Vui lòng chọn video khác.";
+  }
+  if (kind === "auth") {
+    return "YouTube yêu cầu xác thực cookie hoặc đăng nhập (cấu hình YOUTUBE_COOKIES_FILE) để xử lý video này.";
+  }
+  if (kind === "runtime") {
+    return "Lỗi môi trường công cụ giải mã YouTube (yt-dlp / ffmpeg). Vui lòng kiểm tra thư mục .runtime/bin và thử lại.";
+  }
+  if (kind === "timeout") {
+    return "Xử lý dữ liệu YouTube bị quá thời gian cho phép. Vui lòng thử lại sau.";
+  }
+  return "Đã xảy ra lỗi khi xử lý dữ liệu YouTube! Vui lòng thử lại sau.";
 }
 
 export async function handleSendMediaYoutube(api, message, video, qualityParam, videoPath, isAdminLevelHigh) {
@@ -213,7 +228,6 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
   let delivery;
   let duration = null;
   let progress = null;
-  // File media tải về chỉ được xóa sau khi thao tác gửi cuối cùng kết thúc.
   let fetchedPath = null;
 
   try {
@@ -239,7 +253,7 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
         if (format === audioFormat) {
           try {
             videoUrl = await uploadAudioFile(fetchedPath, api, message);
-            if (!videoUrl) throw new Error("Missing uploaded audio URL");
+            videoUrl = ensureUploadResult([{ fileUrl: videoUrl }]);
           } catch (error) {
             throw normalizeYoutubeWorkflowError("upload", error);
           }
@@ -252,7 +266,9 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
           }
         }
         duration = await getDurationVideo(fetchedPath);
-        if (format === audioFormat) await setCacheData(PLATFORM, video.videoId, { fileUrl: videoUrl, title: video.title, duration }, qualityText);
+        if (format === audioFormat) {
+          await setCacheData(PLATFORM, video.videoId, { fileUrl: videoUrl, title: video.title, duration }, qualityText);
+        }
       } catch (error) {
         if (fetchedPath) {
           await deleteFile(fetchedPath).catch(() => {});
@@ -268,7 +284,7 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
         title: video.title,
         artists: video.channelName,
         source: "Youtube",
-        caption: `> From Youtube <\nNhac Ban Chon Day!!!`,
+        caption: `> From YouTube <\nNhạc bạn chọn đây!!!`,
         imageUrl: video.thumbnail,
         voiceUrl: videoUrl,
         viewCount: video.viewCount,
@@ -277,34 +293,35 @@ export async function handleSendMediaYoutube(api, message, video, qualityParam, 
     } else {
       try {
         await api.sendVideo({
-        ...videoPayload(delivery),
-        threadId: message.threadId,
-        threadType: message.type,
-        videoAlreadyUploaded: true,
-        message: {
-          text: buildYoutubeVideoCaption({
-            senderName: message.data.dName,
-            title: video.title,
-            channelName: video.channelName,
-            viewCount: video.viewCount,
-            publishedTime: video.publishedTime,
-            qualityText,
-          }),
-          mentions: [MessageMention(message.data.uidFrom, message.data.dName.length, 2, false)],
-        },
-        ttl: isAdminLevelHigh ? 14400000 : 3600000,
+          ...videoPayload(delivery),
+          threadId: message.threadId,
+          threadType: message.type,
+          videoAlreadyUploaded: true,
+          message: {
+            text: buildYoutubeVideoCaption({
+              senderName: message.data.dName,
+              title: video.title,
+              channelName: video.channelName,
+              viewCount: video.viewCount,
+              publishedTime: video.publishedTime,
+              qualityText,
+            }),
+            mentions: [MessageMention(message.data.uidFrom, message.data.dName.length, 2, false)],
+          },
+          ttl: isAdminLevelHigh ? 14400000 : 3600000,
         });
       } catch (error) {
         throw normalizeYoutubeWorkflowError("send", error);
       }
     }
 
-    if (format !== audioFormat) await setCacheData(PLATFORM, video.videoId, { ...delivery, title: video.title }, qualityText);
+    if (format !== audioFormat) {
+      await setCacheData(PLATFORM, video.videoId, { ...delivery, title: video.title }, qualityText);
+    }
     await progress?.complete();
 
     return true;
   } finally {
-    // Dọn file operation temp sau khi gửi cuối resolve/reject.
     if (fetchedPath) await deleteFile(fetchedPath).catch(() => {});
     await progress?.complete();
   }
@@ -319,7 +336,7 @@ export async function consumeYoutubeSelection(api, message, options = {}) {
     const durationMs = (Number(video?.duration) || 0) * 1000;
     if (!isAdminLevelHigh && durationMs > 30 * 60 * 1000) {
       await sendMessageWarningRequest(api, message, {
-        caption: `Vi tai nguyen co han, Khong the lay video co do dai hon 30 phut!\nVui long chon lai video khac hoac truy cap vao link sau de xem day du: ${video.url}`,
+        caption: `Vì tài nguyên có hạn, không thể tải video có độ dài hơn 30 phút!\nVui lòng chọn video khác hoặc xem trực tiếp tại: ${video.url}`,
       }, 30000);
       return { ok: false, claimed: false };
     }
@@ -335,38 +352,38 @@ export async function consumeYoutubeSelection(api, message, options = {}) {
     } catch (error) {
       if (error?.stage === "upload") {
         await sendMessageWarningRequest(api, message, {
-          caption: "Tai len video that bai. Vui long thu chon lai sau.",
+          caption: "Tải lên video thất bại. Vui lòng thử chọn lại sau.",
         }, 30000);
         return { ok: false, claimed: true };
       }
       if (error?.stage === "send") {
         await sendMessageWarningRequest(api, message, {
-          caption: "Khong the gui video sau khi tai len. Vui long thu chon lai sau.",
+          caption: "Không thể gửi video sau khi tải lên. Vui lòng thử chọn lại sau.",
         }, 30000);
         return { ok: false, claimed: true };
       }
       const kind = classifyYoutubeError(error);
       if (kind === "unavailable") {
         await sendMessageWarningRequest(api, message, {
-          caption: "Video nay hien khong kha dung. Hay chon mot video khac trong danh sach.",
+          caption: "Video này hiện không khả dụng. Hãy chọn một video khác trong danh sách.",
         }, 60000);
         return { ok: false, claimed: true };
       }
       if (kind === "auth") {
         await sendMessageWarningRequest(api, message, {
-          caption: "YouTube can cookie hoac dang nhap de tiep tuc xu ly video nay.",
+          caption: "YouTube yêu cầu cookie hoặc đăng nhập (YOUTUBE_COOKIES_FILE) để xử lý video này.",
         }, 30000);
         return { ok: false, claimed: true };
       }
       if (kind === "runtime") {
         await sendMessageWarningRequest(api, message, {
-          caption: "Loi cau hinh runtime YouTube. Vui long kiem tra Deno va thu lai.",
+          caption: formatYoutubeDiagnosticCaption(error),
         }, 30000);
         return { ok: false, claimed: true };
       }
       if (kind === "timeout") {
         await sendMessageWarningRequest(api, message, {
-          caption: "Xu ly YouTube bi qua thoi gian cho phep. Vui long thu lai sau.",
+          caption: "Xử lý YouTube bị quá thời gian cho phép. Vui lòng thử lại sau.",
         }, 30000);
         return { ok: false, claimed: true };
       }
@@ -375,14 +392,13 @@ export async function consumeYoutubeSelection(api, message, options = {}) {
   } catch (error) {
     logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
     await sendMessageWarningRequest(api, message, {
-      caption: "Da xay ra loi khi xu ly tin nhan cua ban. Vui long thu lai sau.",
+      caption: formatYoutubeDiagnosticCaption(error),
     }, 30000);
     return { ok: false, claimed: true };
   }
 }
 
 export async function handleYoutubeCommand(api, message, aliasCommand) {
-  const content = removeMention(message);
   const senderId = message.data.uidFrom;
   const prefix = getGlobalPrefix();
   const isAdminLevelHigh = isAdmin(senderId);
@@ -390,57 +406,58 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
   let registered = false;
 
   try {
-    const keyword = content.replace(`${prefix}${aliasCommand}`, "").trim();
+    const keyword = extractCommandBody(message, prefix, aliasCommand || "youtube");
     if (!keyword) {
       return await sendMessageCompleteRequest(api, message, {
-        caption: `Vui long nhap tu khoa tim kiem hoac link\nVi du:\n${prefix}${aliasCommand} Noi Dung Can Tim`,
+        caption: `Vui lòng nhập từ khóa tìm kiếm hoặc link YouTube\nVí dụ:\n${prefix}${aliasCommand} Nội dung cần tìm`,
       }, 30000);
     }
 
-        const [query, typeVideo = "normal"] = keyword.split(" ");
-        const url = normalizeYoutubeUrl(query);
-        if (url) {
-          let videoInfo;
-          try {
-            videoInfo = await getYoutubeVideoInfo(url);
-          } catch (error) {
-            if (error?.kind === "unavailable") {
-              return await sendMessageWarningRequest(api, message, {
-                caption: "Video nay hien khong kha dung. Hay chon mot video khac trong danh sach.",
-              }, 60000);
-            }
-            if (error?.kind === "auth") {
-              return await sendMessageWarningRequest(api, message, {
-                caption: "YouTube can cookie hoac dang nhap de tiep tuc xu ly video nay.",
-              }, 30000);
-            }
-            if (error?.kind === "runtime") {
-              return await sendMessageWarningRequest(api, message, {
-                caption: "Loi cau hinh runtime YouTube. Vui long kiem tra Deno va thu lai.",
-              }, 30000);
-            }
-            if (error?.kind === "timeout") {
-              return await sendMessageWarningRequest(api, message, {
-                caption: "Xu ly YouTube bi qua thoi gian cho phep. Vui long thu lai sau.",
-              }, 30000);
-            }
-            throw error;
-          }
-          const durationMs = (videoInfo.duration || 0) * 1000;
-          if (!isAdminLevelHigh && durationMs > 30 * 60 * 1000) {
-            return await sendMessageWarningRequest(api, message, {
-              caption: `Vi tai nguyen co han, Khong the lay video co do dai hon 30 phut!\nVui long truy cap vao link sau de xem day du: ${url}`,
+    const [query, typeVideo = "normal"] = keyword.split(/\s+/);
+    const url = normalizeYoutubeUrl(query);
+    if (url) {
+      let videoInfo;
+      try {
+        videoInfo = await getYoutubeVideoInfo(url);
+      } catch (error) {
+        if (error?.kind === "unavailable") {
+          return await sendMessageWarningRequest(api, message, {
+            caption: "Video này hiện không khả dụng. Hãy thử một link YouTube khác.",
+          }, 60000);
+        }
+        if (error?.kind === "auth") {
+          return await sendMessageWarningRequest(api, message, {
+            caption: "YouTube yêu cầu cookie hoặc đăng nhập (YOUTUBE_COOKIES_FILE) để tiếp tục xử lý video này.",
+          }, 30000);
+        }
+        if (error?.kind === "runtime") {
+          return await sendMessageWarningRequest(api, message, {
+            caption: formatYoutubeDiagnosticCaption(error),
+          }, 30000);
+        }
+        if (error?.kind === "timeout") {
+          return await sendMessageWarningRequest(api, message, {
+            caption: "Xử lý YouTube bị quá thời gian cho phép. Vui lòng thử lại sau.",
+          }, 30000);
+        }
+        throw error;
+      }
+      const durationMs = (videoInfo.duration || 0) * 1000;
+      if (!isAdminLevelHigh && durationMs > 30 * 60 * 1000) {
+        return await sendMessageWarningRequest(api, message, {
+          caption: `Vì tài nguyên có hạn, không thể tải video có độ dài hơn 30 phút!\nVui lòng xem đầy đủ tại link sau: ${url}`,
         }, 30000);
       }
       return await handleSendMediaYoutube(api, message, videoInfo, typeVideo, null, isAdminLevelHigh);
     }
 
     const [searchQuery, numberVideo = 30] = keyword.split("&&");
+    const cleanSearch = String(searchQuery || "").trim();
     const limit = Math.min(CONFIG.maxResults, Math.max(1, parseInt(numberVideo, 10) || CONFIG.maxResults));
-    const videos = await runYoutubeSearch(searchQuery, limit);
+    const videos = await runYoutubeSearch(cleanSearch, limit);
     if (videos.length === 0) {
       return await sendMessageWarningRequest(api, message, {
-        caption: `Khong tim thay video phu hop voi cum tu: ${searchQuery}`,
+        caption: `Không tìm thấy video phù hợp với cụm từ: ${cleanSearch}`,
       }, 30000);
     }
 
@@ -452,7 +469,8 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
       publishedTime: video.publishedTime,
     })));
 
-    const selectionCaption = "Day la danh sach video toi tim thay tu Youtube:\nHay tra loi tin nhan nay HOAC gui so thu tu de chon video ban muon xem!\n\nVD: 1 hoac 1 audio";
+    const selectionCaption =
+      "Đây là danh sách video tôi tìm thấy từ YouTube:\nHãy trả lời tin nhắn này HOẶC gửi trực tiếp số thứ tự để chọn video bạn muốn xem!\n\nVD: 1 hoặc 1 audio";
 
     const listMessage = await sendMessageCompleteRequest(api, message, {
       caption: selectionCaption,
@@ -461,9 +479,6 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
 
     const quotedMsgIdStr = extractMessageId(listMessage);
 
-    // Preview temp (ảnh danh sách) thuộc sở hữu của session: chỉ bị xóa đúng một
-    // lần khi session kết thúc (thành công / hết hạn). resendPrompt dùng lại
-    // chính ảnh này khi cần mở lại bảng sau lỗi.
     await setSelectionsMapData(senderId, {
       quotedMsgId: quotedMsgIdStr,
       collection: videos,
@@ -496,11 +511,7 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
     return true;
   } catch (error) {
     logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
-    const caption = error?.stage === "upload"
-      ? "Tai len video that bai. Vui long thu lai sau."
-      : error?.stage === "send"
-        ? "Khong the gui video sau khi tai len. Vui long thu lai sau."
-        : "Co loi xay ra khi xu ly video!";
+    const caption = formatYoutubeDiagnosticCaption(error);
     await sendMessageWarningRequest(api, message, {
       caption,
     }, 30000);
@@ -511,7 +522,6 @@ export async function handleYoutubeCommand(api, message, aliasCommand) {
 }
 
 export async function handleYoutubeReply(api, message) {
-  // Adapter mỏng: toàn bộ claim/thu hồi/dọn temp do dispatcher chung xử lý.
   try {
     const record = findSelectionRecordForMessage(message);
     if (!record || record.platform !== PLATFORM) return false;
@@ -520,7 +530,7 @@ export async function handleYoutubeReply(api, message) {
   } catch (error) {
     logDownloadEvent({ source: "youtube", stage: error?.stage || "source", status: "failed", code: classifyYoutubeError(error).toUpperCase() });
     await sendMessageWarningRequest(api, message, {
-      caption: "Da xay ra loi khi xu ly tin nhan cua ban. Vui long thu lai sau.",
+      caption: "Đã xảy ra lỗi khi xử lý tin nhắn của bạn. Vui lòng thử lại sau.",
     }, 30000);
     return true;
   }

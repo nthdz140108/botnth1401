@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import { MessageType } from "../../api-zalo/index.js";
+import { getProjectRoot } from "../../utils/env.js";
 import {
   getCanonicalGroupSettingsPath,
   readGroupSettings,
@@ -16,6 +19,7 @@ import {
   sendRandomGirlVideo,
   resolveVideoPoolConfig,
   listLocalVideoCandidates,
+  LOCAL_VIDEO_POOL_DIRS,
   VideoSourceEmptyError,
 } from "../chat-zalo/chat-special/send-video/send-video.js";
 import {
@@ -172,6 +176,29 @@ async function sendGirlVideoToOne(api, threadId, { caption, ttl, type, attemptBu
   });
 }
 
+function scanResilientFallbackVideos() {
+  for (const poolName of LOCAL_VIDEO_POOL_DIRS) {
+    if (poolName === "vdsex" || poolName === "vdvuto") continue;
+    const found = listLocalVideoCandidates(poolName);
+    if (Array.isArray(found) && found.length > 0) {
+      return found;
+    }
+  }
+  const assetVideoDir = path.join(getProjectRoot(), "assets", "resources", "video");
+  if (fs.existsSync(assetVideoDir)) {
+    try {
+      const mp4s = fs
+        .readdirSync(assetVideoDir, { withFileTypes: true })
+        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".mp4"))
+        .map((e) => path.join(assetVideoDir, e.name));
+      if (mp4s.length > 0) return mp4s;
+    } catch {
+      // ignore unreadable asset dir
+    }
+  }
+  return [];
+}
+
 /**
  * Bộ nguồn mặc định nối vào service thật.
  * Tách bạch giai đoạn NGUỒN (provider ngoài) và GỬI (Zalo) để phân loại lỗi.
@@ -200,9 +227,15 @@ function defaultSources() {
     loadGirlPool: (category) => {
       // Snapshot candidate MỘT lần mỗi lượt broadcast cho category tương ứng:
       // mọi pool video đều local, quét .mp4 trong <project-root>/video/.
-      const config = resolveVideoPoolConfig({ type: !category || category === "default" ? "girl" : category });
+      const isDefaultGirl = !category || category === "default" || category === "girl";
+      const config = resolveVideoPoolConfig({ type: isDefaultGirl ? "girl" : category });
       if (!config) return [];
-      return listLocalVideoCandidates(config.source);
+      const candidates = listLocalVideoCandidates(config.source);
+      if (candidates.length > 0) return candidates;
+      if (isDefaultGirl) {
+        return scanResilientFallbackVideos();
+      }
+      return candidates;
     },
     sendGirlVideo: (api, threadId, payload) => sendGirlVideoToOne(api, threadId, payload),
   };

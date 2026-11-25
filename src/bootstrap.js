@@ -56,7 +56,12 @@ export function getGitCommitHash(root = process.env.PROJECT_ROOT || rootFromModu
   }
 }
 
-import { createRuntimeInstanceDescriptor, getRuntimeInstanceDescriptor, resolveLaunchDescriptor } from "./core/runtime-instance.js";
+import {
+  createRuntimeInstanceDescriptor,
+  getRuntimeInstanceDescriptor,
+  resolveLaunchDescriptor,
+  RESTART_EXIT_CODE,
+} from "./core/runtime-instance.js";
 
 export function resolveInstanceKind(options = {}) {
   const descriptor = resolveLaunchDescriptor({
@@ -292,15 +297,112 @@ export async function startAlwaysOnDashboardSupervisor({ root = process.env.PROJ
   return { started: true, reused: false, port };
 }
 
+function shouldRunStandaloneSupervisor(env = process.env) {
+  if (
+    env.MYBOT_BOOTSTRAP_WORKER === "1" ||
+    env.MYBOT_SUPERVISOR ||
+    env.pm_id !== undefined ||
+    env.pm_exec_path ||
+    env.PM2_USAGE ||
+    env.QR_BOOTSTRAP_ONLY === "true" ||
+    env.QR_BOOTSTRAP_ONLY === "1" ||
+    env.NODE_TEST_CONTEXT ||
+    env.NODE_ENV === "test" ||
+    env.SKIP_ENV_VALIDATION
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function consumeRootActionFlag(root, isMainInstance) {
+  if (!isMainInstance) return null;
+  const actionPath = path.join(root, ".bot-action");
+  try {
+    if (!fs.existsSync(actionPath)) return null;
+    const action = fs.readFileSync(actionPath, "utf8").trim().toLowerCase();
+    fs.unlinkSync(actionPath);
+    return action || null;
+  } catch {
+    return null;
+  }
+}
+
+async function runStandaloneSupervisor() {
+  loadProviderEnvironment();
+  const descriptor = createRuntimeInstanceDescriptor();
+  const root = descriptor.projectRoot;
+  await startAlwaysOnDashboardSupervisor({ root });
+
+  let activeWorker = null;
+  let stopping = false;
+
+  const forwardStopSignal = (signal) => {
+    stopping = true;
+    try {
+      activeWorker?.kill?.(signal);
+    } catch {}
+  };
+  process.on("SIGINT", () => forwardStopSignal("SIGINT"));
+  process.on("SIGTERM", () => forwardStopSignal("SIGTERM"));
+
+  const spawnWorker = () => {
+    if (stopping) return;
+    const workerEnv = {
+      ...process.env,
+      MYBOT_BOOTSTRAP_WORKER: "1",
+      MYBOT_SUPERVISOR: "bootstrap",
+    };
+    const child = spawn(process.execPath, [moduleFile, ...process.argv.slice(2)], {
+      cwd: root,
+      stdio: "inherit",
+      windowsHide: true,
+      env: workerEnv,
+    });
+    activeWorker = child;
+
+    child.once("exit", (code) => {
+      if (activeWorker === child) activeWorker = null;
+      if (stopping) {
+        process.exit(code ?? 0);
+        return;
+      }
+
+      const requestedAction = consumeRootActionFlag(root, descriptor.isMain);
+      if (requestedAction === "stop") {
+        process.exit(0);
+        return;
+      }
+
+      if (code === RESTART_EXIT_CODE || requestedAction === "restart") {
+        console.log(`[BOOTSTRAP:SUPERVISOR] Đang khởi động lại bot (exitCode=${code ?? 0})...`);
+        const timer = setTimeout(() => {
+          spawnWorker();
+        }, 600);
+        timer.unref?.();
+        return;
+      }
+
+      process.exit(code ?? 0);
+    });
+  };
+
+  spawnWorker();
+}
+
 const isMain = isRuntimeEntrypoint({ moduleFile });
 if (isMain) {
   try {
-    loadProviderEnvironment();
-    await configureNativeMemoryLimits();
-    createRuntimeInstanceDescriptor();
-    printRuntimeFingerprint({ entrypoint: "src/bootstrap.js" });
-    await startAlwaysOnDashboardSupervisor();
-    await import("./index.js");
+    if (shouldRunStandaloneSupervisor(process.env)) {
+      await runStandaloneSupervisor();
+    } else {
+      loadProviderEnvironment();
+      await configureNativeMemoryLimits();
+      createRuntimeInstanceDescriptor();
+      printRuntimeFingerprint({ entrypoint: "src/bootstrap.js" });
+      await startAlwaysOnDashboardSupervisor();
+      await import("./index.js");
+    }
   } catch (bootErr) {
     console.error(`[BOOTSTRAP:FATAL] ${bootErr?.stack || bootErr?.message || bootErr}`);
     process.exit(1);

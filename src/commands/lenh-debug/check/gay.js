@@ -1,22 +1,27 @@
 import fs from 'fs';
 import path from 'path';
-import { sendMessageFactory } from '../../../api-zalo/apis/sendMessage.js';
 import { sendMessageStateQuote } from '../../../service-debug/chat-zalo/chat-style/chat-style.js';
-import { getGlobalPrefix } from '../../../service-debug/service.js';
+import { getActiveRuntimeContext } from '../../../utils/io-json.js';
 import { getProjectRoot } from '../../../utils/env.js';
+import { getQuotedUid, safeThreadType } from '../../shared/command-input-utils.js';
 
-// Đường dẫn tới tệp lưu trữ thông tin sử dụng trong data/
-const GAY_TEST_FILE = path.join(getProjectRoot(), 'data', 'gay_test_usage.json');
+const MAX_GAY_DAILY_USES = 5;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-function escapeRegExp(value) {
-  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function resolveGayUsagePath() {
+  const dataDir = getActiveRuntimeContext()?.dataDir;
+  const baseDir = dataDir
+    ? (path.isAbsolute(dataDir) ? dataDir : path.resolve(getProjectRoot(), dataDir))
+    : path.join(getProjectRoot(), 'data');
+  return path.join(baseDir, 'gay_test_usage.json');
 }
 
-// Hàm tải thông tin sử dụng từ tệp JSON
 function loadUsageData() {
-  if (fs.existsSync(GAY_TEST_FILE)) {
+  const filePath = resolveGayUsagePath();
+  if (fs.existsSync(filePath)) {
     try {
-      return JSON.parse(fs.readFileSync(GAY_TEST_FILE, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (error) {
       console.error('Error reading gay_test_usage.json:', error.message);
       return {};
@@ -25,42 +30,35 @@ function loadUsageData() {
   return {};
 }
 
-// Hàm lưu thông tin sử dụng vào tệp JSON
 function saveUsageData(data) {
   try {
-    fs.mkdirSync(path.dirname(GAY_TEST_FILE), { recursive: true });
-    fs.writeFileSync(GAY_TEST_FILE, JSON.stringify(data, null, 2), 'utf8');
+    const filePath = resolveGayUsagePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
   } catch (error) {
     console.error('Error writing gay_test_usage.json:', error.message);
   }
 }
 
-// Hàm lấy tên người dùng từ input hoặc mentions
-function getUserName(content, mentions, userId) {
+function getUserName(content, mentions, userId, fallbackName = '') {
   try {
-    const mention = mentions.find(m => m.uid === userId);
-    if (mention && mention.name) {
-      return mention.name;
+    const mention = mentions.find((m) => String(m.uid) === String(userId));
+    if (mention?.name) return mention.name;
+    if (mention?.displayName) return mention.displayName;
+    if (typeof content === 'string' && mention && Number.isInteger(mention.pos) && Number.isInteger(mention.len)) {
+      const extracted = content.slice(mention.pos, mention.pos + mention.len).replace(/^@+/, '').trim();
+      if (extracted) return extracted;
     }
-    if (mention && mention.displayName) {
-      return mention.displayName;
-    }
-
-    const match = content.match(/@(.+)/);
-    if (match && match[1]) {
-      return match[1].trim();
-    }
-
-    return `UID: ${userId}`;
-  } catch (error) {
-    console.error('Error in getUserName:', error.message);
-    return `UID: ${userId}`;
+    const match = String(content || '').match(/@([^\s]+)/);
+    if (match?.[1]) return match[1].trim();
+    return fallbackName || `UID: ${userId}`;
+  } catch {
+    return fallbackName || `UID: ${userId}`;
   }
 }
 
-// Hàm áp dụng style cho tin nhắn
 function applyMessageStyle(text) {
-  const COLORS = ["#f30505ff", "#15a85f", "#f27806", "#f7b503"];
+  const COLORS = ['#f30505ff', '#15a85f', '#f27806', '#f7b503'];
   const color = COLORS[Math.floor(Math.random() * COLORS.length)];
   return {
     text,
@@ -72,7 +70,6 @@ function applyMessageStyle(text) {
   };
 }
 
-// Đối tượng mô tả lệnh gay
 export const des = {
   name: 'gay',
   version: '1.0.0',
@@ -82,108 +79,90 @@ export const des = {
   active: true,
 };
 
-// Hàm xử lý lệnh gay
 export async function handleGayCommand(api, message) {
   const threadId = message.threadId;
-  const uid = message.data.uidFrom;
-  const content = message.data.content.trim();
-  const currentPrefix = await getGlobalPrefix();
-  const escapedPrefix = escapeRegExp(currentPrefix);
-  const sendMessage = sendMessageFactory(api);
+  const senderId = String(message.data?.uidFrom || '');
+  const senderName = message.data?.dName || 'Bạn';
+  const content = String(message.data?.content || '').trim();
+  const threadType = safeThreadType(message);
 
-  // Xác định xem threadId là nhóm hay cá nhân
-  let isGroup = threadId !== uid;
-  if (typeof message.isGroup !== 'undefined') {
-    isGroup = message.isGroup;
+  const mentions = Array.isArray(message.data?.mentions) ? message.data.mentions : [];
+  const quotedUid = getQuotedUid(message);
+
+  let targetUserId = senderId;
+  let isSelfTarget = true;
+  if (mentions.length > 0 && mentions[0]?.uid) {
+    targetUserId = String(mentions[0].uid);
+    isSelfTarget = targetUserId === senderId;
+  } else if (quotedUid) {
+    targetUserId = quotedUid;
+    isSelfTarget = targetUserId === senderId;
   }
 
-  // Kiểm tra lệnh hợp lệ (hỗ trợ tag trước hoặc sau)
-  const commandRegex = new RegExp(
-    `^${escapedPrefix}gay\\s*@(.+)|@(.+)\\s*${escapedPrefix}gay$`,
-    'i'
-  );
-  if (!content.match(commandRegex)) {
-    return sendMessage(
-      { msg: `❌ Lệnh không hợp lệ! Dùng: ${currentPrefix}gay @<tên người dùng> hoặc @<tên người dùng> ${currentPrefix}gay 🚨`, ttl: 10000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
+  const targetName = isSelfTarget
+    ? senderName
+    : getUserName(content, mentions, targetUserId, message.data?.quote?.fromD || 'Người dùng');
 
-  // Kiểm tra mentions
-  const mentions = message.data.mentions || [];
-  if (!mentions.length) {
-    return sendMessage(
-      { msg: `❌ Vui lòng đề cập đến một người dùng bằng @<tên người dùng>! 🚨`, ttl: 10000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
-
-  // Lấy user_id từ mention đầu tiên
-  const userId = mentions[0].uid;
-
-  // Lấy tên người được mention từ content
-  const name = getUserName(content, mentions, userId);
-
-  // Tải thông tin sử dụng
   const usageData = loadUsageData();
   const now = new Date();
+  const callerRecord = usageData[senderId];
+  const lastUsedMs = callerRecord?.lastUsed ? new Date(callerRecord.lastUsed).getTime() : 0;
+  const elapsedMs = now.getTime() - lastUsedMs;
 
-  // Kiểm tra số lần sử dụng
-  let gayPercentage;
-  if (usageData[userId]) {
-    gayPercentage = usageData[userId].gayPercentage;
-    const lastUsed = new Date(usageData[userId].lastUsed);
-    const count = usageData[userId].count;
-
-    // Kiểm tra cooldown 24 giờ
-    const oneDayInMs = 24 * 60 * 60 * 1000;
-    if (count >= 5 && now - lastUsed < oneDayInMs) {
-      const timeRemaining = oneDayInMs - (now - lastUsed);
+  if (callerRecord && Number.isFinite(elapsedMs) && elapsedMs < ONE_DAY_MS) {
+    if ((callerRecord.count || 0) >= MAX_GAY_DAILY_USES) {
+      const timeRemaining = ONE_DAY_MS - elapsedMs;
       const hoursRemaining = Math.floor(timeRemaining / (60 * 60 * 1000));
       const minutesRemaining = Math.floor((timeRemaining % (60 * 60 * 1000)) / (60 * 1000));
-      const response = `❌ ${name} đã sử dụng quá số lần cho phép. Vui lòng quay lại sau ${hoursRemaining} giờ ${minutesRemaining} phút.`;
-      return sendMessage(
-        { msg: response, ttl: 10000 },
-        threadId,
-        isGroup ? 1 : 0
-      );
+      const limitMsg = `❌ ${senderName} đã sử dụng hết ${MAX_GAY_DAILY_USES} lượt hôm nay. Vui lòng quay lại sau ${hoursRemaining} giờ ${minutesRemaining} phút.`;
+      return api.sendMessage({ msg: limitMsg, quote: message, ttl: 30000 }, threadId, threadType);
     }
-
-    // Cập nhật số lần sử dụng
-    usageData[userId].count += 1;
-    usageData[userId].lastUsed = now.toISOString();
+    usageData[senderId] = {
+      ...callerRecord,
+      count: (callerRecord.count || 0) + 1,
+      lastUsed: now.toISOString(),
+    };
   } else {
-    // Lần đầu tiên, tạo ngẫu nhiên phần trăm
-    gayPercentage = Math.floor(Math.random() * 100) + 1; // 1-100%
-    usageData[userId] = {
-      gayPercentage,
+    // 24h elapsed or first time: reset count cleanly to 1
+    usageData[senderId] = {
+      ...(callerRecord || {}),
       count: 1,
       lastUsed: now.toISOString(),
     };
   }
 
-  // Lưu lại thông tin sử dụng
+  const targetKey = `target:${targetUserId}`;
+  const targetRecord = usageData[targetKey];
+  const targetElapsed = targetRecord?.lastUsed
+    ? now.getTime() - new Date(targetRecord.lastUsed).getTime()
+    : Infinity;
+
+  let gayPercentage;
+  if (targetRecord && typeof targetRecord.gayPercentage === 'number' && targetElapsed < ONE_DAY_MS) {
+    gayPercentage = targetRecord.gayPercentage;
+  } else {
+    gayPercentage = Math.floor(Math.random() * 101);
+    usageData[targetKey] = {
+      gayPercentage,
+      lastUsed: now.toISOString(),
+    };
+  }
+
   saveUsageData(usageData);
 
-  // Tạo phản hồi
-  const response = `🏳️‍🌈 Thằng được bạn tag có độ gay là ${gayPercentage}%! 🏳️‍🌈`;
+  const response = `🏳️‍🌈 Độ gay của ${targetName} là ${gayPercentage}%! 🏳️‍🌈`;
 
-  // Thử gửi với style và mention (chỉ truyền mentions khi pos >= 0)
   try {
     const styledMessage = applyMessageStyle(response);
-    const pos = styledMessage.text.indexOf(name);
-    const mentionsParam = pos >= 0 ? [{
-      uid: userId,
-      length: name.length,
-      offset: pos,
-    }] : undefined;
+    const pos = styledMessage.text.indexOf(targetName);
+    const mentionsParam = pos >= 0 && targetUserId
+      ? [{ uid: targetUserId, length: targetName.length, offset: pos }]
+      : undefined;
     await sendMessageStateQuote(
       api,
       message,
       styledMessage.text,
-      isGroup,
+      true,
       120000,
       false,
       styledMessage.style,
@@ -191,10 +170,6 @@ export async function handleGayCommand(api, message) {
     );
   } catch (error) {
     console.error('Failed to send message with sendMessageStateQuote:', error.message);
-    await sendMessage(
-      { msg: response, ttl: 120000 },
-      threadId,
-      isGroup ? 1 : 0
-    );
+    await api.sendMessage({ msg: response, quote: message, ttl: 120000 }, threadId, threadType);
   }
 }

@@ -3,7 +3,10 @@ import path from "path";
 import { MessageMention } from "../../../../api-zalo/models/Message.js";
 import { removeMention } from "../../../../utils/format-util.js";
 import { getProjectRoot } from "../../../../utils/env.js";
-import { removeTemporaryFile } from "../../../../api-zalo/media/video-temp-file.js";
+import {
+  downloadVideoToTempFile,
+  removeTemporaryFile,
+} from "../../../../api-zalo/media/video-temp-file.js";
 import {
   VideoToolMissingError,
   VideoFileUnreadableError,
@@ -61,8 +64,7 @@ export const LOCAL_VIDEO_POOL_DIRS = Object.freeze([
 ]);
 
 // Cấu hình video canonical: mọi lệnh vd* và SendTask video đều quét
-// .mp4 trong <project-root>/video/<source> mỗi lượt gửi. Không còn nguồn URL
-// online, không còn fallback, không còn health store.
+// .mp4 trong <project-root>/video/<source> mỗi lượt gửi.
 export const VIDEO_TYPES = {
   girl: {
     variants: {
@@ -128,6 +130,19 @@ const KEYWORD_MAPPING = {
   },
 };
 
+// Ánh xạ kho link dự phòng đọc từ data-send/*.txt cho các pool không phải vdsex
+const REMOTE_FALLBACK_DATA_FILES = Object.freeze({
+  vdgirl: Object.freeze(["vdgirl.txt", "girl.txt", "zGirl.txt"]),
+  vdsexy: Object.freeze(["vdsexy.txt", "girlsexy.txt"]),
+  vdcos: Object.freeze(["vdcos.txt", "cosplay.txt"]),
+  vdanime: Object.freeze(["vdanime.txt", "anime.txt"]),
+  vdboy: Object.freeze(["vdboy.txt", "boy.txt", "boy6mui.txt"]),
+  vdvuto: Object.freeze(["vdvuto.txt", "vuto.txt", "girlnguc.txt"]),
+  vdchill: Object.freeze(["vdchill.txt", "chill.txt"]),
+  vdsad: Object.freeze(["vdsad.txt", "sad.txt"]),
+  vdtet: Object.freeze(["vdtet.txt", "tet.txt"]),
+});
+
 /**
  * Log có cấu trúc cho luồng video local: stage tách bạch
  * (local|prepare|video-upload|thumbnail-upload|delivery), kèm attempt/currentLimit
@@ -186,10 +201,6 @@ function isMp4FileName(fileName) {
 
 /**
  * Quét đệ quy các file .mp4 trong đúng folder pool đã ánh xạ.
- * - Chỉ nhận file thường có đuôi .mp4 (không phân biệt hoa/thường).
- * - Bỏ qua symlink, node_modules, thư mục ẩn và mọi file phụ (.part, audio, crawler...).
- * - Kết quả chuẩn hóa, dedupe và sort để test ổn định; shuffle diễn ra sau.
- * Mỗi lệnh/lượt SendTask quét lại nên thêm/xóa video không cần restart bot.
  */
 export function listLocalVideoCandidates(poolDir, { rootDir = undefined, fsImpl = fs } = {}) {
   const safeDir = sanitizeLocalPoolDir(poolDir);
@@ -223,8 +234,6 @@ export function listLocalVideoCandidates(poolDir, { rootDir = undefined, fsImpl 
       }
       if (!entry.isFile?.() || !isMp4FileName(entry.name)) continue;
       const normalized = path.normalize(fullPath);
-      // Dedupe case-insensitive trên Windows (FS không phân biệt hoa/thường)
-      // nhưng giữ nguyên chữ của đường dẫn chuẩn hóa khi trả kết quả.
       const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
       if (!candidates.has(key)) candidates.add(normalized);
     }
@@ -247,14 +256,7 @@ export function shuffleList(items, randomFn = Math.random) {
 }
 
 /**
- * Resolver pool video thống nhất cho cả command và scheduler: mọi lệnh vd*
- * và SendTask video đều đi qua đây và chỉ trả về LOCAL_DIRECTORY.
- * So khớp chính xác theo VIDEO_TYPES, không dùng substring hay fallback
- * chéo giữa các loại (sex chỉ ra folder vdsex local, sexy chỉ ra vdsexy).
- * @param {object} params
- * @param {string} params.type Loại video canonical (vd: sex, sexy, girl, ...)
- * @param {string} [params.content] Nội dung lệnh dùng chọn variant theo keyword
- * @returns {{ kind: string, source: string, ttl: number, variant: string } | null}
+ * Resolver pool video thống nhất cho cả command và scheduler.
  */
 export function resolveVideoPoolConfig({ type, content } = {}) {
   const rawType = String(type || "").toLowerCase().trim();
@@ -288,8 +290,7 @@ export function resolveVideoPoolConfig({ type, content } = {}) {
 }
 
 /**
- * Đọc candidate cho một config đã resolve: local-directory quét .mp4 trong
- * video/<source> mỗi lượt gọi. Không còn nhánh URL.
+ * Đọc candidate cho một config đã resolve.
  */
 export function loadVideoPoolCandidates(config, options = {}) {
   if (!config) return [];
@@ -297,7 +298,6 @@ export function loadVideoPoolCandidates(config, options = {}) {
   return [];
 }
 
-// Các trường URL hợp lệ Zalo trả về sau upload; thumbnail có thêm thumbUrl
 const VIDEO_UPLOAD_URL_FIELDS = Object.freeze(["fileUrl", "hdUrl", "normalUrl"]);
 const THUMBNAIL_UPLOAD_URL_FIELDS = Object.freeze(["fileUrl", "hdUrl", "normalUrl", "thumbUrl"]);
 
@@ -317,18 +317,6 @@ function extractUploadedUrl(uploadResult, fields) {
 /**
  * Gửi một video local theo luồng 4 stage: prepare -> video-upload ->
  * thumbnail-upload -> delivery.
- *
- * Chính sách fallback:
- * - prepare: thiếu ffmpeg/ffprobe dừng NGAY cả lượt (không quét nốt pool);
- *   chính file MP4 không đọc được (stat/ffprobe/frame rỗng) mới bỏ qua sang file khác.
- * - video-upload: request lỗi TRƯỚC khi hoàn tất -> thử candidate khác;
- *   kết quả sai contract (không có fileUrl/hdUrl/normalUrl) -> dừng ngay.
- * - thumbnail-upload: lỗi hoặc sai contract -> dừng ngay.
- * - delivery: Zalo từ chối gửi (vd code 114 / "Tham số không hợp lệ") -> dừng
- *   ngay tuyệt đối, không upload thêm video nào.
- *
- * Trần thử vẫn là min(12, số file, budget), shuffle không hoàn lại. Thumbnail tạm
- * luôn được dọn trong finally.
  */
 export async function sendLocalVideoWithFallback({
   api,
@@ -395,7 +383,6 @@ export async function sendLocalVideoWithFallback({
       attemptBudget.remaining = Math.max(0, attemptBudget.remaining - 1);
     }
 
-    // ---- stage=prepare: metadata thật + frame đầu JPEG từ file gốc
     let prepared;
     try {
       prepared = await prepare(filePath);
@@ -405,7 +392,6 @@ export async function sendLocalVideoWithFallback({
         error?.code === "VIDEO_TOOL_MISSING" ||
         isToolMissingError(error)
       ) {
-        // Môi trường thiếu tool là lỗi chung, không phải của một file: dừng cả lượt
         stopReason = "tool-missing";
         lastError = error instanceof VideoToolMissingError ? error : new VideoToolMissingError(error?.message || "Tool error");
         logLocalVideoAction({
@@ -419,7 +405,6 @@ export async function sendLocalVideoWithFallback({
         });
         break;
       }
-      // File MP4 không đọc được -> chỉ bỏ qua đúng file này
       lastError = error;
       logLocalVideoAction({
         stage: "prepare",
@@ -435,17 +420,10 @@ export async function sendLocalVideoWithFallback({
     }
 
     try {
-      // ---- stage=video-upload
       let uploadedResult;
       try {
         uploadedResult = await api.uploadAttachment([filePath], message.threadId, message.type);
       } catch (error) {
-        // Upload errors are COMMON to the whole send when they come from the
-        // transport, endpoint or Zalo itself (timeout/network, HTTP 4xx/5xx,
-        // auth/cookie, param or app-code rejections): the remaining candidates
-        // share the same endpoint, so scanning the pool would only repeat the
-        // failure ~11 more times. Only a per-file prepare/read failure (handled
-        // in the prepare stage above) advances to the next candidate.
         stopReason = "video-upload";
         lastError = error;
         logLocalVideoAction({
@@ -465,7 +443,6 @@ export async function sendLocalVideoWithFallback({
 
       const uploadedVideoUrl = extractUploadedUrl(uploadedResult, VIDEO_UPLOAD_URL_FIELDS);
       if (!uploadedVideoUrl) {
-        // Kết quả trả về sai contract: trạng thái Zalo mơ hồ -> dừng ngay
         stopReason = "video-upload-contract";
         lastError = new Error("Upload result has no usable video URL (fileUrl/hdUrl/normalUrl)");
         logLocalVideoAction({
@@ -489,7 +466,6 @@ export async function sendLocalVideoWithFallback({
         limit: effectiveAttemptLimit,
       });
 
-      // ---- stage=thumbnail-upload
       let thumbnailUrl = "";
       try {
         thumbnailUrl = extractUploadedUrl(
@@ -497,7 +473,6 @@ export async function sendLocalVideoWithFallback({
           THUMBNAIL_UPLOAD_URL_FIELDS,
         );
       } catch (error) {
-        // Upload thumbnail lỗi: payload sẽ thiếu thumbUrl hợp lệ -> dừng ngay
         stopReason = "thumbnail-upload";
         lastError = error;
         logLocalVideoAction({
@@ -526,7 +501,6 @@ export async function sendLocalVideoWithFallback({
         break;
       }
 
-      // ---- stage=delivery
       try {
         await api.sendVideo({
           videoUrl: uploadedVideoUrl,
@@ -534,7 +508,6 @@ export async function sendLocalVideoWithFallback({
           threadType: message.type,
           message: {
             text: caption,
-            // Để validateVideoMentions phân biệt group/direct
             type: message.type,
             ...(Array.isArray(mentions) && mentions.length > 0 ? { mentions } : {}),
           },
@@ -547,7 +520,6 @@ export async function sendLocalVideoWithFallback({
           fileSize: prepared.metadata.fileSize,
         });
       } catch (error) {
-        // Zalo từ chối bước gửi: KHÔNG thử thêm file nào nữa (tránh upload trùng)
         stopReason = "delivery";
         lastError = error;
         logLocalVideoAction({
@@ -574,12 +546,9 @@ export async function sendLocalVideoWithFallback({
       });
       return recordResult(true);
     } finally {
-      // Luôn dọn thumbnail tạm của candidate này, kể cả khi dừng giữa chừng
       try {
         await removeTemporaryFile(prepared.thumbnailPath);
-      } catch {
-        // Lỗi dọn dẹp không được che lỗi chính
-      }
+      } catch {}
     }
   }
 
@@ -593,11 +562,7 @@ export async function sendLocalVideoWithFallback({
   });
 
   if (propagateErrors) {
-    // Dừng theo chính sách (tool/contract/delivery): giữ nguyên lỗi gốc để
-    // scheduler xếp loại delivery-error, không fallback nguồn sau kết quả mơ hồ.
     if (stopReason && lastError) throw lastError;
-    // Cạn candidate mà chưa từng chạm delivery (rỗng/hỏng hết/budget hết):
-    // nguồn không dùng được trước khi gửi gì cả -> scheduler được fallback.
     throw new VideoSourceEmptyError(
       `Local pool ${pool || "(anonymous)"} exhausted without a delivery attempt (attempts=${attemptsCount}/${effectiveAttemptLimit})`,
     );
@@ -605,11 +570,6 @@ export async function sendLocalVideoWithFallback({
   return recordResult(false);
 }
 
-/**
- * Dispatcher chung cho nguồn đã resolve — mọi bề mặt (direct command, alias,
- * scheduler SendTask) đi qua đây, không vá riêng từng handler.
- * Chỉ hỗ trợ nhánh LOCAL_DIRECTORY; cấu hình không hợp lệ trả false.
- */
 async function dispatchResolvedVideoPool({
   api,
   message,
@@ -651,6 +611,80 @@ async function dispatchResolvedVideoPool({
   return false;
 }
 
+function isRemoteVideoFallbackAllowed(poolName) {
+  if (!poolName || poolName === "vdsex") return false;
+  if (process.env.MYBOT_DISABLE_REMOTE_VIDEO_FALLBACK === "1") return false;
+  if (process.env.NODE_TEST_CONTEXT && process.env.MYBOT_ENABLE_REMOTE_VIDEO_FALLBACK !== "1") {
+    return false;
+  }
+  return Boolean(REMOTE_FALLBACK_DATA_FILES[poolName]);
+}
+
+function loadRemoteMp4FallbackUrls(poolName) {
+  const fileNames = REMOTE_FALLBACK_DATA_FILES[poolName];
+  if (!Array.isArray(fileNames) || fileNames.length === 0) return [];
+
+  const dataSendDir = path.join(
+    getProjectRoot(),
+    "src",
+    "service-debug",
+    "chat-zalo",
+    "chat-special",
+    "data-send",
+  );
+
+  const urls = new Set();
+  for (const fileName of fileNames) {
+    const filePath = path.join(dataSendDir, fileName);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const content = fs.readFileSync(filePath, "utf8");
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#")) continue;
+        if (/^https:\/\/\S+\.mp4(?:[?#]\S*)?$/i.test(line)) {
+          urls.add(line);
+        }
+      }
+    } catch {}
+    if (urls.size > 0) break;
+  }
+
+  return Array.from(urls);
+}
+
+async function tryDeliverRemoteFallbackVideo({ api, message, config, caption, mentions }) {
+  const remoteUrls = loadRemoteMp4FallbackUrls(config.source);
+  if (remoteUrls.length === 0) return false;
+
+  const shuffled = shuffleList(remoteUrls).slice(0, 3);
+  for (const remoteUrl of shuffled) {
+    let tempVideoPath = null;
+    try {
+      tempVideoPath = await downloadVideoToTempFile(remoteUrl);
+      const ok = await sendLocalVideoWithFallback({
+        api,
+        message,
+        videoFiles: [tempVideoPath],
+        caption,
+        mentions,
+        ttl: config.ttl,
+        maxAttempts: 1,
+        pool: config.source,
+      });
+      if (ok) return true;
+    } catch {
+      // Thử URL kế tiếp trong danh sách dự phòng
+    } finally {
+      if (tempVideoPath) {
+        await removeTemporaryFile(tempVideoPath).catch(() => {});
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
  * Handler chính cho toàn bộ command vd*
  */
@@ -661,13 +695,15 @@ export const handleVideoCommand = async (api, message, type) => {
   const config = resolveVideoPoolConfig({ type, content });
   if (!config) return;
 
+  const threadType = message.type ?? 1;
   const caption = `[ ${senderName} ] ${config.variant !== "default" ? `( ${config.variant} )` : ""}`;
-  const mentions = senderId ? [MessageMention(senderId, senderName.length, 2, false)] : [];
+  const mentions =
+    senderId && threadType === 1 ? [MessageMention(senderId, senderName.length, 2, false)] : [];
 
-  // Quét pool đúng một lần cho lượt lệnh này; thêm/xóa video có hiệu lực ở lượt kế tiếp.
+  // Quét pool local trước tiên cho mọi lệnh vd*
   const candidates = loadVideoPoolCandidates(config);
   const resultRef = { stopReason: "", lastError: null };
-  const success = await dispatchResolvedVideoPool({
+  let success = await dispatchResolvedVideoPool({
     api,
     message,
     config,
@@ -678,6 +714,22 @@ export const handleVideoCommand = async (api, message, type) => {
     resultRef,
   });
 
+  // Fallback sang danh sách URL .mp4 hợp lệ trong data-send/*.txt cho các mục ngoài vdsex
+  if (
+    !success &&
+    candidates.length === 0 &&
+    config.kind === VIDEO_SOURCE_KINDS.LOCAL_DIRECTORY &&
+    isRemoteVideoFallbackAllowed(config.source)
+  ) {
+    success = await tryDeliverRemoteFallbackVideo({
+      api,
+      message,
+      config,
+      caption,
+      mentions,
+    });
+  }
+
   if (!success) {
     let errorMsg = "Đã xảy ra lỗi khi xử lý lệnh video. Vui lòng thử lại sau.";
     const isEmptyLocalSource =
@@ -686,7 +738,7 @@ export const handleVideoCommand = async (api, message, type) => {
     if (isEmptyLocalSource) {
       errorMsg = `Nguồn video "${LOCAL_VIDEO_POOL_ROOT}/${config.source}" đang thiếu hoặc trống. Vui lòng bổ sung file .mp4 rồi thử lại sau.`;
     } else if (resultRef.stopReason === "tool-missing" || resultRef.lastError instanceof VideoToolMissingError) {
-      errorMsg = `Lỗi công cụ media (FFmpeg/FFprobe không khả dụng hoặc bị lỗi). Vui lòng kiểm tra môi trường hệ thống.`;
+      errorMsg = "Lỗi công cụ media (FFmpeg/FFprobe không khả dụng hoặc bị lỗi). Vui lòng kiểm tra môi trường hệ thống.";
     } else if (resultRef.stopReason === "video-upload" || resultRef.stopReason === "video-upload-contract") {
       errorMsg = `Lỗi khi tải video lên máy chủ Zalo (${resultRef.lastError?.message || "upload thất bại"}). Vui lòng thử lại sau.`;
     } else if (resultRef.stopReason === "delivery") {
@@ -701,16 +753,13 @@ export const handleVideoCommand = async (api, message, type) => {
         quote: message,
       },
       message.threadId,
-      message.type,
+      threadType,
     );
   }
 };
 
 /**
  * Helper gửi video ngẫu nhiên cho scheduler.
- * Dùng chung resolveVideoPoolConfig với command để đảm bảo cùng một mapping pool.
- * `candidates` cho phép scheduler truyền snapshot đã tải một lần mỗi lượt
- * broadcast; mỗi nhóm vẫn shuffle/random độc lập bên trong.
  */
 export async function sendRandomGirlVideo(
   api,
@@ -718,7 +767,7 @@ export async function sendRandomGirlVideo(
   caption = "",
   type = "default",
   ttl = 0,
-  { candidates = null, ...fallbackOptions } = {}
+  { candidates = null, ...fallbackOptions } = {},
 ) {
   const config = resolveVideoPoolConfig({ type: type === "default" ? "girl" : type });
   if (!config) return false;

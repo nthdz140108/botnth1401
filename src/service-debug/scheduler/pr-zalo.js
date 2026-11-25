@@ -1,20 +1,48 @@
-import { readWebConfig, writeWebConfig } from "../../utils/io-json.js";
-import { normalizePrObjects, normalizeWebPrConfig } from "./pr-config.js";
-import { getGroupInfoData, getDataAllGroup } from "../info-service/group-info.js";
-import { MessageType } from "../../api-zalo/models/Message.js";
 import path from "path";
 import fs from "fs";
 import schedule from "node-schedule";
 import chalk from "chalk";
+import { getActiveRuntimeContext, readWebConfig, writeWebConfig } from "../../utils/io-json.js";
+import { normalizePrObjects, normalizeWebPrConfig } from "./pr-config.js";
+import { getDataAllGroup } from "../info-service/group-info.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
 import { checkUrlStatus } from "../../utils/util.js";
-import { getBotInfo } from "../../utils/env.js";
-const botInfo = getBotInfo();
-const RESOURCE_BASE_PATH = path.join(process.cwd(), "assets", "web-config");
-const IMAGE_PR_PATH = path.join(RESOURCE_BASE_PATH, "image-pr");
-const VIDEO_PR_PATH = path.join(RESOURCE_BASE_PATH, "video-pr");
+import { getBotId } from "../../utils/env.js";
+
+const LEGACY_RESOURCE_BASE_PATH = path.join(process.cwd(), "assets", "web-config");
+const LEGACY_IMAGE_PR_PATH = path.join(LEGACY_RESOURCE_BASE_PATH, "image-pr");
+const LEGACY_VIDEO_PR_PATH = path.join(LEGACY_RESOURCE_BASE_PATH, "video-pr");
 const CAPTION_CARD = "Danh Thiếp Liên Hệ";
+
 const sentPRs = new Map();
-let activePrScheduleJob = null;
+const activePrJobsByBot = new Map();
+const runningPrLocksByBot = new Set();
+
+export function getInstancePrPaths() {
+  try {
+    const ctx = getActiveRuntimeContext();
+    const baseDir = ctx?.webConfigPath
+      ? path.dirname(ctx.webConfigPath)
+      : ctx?.dataDir
+        ? path.join(ctx.dataDir, "web-config")
+        : LEGACY_RESOURCE_BASE_PATH;
+    return {
+      baseDir,
+      imagePrDir: path.join(baseDir, "image-pr"),
+      videoPrDir: path.join(baseDir, "video-pr"),
+      legacyImagePrDir: LEGACY_IMAGE_PR_PATH,
+      legacyVideoPrDir: LEGACY_VIDEO_PR_PATH,
+    };
+  } catch {
+    return {
+      baseDir: LEGACY_RESOURCE_BASE_PATH,
+      imagePrDir: LEGACY_IMAGE_PR_PATH,
+      videoPrDir: LEGACY_VIDEO_PR_PATH,
+      legacyImagePrDir: LEGACY_IMAGE_PR_PATH,
+      legacyVideoPrDir: LEGACY_VIDEO_PR_PATH,
+    };
+  }
+}
 
 export function resolveSafePrAttachmentPath(dirPath, rawFileName) {
   const raw = String(rawFileName ?? "").trim();
@@ -32,101 +60,100 @@ export function resolveSafePrAttachmentPath(dirPath, rawFileName) {
   }
   return fullPath;
 }
-function calculateTimeLive(currentTime, prObjects) {
-  const sortedPRs = prObjects
-    .flatMap((obj) => obj.thoiGianGui.map((time) => ({ time, object: obj })))
-    .sort((a, b) => {
-      const timeA = new Date(currentTime.toDateString() + " " + a.time);
-      const timeB = new Date(currentTime.toDateString() + " " + b.time);
-      return timeA - timeB;
-    });
 
-  const currentIndex = sortedPRs.findIndex(
-    (pr) =>
-      pr.time ===
-      `${currentTime.getHours().toString().padStart(2, "0")}:${currentTime.getMinutes().toString().padStart(2, "0")}`
-  );
-
-  if (currentIndex === -1) return 0;
-
-  const nextPRIndex = (currentIndex + 1) % sortedPRs.length;
-  const nextPRTime = new Date(currentTime.toDateString() + " " + sortedPRs[nextPRIndex].time);
-
-  if (nextPRIndex <= currentIndex) {
-    nextPRTime.setDate(nextPRTime.getDate() + 1);
+function resolveExistingPrMediaFile(primaryDir, legacyDir, fileName) {
+  const primaryCandidate = resolveSafePrAttachmentPath(primaryDir, fileName);
+  if (primaryCandidate && fs.existsSync(primaryCandidate)) {
+    return primaryCandidate;
   }
+  if (legacyDir && path.resolve(legacyDir) !== path.resolve(primaryDir)) {
+    const legacyCandidate = resolveSafePrAttachmentPath(legacyDir, fileName);
+    if (legacyCandidate && fs.existsSync(legacyCandidate)) {
+      return legacyCandidate;
+    }
+  }
+  return null;
+}
 
-  return nextPRTime.getTime() - currentTime.getTime();
+function getVietnamHourMinute(nowMs = Date.now()) {
+  const vn = new Date(nowMs + 7 * 3600_000);
+  const hh = String(vn.getUTCHours()).padStart(2, "0");
+  const mm = String(vn.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function parsePeriodicTime(periodicTime) {
-  const match = periodicTime.match(/^(\d+)(s|min|h|d|m|y)$/);
+  const match = String(periodicTime || "").match(/^(\d+)(s|min|h|d|m|y)$/);
   if (!match) return 0;
-  const value = parseInt(match[1], 10);
+  const value = Number.parseInt(match[1], 10);
   const unit = match[2];
   switch (unit) {
-    case 's': return value * 1000;
-    case 'min': return value * 60 * 1000;
-    case 'h': return value * 60 * 60 * 1000;
-    case 'd': return value * 24 * 60 * 60 * 1000;
-    case 'm': return value * 30 * 24 * 60 * 60 * 1000;
-    case 'y': return value * 365 * 24 * 60 * 60 * 1000;
-    default: return 0;
+    case "s":
+      return value * 1000;
+    case "min":
+      return value * 60 * 1000;
+    case "h":
+      return value * 60 * 60 * 1000;
+    case "d":
+      return value * 24 * 60 * 60 * 1000;
+    case "m":
+      return value * 30 * 24 * 60 * 60 * 1000;
+    case "y":
+      return value * 365 * 24 * 60 * 60 * 1000;
+    default:
+      return 0;
   }
 }
 
-async function checkAndFixAttachments(api, prObject, idZaloGroup) {
-  const { hinhAnh, video, link } = prObject;
+async function checkAndFixAttachments(api, prObject, idZaloGroup, threadType = MessageType.GroupMessage) {
+  const { hinhAnh = [], video = [], link = {} } = prObject;
+  const { imagePrDir, videoPrDir, legacyImagePrDir, legacyVideoPrDir } = getInstancePrPaths();
   const updatedLinks = { ...link };
+
   for (const fileName in updatedLinks) {
     if (!hinhAnh.includes(fileName) && !video.includes(fileName)) {
       delete updatedLinks[fileName];
     }
   }
+
   for (const imageName of hinhAnh) {
-    const imagePath = resolveSafePrAttachmentPath(IMAGE_PR_PATH, imageName);
-    if (!imagePath || !fs.existsSync(imagePath)) {
-      continue;
-    }
+    const imagePath = resolveExistingPrMediaFile(imagePrDir, legacyImagePrDir, imageName);
+    if (!imagePath) continue;
+
     let imageUrl = updatedLinks[imageName];
     if (imageUrl) {
-      const response = await checkUrlStatus(imageUrl);
-      if (!response) {
-        imageUrl = null;
-      }
+      const ok = await checkUrlStatus(imageUrl);
+      if (!ok) imageUrl = null;
     }
     if (!imageUrl) {
       try {
-        const uploadResult = await api.uploadAttachment([imagePath], idZaloGroup, MessageType.GroupMessage);
+        const uploadResult = await api.uploadAttachment([imagePath], idZaloGroup, threadType);
         if (uploadResult && uploadResult[0]) {
           updatedLinks[imageName] = uploadResult[0].fileUrl || uploadResult[0].normalUrl;
         }
       } catch (error) {
-        console.error(`Lỗi khi upload ảnh ${imageName}:`, error);
+        console.error(`Lỗi khi upload ảnh PR ${imageName}:`, error?.message || error);
       }
     }
   }
 
   for (const videoName of video) {
-    const videoPath = resolveSafePrAttachmentPath(VIDEO_PR_PATH, videoName);
-    if (!videoPath || !fs.existsSync(videoPath)) {
-      continue;
-    }
+    const videoPath = resolveExistingPrMediaFile(videoPrDir, legacyVideoPrDir, videoName);
+    if (!videoPath) continue;
+
     let videoUrl = updatedLinks[videoName];
     if (videoUrl) {
-      const response = await checkUrlStatus(videoUrl);
-      if (!response) {
-        videoUrl = null;
-      }
+      const ok = await checkUrlStatus(videoUrl);
+      if (!ok) videoUrl = null;
     }
     if (!videoUrl) {
       try {
-        const uploadResult = await api.uploadAttachment([videoPath], idZaloGroup, MessageType.GroupMessage);
+        const uploadResult = await api.uploadAttachment([videoPath], idZaloGroup, threadType);
         if (uploadResult && uploadResult[0]) {
           updatedLinks[videoName] = uploadResult[0].fileUrl || uploadResult[0].normalUrl;
         }
       } catch (error) {
-        console.error(`Lỗi khi upload video ${videoName}:`, error);
+        console.error(`Lỗi khi upload video PR ${videoName}:`, error?.message || error);
       }
     }
   }
@@ -134,316 +161,363 @@ async function checkAndFixAttachments(api, prObject, idZaloGroup) {
   return updatedLinks;
 }
 
-async function sendPRMessage(api, config, prObject, ttl, groupId = null) {
+async function sendPRMessage(api, rawConfig, prObject, ttl, groupId = null) {
+  const config = normalizeWebPrConfig(rawConfig);
   const { idZalo, isContentActive, isImageActive, isVideoActive, isCardActive } = prObject;
-  const selectedFriends = config.selectedFriends;
-  let selectedGroups = groupId ? { [groupId]: config.selectedGroups[groupId] } : config.selectedGroups;
+  const { imagePrDir, legacyImagePrDir } = getInstancePrPaths();
+  const selectedFriends = groupId ? {} : config.selectedFriends || {};
+  let selectedGroups = groupId
+    ? { [groupId]: Boolean(config.selectedGroups?.[groupId]) }
+    : { ...(config.selectedGroups || {}) };
 
   if (selectedGroups["-1"]) {
     try {
       const groups = await getDataAllGroup(api);
       selectedGroups = {};
       for (const group of groups) {
-        if (!selectedGroups[group.groupId]) {
+        if (group?.groupId) {
           selectedGroups[group.groupId] = true;
         }
       }
-      delete selectedGroups["-1"];
     } catch (error) {
-      console.error(`Lỗi khi lấy danh sách tất cả nhóm:`, error);
+      console.error("Lỗi khi lấy danh sách tất cả nhóm PR:", error?.message || error);
       return;
     }
   }
 
   try {
-    const threadIdForAttachments = groupId || Object.keys(selectedGroups)[0] || Object.keys(selectedFriends)[0] || null;
-    const defaultLinks = threadIdForAttachments ? await checkAndFixAttachments(api, prObject, threadIdForAttachments) : prObject.link;
-    let hasLinksChanged = JSON.stringify(prObject.link) !== JSON.stringify(defaultLinks);
+    const firstGroupTarget = Object.keys(selectedGroups).find((k) => selectedGroups[k]) || null;
+    const firstFriendTarget = Object.keys(selectedFriends).find((k) => selectedFriends[k]) || null;
+    const threadIdForAttachments = groupId || firstGroupTarget || firstFriendTarget || null;
+    const targetTypeForAttachments =
+      groupId || firstGroupTarget ? MessageType.GroupMessage : MessageType.DirectMessage;
 
-    if (hasLinksChanged) {
+    const defaultLinks = threadIdForAttachments
+      ? await checkAndFixAttachments(api, prObject, threadIdForAttachments, targetTypeForAttachments)
+      : prObject.link || {};
+
+    if (JSON.stringify(prObject.link) !== JSON.stringify(defaultLinks)) {
       prObject.link = defaultLinks;
-      const prIndex = config.prObjects.findIndex(pr => pr.ten === prObject.ten);
+      const prIndex = config.prObjects.findIndex((pr) => pr.ten === prObject.ten);
       if (prIndex !== -1) {
         config.prObjects[prIndex] = prObject;
         await writeWebConfig(config);
       }
     }
 
-    for (const groupId in selectedGroups) {
-      if (selectedGroups[groupId]) {
-        const customGroupContent = prObject.customContent?.[groupId];
-        const tempPrObject = {
-          ...prObject,
-          noiDung: customGroupContent?.noiDung || prObject.noiDung,
-          hinhAnh: customGroupContent?.hinhAnh || prObject.hinhAnh,
-          video: customGroupContent?.video || prObject.video,
-          link: defaultLinks
-        };
+    for (const targetGroupId in selectedGroups) {
+      if (!selectedGroups[targetGroupId]) continue;
 
-        if (customGroupContent) {
-          const customLinks = await checkAndFixAttachments(api, tempPrObject, groupId);
-          if (JSON.stringify(tempPrObject.link) !== JSON.stringify(customLinks)) {
-            tempPrObject.link = customLinks;
-            const prIndex = config.prObjects.findIndex(pr => pr.ten === prObject.ten);
-            if (prIndex !== -1) {
-              config.prObjects[prIndex].customContent[groupId] = {
-                ...customGroupContent,
-                link: customLinks
-              };
-              await writeWebConfig(config);
-            }
+      const customGroupContent = prObject.customContent?.[targetGroupId];
+      const tempPrObject = {
+        ...prObject,
+        noiDung: customGroupContent?.noiDung || prObject.noiDung,
+        hinhAnh: customGroupContent?.hinhAnh || prObject.hinhAnh,
+        video: customGroupContent?.video || prObject.video,
+        link: customGroupContent?.link || defaultLinks,
+      };
+
+      if (customGroupContent) {
+        const customLinks = await checkAndFixAttachments(
+          api,
+          tempPrObject,
+          targetGroupId,
+          MessageType.GroupMessage
+        );
+        if (JSON.stringify(tempPrObject.link) !== JSON.stringify(customLinks)) {
+          tempPrObject.link = customLinks;
+          const prIndex = config.prObjects.findIndex((pr) => pr.ten === prObject.ten);
+          if (prIndex !== -1) {
+            config.prObjects[prIndex].customContent[targetGroupId] = {
+              ...customGroupContent,
+              link: customLinks,
+            };
+            await writeWebConfig(config);
           }
         }
+      }
 
-        try {
-          if (isContentActive && tempPrObject.noiDung && (!isVideoActive || tempPrObject.video.length === 0)) {
-            if (isImageActive && tempPrObject.hinhAnh.length === 1) {
-              const link = tempPrObject.link[tempPrObject.hinhAnh[0]];
-              if (link) {
-                await api.sendImage(
-                  link,
-                  {
-                    type: MessageType.GroupMessage,
-                    threadId: groupId,
-                  },
-                  tempPrObject.noiDung,
-                  ttl
-                );
-              } else {
-                console.error(`Không tìm thấy link cho ảnh ${tempPrObject.hinhAnh[0]}`);
-                await api.sendMessage(
-                  {
-                    msg: tempPrObject.noiDung,
-                    ttl: ttl,
-                  },
-                  groupId,
-                  MessageType.GroupMessage
-                );
-              }
-            } else {
-              await api.sendMessage(
+      try {
+        if (
+          isContentActive &&
+          tempPrObject.noiDung &&
+          (!isVideoActive || tempPrObject.video.length === 0)
+        ) {
+          if (isImageActive && tempPrObject.hinhAnh.length === 1) {
+            const link = tempPrObject.link[tempPrObject.hinhAnh[0]];
+            if (link) {
+              await api.sendImage(
+                link,
                 {
-                  msg: tempPrObject.noiDung,
-                  ttl: ttl,
+                  type: MessageType.GroupMessage,
+                  threadId: targetGroupId,
                 },
-                groupId,
-                MessageType.GroupMessage
-              );
-            }
-          }
-
-          if (isVideoActive && tempPrObject.video.length > 0) {
-            for (const videoName of tempPrObject.video) {
-              const videoUrl = tempPrObject.link[videoName];
-              if (videoUrl) {
-                try {
-                  await api.sendVideo({
-                    videoUrl,
-                    threadId: groupId,
-                    threadType: MessageType.GroupMessage,
-                    message: {
-                      text: isContentActive ? tempPrObject.noiDung : "",
-                    },
-                    ttl: ttl,
-                  });
-                } catch (error) {
-                  console.error(`Lỗi khi gửi video ${videoName} cho nhóm ${groupId}:`, error);
-                }
-              }
-            }
-          }
-
-          if (isImageActive && tempPrObject.hinhAnh.length > 0 && (tempPrObject.hinhAnh.length > 1 || (isVideoActive && tempPrObject.video.length > 0))) {
-            const imagePaths = tempPrObject.hinhAnh
-              .map(imageName => resolveSafePrAttachmentPath(IMAGE_PR_PATH, imageName))
-              .filter(imagePath => imagePath && fs.existsSync(imagePath));
-            if (imagePaths.length > 0) {
-              await api.zSendLocalImages(
-                imagePaths,
-                groupId,
-                MessageType.GroupMessage,
-                800,
-                600,
-                { text: "" },
+                tempPrObject.noiDung,
                 ttl
               );
             } else {
-              console.error(`Không tìm thấy file ảnh nào trong danh sách ${tempPrObject.hinhAnh.join(", ")}`);
+              await api.sendMessage(
+                { msg: tempPrObject.noiDung, ttl },
+                targetGroupId,
+                MessageType.GroupMessage
+              );
             }
+          } else {
+            await api.sendMessage(
+              { msg: tempPrObject.noiDung, ttl },
+              targetGroupId,
+              MessageType.GroupMessage
+            );
           }
-
-          if (isCardActive && idZalo !== "-1") {
-            try {
-              await api.sendBusinessCard(null, idZalo, CAPTION_CARD, MessageType.GroupMessage, groupId, ttl);
-            } catch (error) {
-              console.error(`Lỗi khi gửi business card cho nhóm ${groupId}:`, error);
-            }
-          }
-        } catch (error) {
-          console.error(`Lỗi khi gửi PR cho nhóm ${groupId}:`, error);
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        if (isVideoActive && tempPrObject.video.length > 0) {
+          for (const videoName of tempPrObject.video) {
+            const videoUrl = tempPrObject.link[videoName];
+            if (videoUrl) {
+              try {
+                await api.sendVideo({
+                  videoUrl,
+                  threadId: targetGroupId,
+                  threadType: MessageType.GroupMessage,
+                  videoAlreadyUploaded: true,
+                  message: {
+                    text: isContentActive ? tempPrObject.noiDung : "",
+                  },
+                  ttl,
+                });
+              } catch (error) {
+                console.error(
+                  `Lỗi khi gửi video ${videoName} cho nhóm ${targetGroupId}:`,
+                  error?.message || error
+                );
+              }
+            }
+          }
+        }
+
+        if (
+          isImageActive &&
+          tempPrObject.hinhAnh.length > 0 &&
+          (tempPrObject.hinhAnh.length > 1 || (isVideoActive && tempPrObject.video.length > 0))
+        ) {
+          const imagePaths = tempPrObject.hinhAnh
+            .map((imageName) => resolveExistingPrMediaFile(imagePrDir, legacyImagePrDir, imageName))
+            .filter(Boolean);
+          if (imagePaths.length > 0 && typeof api.zSendLocalImages === "function") {
+            await api.zSendLocalImages(
+              imagePaths,
+              targetGroupId,
+              MessageType.GroupMessage,
+              800,
+              600,
+              { text: "" },
+              ttl
+            );
+          }
+        }
+
+        if (isCardActive && idZalo && idZalo !== "-1") {
+          try {
+            await api.sendBusinessCard(
+              null,
+              idZalo,
+              CAPTION_CARD,
+              MessageType.GroupMessage,
+              targetGroupId,
+              ttl
+            );
+          } catch (error) {
+            console.error(
+              `Lỗi khi gửi business card cho nhóm ${targetGroupId}:`,
+              error?.message || error
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Lỗi khi gửi PR cho nhóm ${targetGroupId}:`, error?.message || error);
       }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     const defaultPrObject = {
       ...prObject,
-      link: defaultLinks
+      link: defaultLinks,
     };
 
     for (const friendId in selectedFriends) {
-      if (selectedFriends[friendId]) {
-        try {
-          if (isContentActive && defaultPrObject.noiDung && (!isVideoActive || defaultPrObject.video.length === 0)) {
-            if (isImageActive && defaultPrObject.hinhAnh.length === 1) {
-              const link = defaultPrObject.link[defaultPrObject.hinhAnh[0]];
-              if (link) {
-                await api.sendImage(
-                  link,
-                  {
-                    type: MessageType.DirectMessage,
-                    threadId: friendId,
-                  },
-                  defaultPrObject.noiDung,
-                  ttl
-                );
-              } else {
-                console.error(`Không tìm thấy link cho ảnh ${defaultPrObject.hinhAnh[0]}`);
-                await api.sendMessage(
-                  {
-                    msg: defaultPrObject.noiDung,
-                    ttl: ttl,
-                  },
-                  friendId,
-                  MessageType.DirectMessage
-                );
-              }
+      if (!selectedFriends[friendId]) continue;
+      try {
+        if (
+          isContentActive &&
+          defaultPrObject.noiDung &&
+          (!isVideoActive || defaultPrObject.video.length === 0)
+        ) {
+          if (isImageActive && defaultPrObject.hinhAnh.length === 1) {
+            const link = defaultPrObject.link[defaultPrObject.hinhAnh[0]];
+            if (link) {
+              await api.sendImage(
+                link,
+                {
+                  type: MessageType.DirectMessage,
+                  threadId: friendId,
+                },
+                defaultPrObject.noiDung,
+                ttl
+              );
             } else {
               await api.sendMessage(
-                {
-                  msg: defaultPrObject.noiDung,
-                  ttl: ttl,
-                },
+                { msg: defaultPrObject.noiDung, ttl },
                 friendId,
                 MessageType.DirectMessage
               );
             }
+          } else {
+            await api.sendMessage(
+              { msg: defaultPrObject.noiDung, ttl },
+              friendId,
+              MessageType.DirectMessage
+            );
           }
-          if (isVideoActive && defaultPrObject.video.length > 0) {
-            for (const videoName of defaultPrObject.video) {
-              const videoUrl = defaultPrObject.link[videoName];
-              if (videoUrl) {
-                try {
-                  await api.sendVideo({
-                    videoUrl,
-                    threadId: friendId,
-                    threadType: MessageType.DirectMessage,
-                    message: {
-                      text: isContentActive ? defaultPrObject.noiDung : "",
-                    },
-                    ttl: ttl,
-                  });
-                } catch (error) {
-                  console.error(`Lỗi khi gửi video ${videoName} cho bạn ${friendId}:`, error);
-                }
+        }
+
+        if (isVideoActive && defaultPrObject.video.length > 0) {
+          for (const videoName of defaultPrObject.video) {
+            const videoUrl = defaultPrObject.link[videoName];
+            if (videoUrl) {
+              try {
+                await api.sendVideo({
+                  videoUrl,
+                  threadId: friendId,
+                  threadType: MessageType.DirectMessage,
+                  videoAlreadyUploaded: true,
+                  message: {
+                    text: isContentActive ? defaultPrObject.noiDung : "",
+                  },
+                  ttl,
+                });
+              } catch (error) {
+                console.error(
+                  `Lỗi khi gửi video ${videoName} cho bạn ${friendId}:`,
+                  error?.message || error
+                );
               }
             }
           }
-
-          if (isImageActive && defaultPrObject.hinhAnh.length > 0 && (defaultPrObject.hinhAnh.length > 1 || (isVideoActive && defaultPrObject.video.length > 0))) {
-            const imagePaths = defaultPrObject.hinhAnh
-              .map(imageName => resolveSafePrAttachmentPath(IMAGE_PR_PATH, imageName))
-              .filter(imagePath => imagePath && fs.existsSync(imagePath));
-            if (imagePaths.length > 0) {
-              await api.zSendLocalImages(
-                imagePaths,
-                friendId,
-                MessageType.DirectMessage,
-                800,
-                600,
-                { text: "" },
-                ttl
-              );
-            } else {
-              console.error(`Không tìm thấy file ảnh nào trong danh sách ${defaultPrObject.hinhAnh.join(", ")}`);
-            }
-          }
-
-          if (isCardActive && idZalo !== "-1") {
-            try {
-              await api.sendBusinessCard(null, idZalo, CAPTION_CARD, MessageType.DirectMessage, friendId, ttl);
-            } catch (error) {
-              console.error(`Lỗi khi gửi business card cho bạn ${friendId}:`, error);
-            }
-          }
-        } catch (error) {
-          console.error(`Lỗi khi gửi PR cho bạn ${friendId}:`, error);
         }
+
+        if (
+          isImageActive &&
+          defaultPrObject.hinhAnh.length > 0 &&
+          (defaultPrObject.hinhAnh.length > 1 || (isVideoActive && defaultPrObject.video.length > 0))
+        ) {
+          const imagePaths = defaultPrObject.hinhAnh
+            .map((imageName) => resolveExistingPrMediaFile(imagePrDir, legacyImagePrDir, imageName))
+            .filter(Boolean);
+          if (imagePaths.length > 0 && typeof api.zSendLocalImages === "function") {
+            await api.zSendLocalImages(
+              imagePaths,
+              friendId,
+              MessageType.DirectMessage,
+              800,
+              600,
+              { text: "" },
+              ttl
+            );
+          }
+        }
+
+        if (isCardActive && idZalo && idZalo !== "-1") {
+          try {
+            await api.sendBusinessCard(
+              null,
+              idZalo,
+              CAPTION_CARD,
+              MessageType.DirectMessage,
+              friendId,
+              ttl
+            );
+          } catch (error) {
+            console.error(
+              `Lỗi khi gửi business card cho bạn ${friendId}:`,
+              error?.message || error
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Lỗi khi gửi PR cho bạn ${friendId}:`, error?.message || error);
       }
     }
-
-    console.log(`Đã gửi PR thành công cho ${prObject.ten}`);
   } catch (error) {
-    console.error(`Lỗi khi gửi PR cho ${prObject.ten}:`, error);
+    console.error(`Lỗi khi gửi PR cho ${prObject.ten}:`, error?.message || error);
   }
 }
 
 async function schedulePR(api) {
-  if (activePrScheduleJob) {
+  const botKey = String(api?.getBotId?.() || api?.getOwnId?.() || getBotId() || "admin");
+  const prevJob = activePrJobsByBot.get(botKey);
+  if (prevJob) {
     try {
-      activePrScheduleJob.cancel();
+      prevJob.cancel();
     } catch {
-      // ignore cancellation error on stale job
+      // ignore stale job cancel error
     }
-    activePrScheduleJob = null;
+    activePrJobsByBot.delete(botKey);
   }
-  activePrScheduleJob = schedule.scheduleJob("0 * * * * *", async function () {
-    const config = await readWebConfig();
-    const currentTime = new Date();
-    const currentHourMinute = `${currentTime.getHours().toString().padStart(2, "0")}:${currentTime
-      .getMinutes()
-      .toString()
-      .padStart(2, "0")}`;
 
-    const ttl = 3600000;
-    const prObjects = normalizePrObjects(config?.prObjects);
+  const job = schedule.scheduleJob("0 * * * * *", async function () {
+    if (runningPrLocksByBot.has(botKey)) {
+      return;
+    }
+    runningPrLocksByBot.add(botKey);
 
-    for (const prObject of prObjects) {
-      const prKey = `${prObject.ten}_${currentHourMinute}`;
-      if (sentPRs.has(prKey) && Date.now() - sentPRs.get(prKey) < 60000) {
-        console.log(`Bỏ qua PR ${prObject.ten} tại ${currentHourMinute} vì đã gửi`);
-        continue;
-      }
+    try {
+      const rawConfig = await readWebConfig();
+      const config = normalizeWebPrConfig(rawConfig);
+      const currentHourMinute = getVietnamHourMinute();
+      const ttl = 3600000;
+      const prObjects = normalizePrObjects(config?.prObjects);
 
-      if (prObject.thoiGianGui.includes(currentHourMinute)) {
-        await sendPRMessage(api, config, prObject, ttl);
-        sentPRs.set(prKey, Date.now());
-      }
+      for (const prObject of prObjects) {
+        const prKey = `${botKey}:${prObject.ten}_${currentHourMinute}`;
+        if (sentPRs.has(prKey) && Date.now() - sentPRs.get(prKey) < 60000) {
+          continue;
+        }
 
-      for (const groupId in config.selectedGroups) {
-        if (config.selectedGroups[groupId] && prObject.customContent[groupId]?.periodicTime) {
-          const periodicTime = prObject.customContent[groupId].periodicTime;
-          const intervalMs = parsePeriodicTime(periodicTime);
-          if (intervalMs > 0) {
-            const lastSent = prObject.customContent[groupId].lastSent || 0;
-            const now = Date.now();
-            if (now - lastSent >= intervalMs) {
-              await sendPRMessage(api, config, prObject, ttl, groupId);
-              prObject.customContent[groupId].lastSent = now;
-              await writeWebConfig(config);
+        if (prObject.thoiGianGui.includes(currentHourMinute)) {
+          await sendPRMessage(api, config, prObject, ttl);
+          sentPRs.set(prKey, Date.now());
+        }
+
+        for (const groupId in config.selectedGroups) {
+          if (config.selectedGroups[groupId] && prObject.customContent[groupId]?.periodicTime) {
+            const periodicTime = prObject.customContent[groupId].periodicTime;
+            const intervalMs = parsePeriodicTime(periodicTime);
+            if (intervalMs > 0) {
+              const lastSent = prObject.customContent[groupId].lastSent || 0;
+              const now = Date.now();
+              if (now - lastSent >= intervalMs) {
+                await sendPRMessage(api, config, prObject, ttl, groupId);
+                prObject.customContent[groupId].lastSent = now;
+                await writeWebConfig(config);
+              }
             }
           }
         }
       }
-    }
 
-    const now = Date.now();
-    for (const [key, timestamp] of sentPRs) {
-      if (now - timestamp > 60000) {
-        sentPRs.delete(key);
+      const now = Date.now();
+      for (const [key, timestamp] of sentPRs) {
+        if (now - timestamp > 60000) {
+          sentPRs.delete(key);
+        }
       }
+    } finally {
+      runningPrLocksByBot.delete(botKey);
     }
   });
+
+  activePrJobsByBot.set(botKey, job);
 }
 
 export async function initPRService(api) {
@@ -463,11 +537,11 @@ export async function initPRService(api) {
           isContentActive: true,
           isImageActive: true,
           isVideoActive: true,
-          isCardActive: true
-        }
+          isCardActive: true,
+        },
       ],
       selectedGroups: {},
-      selectedFriends: {}
+      selectedFriends: {},
     };
     await writeWebConfig(config);
     console.log(chalk.yellow("Đã khởi tạo webConfig.json với cấu hình mặc định"));

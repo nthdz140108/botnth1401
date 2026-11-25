@@ -1,9 +1,8 @@
-// ✅ Import thêm 'existsSync' để kiểm tra file/folder tồn tại
-import { readdirSync, statSync, existsSync } from "fs";
-import { join, resolve, dirname, sep } from "path";
+import fsPromises from "fs/promises";
+import { existsSync, realpathSync } from "fs";
+import { join, resolve, dirname, relative, sep } from "path";
 import { fileURLToPath } from "url";
 
-// Import các hàm gốc
 import { getGlobalPrefix } from "../service.js";
 import {
   sendMessageStateQuote,
@@ -11,16 +10,35 @@ import {
 } from "../chat-zalo/chat-style/chat-style.js";
 import { nameServer } from "../../utils/server-config.js";
 
-// Luôn bám theo workspace hiện tại để command chạy độc lập trong HHH.
 const PROJECT_ROOT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+const SKIPPED_FIND_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".runtime",
+  "logs",
+  "video",
+  "instances",
+  "credentials",
+  "dashboard-backups",
+]);
 
 export function isSensitiveShowcodeSegment(segment) {
   const value = String(segment ?? "").trim();
   if (!value) return false;
-  return /^\.env($|\.)/i.test(value) || /^\.env/i.test(value) || /credentials/i.test(value);
+  return (
+    /^\.env($|\.)/i.test(value) ||
+    /^\.env/i.test(value) ||
+    /cookie/i.test(value) ||
+    /^config\.json$/i.test(value) ||
+    /^instances$/i.test(value) ||
+    /credentials/i.test(value) ||
+    /^dashboard-backups$/i.test(value) ||
+    /^vps-deploy\.local\.json$/i.test(value) ||
+    /^list_admin/i.test(value)
+  );
 }
 
-// ✅ Giữ nguyên hàm này
 const getCleanNameServer = () => {
   const lines = nameServer
     .split("\n")
@@ -35,7 +53,6 @@ const getCleanNameServer = () => {
   return [tagLine, boldLine].filter(Boolean).join(" ");
 };
 
-// ✅ Tên lệnh
 export const des = {
   name: "showcode",
   type: 1,
@@ -44,15 +61,42 @@ export const des = {
   active: true,
 };
 
-// --- ✅ HÀM TÌM KIẾM ĐỆ QUY ---
-// Hàm này sẽ tự gọi chính nó để đi sâu vào các thư mục con
-function findFilesRecursive(dir, filename, results, rootPath) {
-  // Kiểm tra xem thư mục có tồn tại không
+function isRealPathInsideRoot(candidatePath, realRoot) {
+  try {
+    const realCandidate = realpathSync(candidatePath);
+    if (realCandidate !== realRoot && !realCandidate.startsWith(realRoot + sep)) {
+      return { inside: false, realPath: realCandidate };
+    }
+    const relSegments = relative(realRoot, realCandidate).split(/\/|\\/).filter(Boolean);
+    if (relSegments.some((seg) => isSensitiveShowcodeSegment(seg))) {
+      return { inside: false, reason: "sensitive", realPath: realCandidate };
+    }
+    return { inside: true, realPath: realCandidate };
+  } catch {
+    return { inside: false, realPath: null };
+  }
+}
+
+async function findFilesRecursive(dir, filename, results, realRoot, visitedDirs = new Set()) {
   if (!existsSync(dir)) {
     return;
   }
 
-  const items = readdirSync(dir, { withFileTypes: true });
+  const containment = isRealPathInsideRoot(dir, realRoot);
+  if (!containment.inside || !containment.realPath) {
+    return;
+  }
+  if (visitedDirs.has(containment.realPath)) {
+    return;
+  }
+  visitedDirs.add(containment.realPath);
+
+  let items;
+  try {
+    items = await fsPromises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
 
   for (const item of items) {
     if (isSensitiveShowcodeSegment(item.name)) {
@@ -60,18 +104,28 @@ function findFilesRecursive(dir, filename, results, rootPath) {
     }
     const fullPath = join(dir, item.name);
 
-    if (item.isDirectory()) {
-      // ⚠️ Bỏ qua các thư mục nặng/không cần thiết
-      if (item.name === "node_modules" || item.name.startsWith(".")) {
+    if (item.isSymbolicLink()) {
+      const linkCheck = isRealPathInsideRoot(fullPath, realRoot);
+      if (!linkCheck.inside) {
         continue;
       }
-      // Đệ quy: Gọi lại hàm này cho thư mục con
-      findFilesRecursive(fullPath, filename, results, rootPath);
+    }
+
+    if (item.isDirectory()) {
+      if (item.name.startsWith(".") || SKIPPED_FIND_DIRS.has(item.name)) {
+        continue;
+      }
+      if (item.name === "target" && fullPath.endsWith(join("rust", "target"))) {
+        continue;
+      }
+      await findFilesRecursive(fullPath, filename, results, realRoot, visitedDirs);
     } else if (item.isFile()) {
-      // Nếu tên file khớp, thêm vào danh sách kết quả
       if (item.name === filename) {
-        // Chỉ lưu đường dẫn tương đối theo workspace hiện tại.
-        results.push(fullPath.replace(rootPath, "HHH"));
+        const fileCheck = isRealPathInsideRoot(fullPath, realRoot);
+        if (fileCheck.inside) {
+          const rel = relative(realRoot, fileCheck.realPath);
+          results.push(rel ? join("HHH", rel) : "HHH");
+        }
       }
     }
   }
@@ -79,43 +133,75 @@ function findFilesRecursive(dir, filename, results, rootPath) {
 
 export function resolveSafeShowcodeTarget(argString, rootDir = PROJECT_ROOT_PATH) {
   const resolvedRoot = resolve(rootDir);
+  const realRoot = existsSync(resolvedRoot) ? realpathSync(resolvedRoot) : resolvedRoot;
   const pathArgs = String(argString ?? "").split(/\/|\\/).filter(Boolean);
   if (pathArgs.some((seg) => isSensitiveShowcodeSegment(seg))) {
-    return { ok: false, reason: "sensitive", targetPath: null, resolvedRoot };
+    return { ok: false, reason: "sensitive", targetPath: null, resolvedRoot: realRoot };
   }
-  const targetPath = pathArgs.length > 0 ? resolve(resolvedRoot, ...pathArgs) : resolvedRoot;
-  if (targetPath !== resolvedRoot && !targetPath.startsWith(resolvedRoot + sep)) {
-    return { ok: false, reason: "traversal", targetPath, resolvedRoot };
+  const targetPath = pathArgs.length > 0 ? resolve(realRoot, ...pathArgs) : realRoot;
+  if (targetPath !== realRoot && !targetPath.startsWith(realRoot + sep)) {
+    return { ok: false, reason: "traversal", targetPath, resolvedRoot: realRoot };
   }
-  return { ok: true, reason: null, targetPath, resolvedRoot };
+
+  // Verify realpath containment against symlink escapes on existing path or nearest existing parent
+  let probePath = targetPath;
+  while (probePath && !existsSync(probePath)) {
+    const parent = dirname(probePath);
+    if (parent === probePath) break;
+    probePath = parent;
+  }
+  if (probePath && existsSync(probePath)) {
+    const realProbe = realpathSync(probePath);
+    if (realProbe !== realRoot && !realProbe.startsWith(realRoot + sep)) {
+      return { ok: false, reason: "traversal", targetPath: realProbe, resolvedRoot: realRoot };
+    }
+    const relSegments = relative(realRoot, realProbe).split(/\/|\\/).filter(Boolean);
+    if (relSegments.some((seg) => isSensitiveShowcodeSegment(seg))) {
+      return { ok: false, reason: "sensitive", targetPath: null, resolvedRoot: realRoot };
+    }
+    if (probePath === targetPath) {
+      return { ok: true, reason: null, targetPath: realProbe, resolvedRoot: realRoot };
+    }
+  }
+
+  return { ok: true, reason: null, targetPath, resolvedRoot: realRoot };
 }
 
-// ✅ Hàm xử lý chính
 export async function handleshowcodeCommand(api, message) {
-  const content = message.data.content.trim();
+  const content = String(message?.data?.content ?? "").trim();
   const currentPrefix = getGlobalPrefix();
+  const lowerContent = content.toLowerCase();
+  const lowerPrefix = currentPrefix.toLowerCase();
 
   let commandName = "";
-  if (content.startsWith(`${currentPrefix}showcode`)) {
+  if (lowerContent.startsWith(`${lowerPrefix}showcode`)) {
     commandName = "showcode";
-  } else if (content.startsWith(`${currentPrefix}shocode`)) {
+  } else if (lowerContent.startsWith(`${lowerPrefix}shocode`)) {
     commandName = "shocode";
   } else {
     return false;
   }
 
-  // ✅ Lấy toàn bộ nội dung sau tên lệnh
   const argString = content
     .slice(currentPrefix.length + commandName.length)
     .trim();
-  const resolvedRoot = resolve(PROJECT_ROOT_PATH); // Chuẩn hóa đường dẫn gốc
+  const resolvedRoot = existsSync(PROJECT_ROOT_PATH)
+    ? realpathSync(resolve(PROJECT_ROOT_PATH))
+    : resolve(PROJECT_ROOT_PATH);
 
   try {
-    // --- LOGIC MỚI: TÌM KIẾM FILE (FIND) ---
-    if (argString.startsWith("find ")) {
-      const filenameToFind = argString.slice(5).trim(); // Lấy tên file sau chữ 'find '
+    if (/^find(?:\s+|$)/i.test(argString)) {
+      const filenameToFind = argString.replace(/^find\s*/i, "").trim();
 
-      // Báo lỗi nếu người dùng nhập cả đường dẫn vào 'find'
+      if (!filenameToFind) {
+        return sendMessageFailed(
+          api,
+          message,
+          `${getCleanNameServer()}❌ Lỗi: Vui lòng nhập tên tệp cần tìm (ví dụ: ${currentPrefix}${commandName} find index.js).`,
+          true,
+        );
+      }
+
       if (filenameToFind.includes("/") || filenameToFind.includes("\\")) {
         return sendMessageFailed(
           api,
@@ -134,22 +220,17 @@ export async function handleshowcodeCommand(api, message) {
         );
       }
 
-      const searchResults = []; // Mảng chứa kết quả
-      console.log(`[ShowCode] Bắt đầu tìm kiếm file: ${filenameToFind}`);
-
-      // Bắt đầu tìm kiếm đệ quy từ thư mục gốc
-      findFilesRecursive(
+      const searchResults = [];
+      await findFilesRecursive(
         resolvedRoot,
         filenameToFind,
         searchResults,
         resolvedRoot,
       );
 
-      console.log(`[ShowCode] Tìm thấy ${searchResults.length} kết quả.`);
-
       let msg = `🔎 Kết quả tìm kiếm cho file: "${filenameToFind}"\n\n`;
       if (searchResults.length > 0) {
-        msg += searchResults.map((path) => `  - ${path}`).join("\n");
+        msg += searchResults.map((p) => `  - ${p}`).join("\n");
       } else {
         msg += "  (Không tìm thấy file nào)";
       }
@@ -164,11 +245,11 @@ export async function handleshowcodeCommand(api, message) {
       );
     }
 
-    // --- LOGIC CŨ: LIỆT KÊ THƯ MỤC (LISTING) ---
     const targetCheck = resolveSafeShowcodeTarget(argString, resolvedRoot);
     if (!targetCheck.ok) {
+      const callerUid = message?.data?.uidFrom || message?.senderId || "unknown";
       console.warn(
-        `[SECURITY] Phát hiện truy cập trái phép (${targetCheck.reason}): User ${message.senderId} | Input: ${argString}`,
+        `[SECURITY] Phát hiện truy cập trái phép (${targetCheck.reason}): User ${callerUid} | Input: ${argString}`,
       );
       return sendMessageFailed(
         api,
@@ -179,21 +260,25 @@ export async function handleshowcodeCommand(api, message) {
     }
     const { targetPath } = targetCheck;
 
-    // Bắt đầu logic liệt kê
-    const pathStats = statSync(targetPath);
-    const relativePath = targetPath.replace(resolvedRoot, "HHH");
+    const pathStats = await fsPromises.stat(targetPath);
+    const rel = relative(resolvedRoot, targetPath);
+    const relativePath = rel ? join("HHH", rel) : "HHH";
 
     if (pathStats.isDirectory()) {
-      const items = readdirSync(targetPath);
+      const items = await fsPromises.readdir(targetPath, { withFileTypes: true });
       const folders = [];
       const files = [];
 
-      for (const item of items) {
+      for (const entry of items) {
+        const item = entry.name;
         if (item.startsWith(".") || isSensitiveShowcodeSegment(item)) continue;
 
         const fullItemPath = join(targetPath, item);
+        const itemContainment = isRealPathInsideRoot(fullItemPath, resolvedRoot);
+        if (!itemContainment.inside) continue;
+
         try {
-          const stats = statSync(fullItemPath);
+          const stats = await fsPromises.stat(fullItemPath);
           if (stats.isDirectory()) {
             folders.push(item);
           } else if (stats.isFile()) {
@@ -227,7 +312,6 @@ export async function handleshowcodeCommand(api, message) {
         false,
       );
     } else {
-      // Người dùng gõ đường dẫn đến 1 file (theo logic cũ)
       return sendMessageFailed(
         api,
         message,
@@ -236,7 +320,6 @@ export async function handleshowcodeCommand(api, message) {
       );
     }
   } catch (e) {
-    // Xử lý lỗi chung
     console.error("Lỗi khi đọc project:", e);
     let errorMsg = `❌ Lỗi khi đọc: ${e.message}`;
 

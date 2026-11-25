@@ -241,11 +241,53 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     return { code: "HANDLED", reason: "request_already_pending" };
   }
 
+  // Parse optional [số_ngày] (7..30 days; default 7 when invoked via chat command, 30 when programmatic)
+  let rawDaysArg = null;
+  if (Array.isArray(ctx.args) && ctx.args.length > 0 && String(ctx.args[0] ?? "").trim() !== "") {
+    rawDaysArg = String(ctx.args[0]).trim();
+  } else if (typeof msg?.data?.content === "string" && msg.data.content.trim()) {
+    const tokens = msg.data.content.trim().split(/\s+/);
+    if (tokens.length > 1) {
+      rawDaysArg = tokens[1].trim();
+    }
+  }
+
+  let requiredDays = 30;
+  if (ctx.requiredDays !== undefined || ctx.days !== undefined) {
+    const explicit = Number(ctx.requiredDays ?? ctx.days);
+    if (!Number.isInteger(explicit) || explicit < 7 || explicit > 30) {
+      if (api && typeof api.sendMessage === "function") {
+        await api.sendMessage(
+          { msg: "⚠️ Số ngày lọc không hợp lệ! Vui lòng nhập số nguyên từ 7 đến 30 ngày (ví dụ: !locmem 7 hoặc !locmem 30)." },
+          threadId,
+          MessageType.GroupMessage
+        );
+      }
+      return { code: "HANDLED", reason: "invalid_days" };
+    }
+    requiredDays = explicit;
+  } else if (rawDaysArg !== null) {
+    const parsedDays = Number(rawDaysArg);
+    if (!Number.isInteger(parsedDays) || parsedDays < 7 || parsedDays > 30) {
+      if (api && typeof api.sendMessage === "function") {
+        await api.sendMessage(
+          { msg: "⚠️ Số ngày lọc không hợp lệ! Vui lòng nhập số nguyên từ 7 đến 30 ngày (ví dụ: !locmem 7 hoặc !locmem 30)." },
+          threadId,
+          MessageType.GroupMessage
+        );
+      }
+      return { code: "HANDLED", reason: "invalid_days" };
+    }
+    requiredDays = parsedDays;
+  } else if (typeof msg?.data?.content === "string" && msg.data.content.trim()) {
+    requiredDays = 7;
+  }
+
   // 4. Immediate ACK for background scanning
   if (api && typeof api.sendMessage === "function") {
     await api.sendMessage(
       {
-        msg: "🔍 Đang bắt đầu quét thành viên không tương tác (30 ngày)... Vui lòng đợi trong giây lát!",
+        msg: `🔍 Đang bắt đầu quét thành viên không tương tác (${requiredDays} ngày)... Vui lòng đợi trong giây lát!`,
       },
       threadId,
       MessageType.GroupMessage
@@ -306,10 +348,10 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     return { code: "HANDLED", reason: "bot_not_admin" };
   }
 
-  // 6. Query exact 30 calendar days immediately preceding today in Asia/Ho_Chi_Minh
+  // 6. Query exact requiredDays calendar days immediately preceding today in Asia/Ho_Chi_Minh
   const store = ctx.storeOverride || ctx.store || getLocmemStore(botUid);
   const todayKey = ctx.todayKey || getVietnamDateKey();
-  const window = store.getQualifiedWindow(threadId, todayKey);
+  const window = store.getQualifiedWindow(threadId, todayKey, requiredDays);
 
   if (!window.qualified) {
     if (api && typeof api.sendMessage === "function") {
@@ -318,8 +360,8 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
           msg:
             `⚠️ Chưa đủ dữ liệu để lọc thành viên an toàn!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `• Yêu cầu: Đủ dữ liệu 30 ngày lịch liền trước hôm nay (chốt 00:00 giờ Việt Nam).\n` +
-            `• Hiện có: ${window.completeDays.length}/30 ngày hoàn chỉnh.\n` +
+            `• Yêu cầu: Đủ dữ liệu ${requiredDays} ngày lịch liền trước hôm nay (chốt 00:00 giờ Việt Nam).\n` +
+            `• Hiện có: ${window.completeDays.length}/${requiredDays} ngày hoàn chỉnh.\n` +
             window.missingDays.map(day => `• ${day}: ${store.getDailyCoverage(threadId, day)?.status_code || "missing_record"}`).join("\n") + "\n\n" +
             `💡 Nguyên tắc an toàn dữ liệu: Khởi động lại giữa ngày vẫn được tính; mỗi ngày cần có snapshot và dữ liệu tương tác đã lưu hợp lệ.`,
         },
@@ -374,11 +416,11 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     }
   }
 
-  // 8. Query inactive candidates from SQLite
+  // 8. Query inactive candidates from store
   const candidateUids = store.getInactiveCandidates({
     groupId: threadId,
     completeDays,
-    requiredDays: 30,
+    requiredDays,
     todayDateKey: todayKey,
     excludeMemberIds: Array.from(excludeSet),
   });
@@ -393,7 +435,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
           msg:
             `✅ Không có thành viên nào không tương tác đủ điều kiện lọc!\n` +
             `━━━━━━━━━━━━━━━━━━━━\n` +
-            `• Kỳ thống kê: 30 ngày hoàn chỉnh (${completeDays[completeDays.length - 1]} ➜ ${completeDays[0]})\n` +
+            `• Kỳ thống kê: ${requiredDays} ngày hoàn chỉnh (${completeDays[completeDays.length - 1]} ➜ ${completeDays[0]})\n` +
             `• Kiểm tra hôm nay (${todayKey}): Hoàn tất\n` +
             `• Mọi thành viên đều có tương tác hoặc thuộc danh sách bảo vệ (chủ nhóm, phó nhóm, admin, bot, thành viên mới).`,
         },
@@ -451,9 +493,9 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
   const confirmText =
     `⚠️ XÁC NHẬN LỌC THÀNH VIÊN\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `• Nhóm: ${groupInfo?.name || "Nhóm"}\n` +
+    `• Nhóm: ${groupName || groupInfo?.name || "Nhóm"}\n` +
     `• Số lượng lọc: ${eligibleCandidates.length} thành viên\n` +
-    `• Khoảng ngày: 30 ngày hoàn chỉnh (${dateRangeStr})\n` +
+    `• Khoảng ngày: ${requiredDays} ngày hoàn chỉnh (${dateRangeStr})\n` +
     `• Thời hạn xác nhận: 120 giây\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
     `👉 Bất kỳ Quản trị viên cấp cao (adminLevelHigh) nào hãy thả reaction TIM (❤️) vào tin nhắn này trong 120 giây để kích hoạt lọc!`;
@@ -478,7 +520,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     threadId,
     serverMsgId: String(serverMsgId),
     candidates: eligibleCandidates,
-    dateRange: { start: completeDays[completeDays.length - 1], end: completeDays[0], days: completeDays },
+    dateRange: { start: completeDays[completeDays.length - 1], end: completeDays[0], days: completeDays, requiredDays },
     expiresMs: 120000,
     botUid,
   });
@@ -489,7 +531,7 @@ async function runLocmemCommand(apiOrOptions, message, context = {}) {
     candidates: eligibleCandidates,
     serverMsgId: String(serverMsgId),
     completeDays,
-    requiredDays: 30,
+    requiredDays,
   };
 }
 
@@ -672,19 +714,24 @@ export async function handleLocmemReaction(api, reaction, context = {}) {
     const store = context.storeOverride || context.store || getLocmemStore(botUid);
     const todayKey = context.todayKey || getVietnamDateKey();
     const completeDays = request.dateRange?.days || request.dateRange?.qualifiedDays || [];
+    const requiredDays =
+      Number(request.dateRange?.requiredDays) ||
+      (Array.isArray(completeDays) && completeDays.length >= 7 && completeDays.length <= 30
+        ? completeDays.length
+        : 30);
 
-    const currentWindow = store.getQualifiedWindow(threadId, todayKey);
-    if (!currentWindow.qualified || completeDays.length !== 30 ||
+    const currentWindow = store.getQualifiedWindow(threadId, todayKey, requiredDays);
+    if (!currentWindow.qualified || completeDays.length !== requiredDays ||
         !currentWindow.days.every(day => completeDays.includes(day))) {
-      await api.sendMessage({ msg: '⚠️ Cửa sổ 30 ngày đã thay đổi hoặc chưa đủ dữ liệu. Hãy chạy lại !locmem.' }, threadId, MessageType.GroupMessage);
+      await api.sendMessage({ msg: `⚠️ Cửa sổ ${requiredDays} ngày đã thay đổi hoặc chưa đủ dữ liệu. Hãy chạy lại !locmem.` }, threadId, MessageType.GroupMessage);
       return false;
     }
     let recheckedSet = null;
-    if (Array.isArray(completeDays) && completeDays.length >= 30) {
+    if (Array.isArray(completeDays) && completeDays.length >= requiredDays) {
       const recheckedCandidates = store.getInactiveCandidates({
         groupId: threadId,
         completeDays,
-    requiredDays: 30,
+        requiredDays,
         todayDateKey: todayKey,
         excludeMemberIds: [],
       });

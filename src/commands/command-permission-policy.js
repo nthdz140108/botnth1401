@@ -39,7 +39,7 @@ export const COMMAND_PERMISSION_POLICY = Object.freeze({
   "create-image": HIGH("global", "high"),
   "google-search-ai": MEMBER(),
   vdsexy: MEMBER(),
-  vdsex: MEMBER(),
+  vdsex: HIGH("global", "high"),
   vdcos: MEMBER(),
   vdanime: MEMBER(),
   vdboy: MEMBER(),
@@ -252,7 +252,7 @@ export const COMMAND_PERMISSION_POLICY = Object.freeze({
   cmdadd: HIGH("global", "sensitive"),
   "sticker ai": HIGH("global", "high"),
   locmem: HIGH("group", "critical"),
-  getuser: MEMBER("group", "sensitive"),
+  getuser: BOX("group", "sensitive"),
 });
 
 const ADMIN_TIER_ACTIONS = Object.freeze({
@@ -272,6 +272,7 @@ const GROUP_CREATE_ACTIONS = new Set([
 ]);
 
 const NAME_ACCOUNT_ACTIONS = new Set([
+  "name",
   "rename",
   "myaccount",
   "myacc",
@@ -328,12 +329,20 @@ export function resolveActionPolicy(canonicalName, { alias = "", args = [], scop
       }
       return null;
     case "name":
+      if (firstToken(alias) === "setavatarbox") {
+        return Object.freeze({ requiredRole: "adminBox", effectScope: "group", risk: "sensitive" });
+      }
       if (matchesAnyToken(candidates, (token) => NAME_ACCOUNT_ACTIONS.has(token))) {
         return Object.freeze({ requiredRole: "adminLevelHigh", effectScope: "user", risk: "high" });
       }
       return null;
+    case "command":
+      if (firstToken(args?.[0]) === "load") {
+        return Object.freeze({ requiredRole: "adminLevelHigh", effectScope: "global", risk: "sensitive" });
+      }
+      return null;
     case "mybot":
-      if (matchesAnyToken(candidates.slice(1), (token) => MYBOT_ADMIN_ACTIONS.has(token))) {
+      if (matchesAnyToken(candidates, (token) => MYBOT_ADMIN_ACTIONS.has(token))) {
         return Object.freeze({ requiredRole: "adminLevelHigh", effectScope: "global", risk: "high" });
       }
       return null;

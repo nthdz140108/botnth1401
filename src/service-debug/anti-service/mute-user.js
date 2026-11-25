@@ -11,14 +11,24 @@ function getGlobalPrefix() {
 
 // Thêm hằng số để định nghĩa giá trị vô thời hạn
 const PERMANENT_MUTE = -1;
+const MUTE_COMMAND_ALIASES = ["mute", "cam", "câm"];
+const UNMUTE_COMMAND_ALIASES = ["unmute", "sua", "sửa", "sủa"];
+
+function isDurationToken(token) {
+  if (!token) return false;
+  return /^(?:\d+(?:s|g|m|p|h|d)|\d{1,7})$/i.test(String(token).trim());
+}
 
 function parseTime(timeStr) {
-  if (!timeStr) return PERMANENT_MUTE;
+  if (!timeStr || !isDurationToken(timeStr)) return PERMANENT_MUTE;
+  const trimmed = String(timeStr).trim();
+  const match = /^(\d+)(s|g|m|p|h|d)?$/i.exec(trimmed);
+  if (!match) return PERMANENT_MUTE;
 
-  const value = parseInt(timeStr.slice(0, -1));
-  const unit = timeStr.slice(-1).toLowerCase();
+  const value = Number.parseInt(match[1], 10);
+  const unit = (match[2] || "s").toLowerCase();
 
-  if (isNaN(value)) return PERMANENT_MUTE;
+  if (Number.isNaN(value) || value <= 0) return PERMANENT_MUTE;
 
   switch (unit) {
     case "s": // giây
@@ -29,9 +39,33 @@ function parseTime(timeStr) {
       return value * 60;
     case "h": // giờ
       return value * 3600;
+    case "d": // ngày
+      return value * 86400;
     default:
-      return parseInt(timeStr);
+      return value;
   }
+}
+
+function stripSurfaceAliases(content, prefix, aliases = []) {
+  const normContent = String(content || "").normalize("NFC").trim();
+  const normPrefix = String(prefix || "!").normalize("NFC");
+  const sorted = [...new Set(aliases.filter(Boolean).map((a) => String(a).normalize("NFC")))].sort(
+    (a, b) => b.length - a.length
+  );
+  const lower = normContent.toLowerCase();
+  for (const alias of sorted) {
+    const token = `${normPrefix}${alias}`.toLowerCase();
+    if (lower === token) return "";
+    if (lower.startsWith(token) && /\s/.test(normContent[token.length] || "")) {
+      return normContent.slice(token.length).trim();
+    }
+  }
+  // Fallback if a custom alias was used without being listed
+  const parts = normContent.split(/\s+/);
+  if (parts[0]?.toLowerCase().startsWith(normPrefix.toLowerCase())) {
+    return parts.slice(1).join(" ").trim();
+  }
+  return normContent;
 }
 
 function isMuted(groupSettings, threadId, senderId) {
@@ -66,18 +100,18 @@ function isUnmuteCommand(message) {
   if (!message?.data || typeof message.data.content !== "string") return false;
   const prefix = (() => {
     try { return getGlobalPrefix(); } catch { return "!"; }
-  })();
-  const raw = message.data.content.trim().toLowerCase();
-  // Match the command surface itself, regardless of trailing mentions
-  // ("@user !unmute", "!unmute all", "  !unmute  ", etc.).
-  if (raw === `${prefix}unmute`) return true;
-  if (raw === `${prefix}unmute all`) return true;
-  // Allow extra tokens after the command (e.g. "@user !unmute").
-  if (raw.startsWith(`${prefix}unmute `)) return true;
-  if (raw.startsWith(`${prefix}unmute all `)) return true;
-  // Also accept the surface if a leading @mention precedes the command.
-  if (raw.includes(` ${prefix}unmute`)) return true;
-  if (raw.includes(` ${prefix}unmute all`)) return true;
+  })().normalize("NFC").toLowerCase();
+  const raw = message.data.content.normalize("NFC").trim().toLowerCase();
+
+  for (const alias of UNMUTE_COMMAND_ALIASES) {
+    const cmd = `${prefix}${alias.normalize("NFC").toLowerCase()}`;
+    if (raw === cmd || raw.startsWith(`${cmd} `)) return true;
+    const idx = raw.indexOf(` ${cmd}`);
+    if (idx !== -1) {
+      const after = raw[idx + 1 + cmd.length];
+      if (after === undefined || /\s/.test(after)) return true;
+    }
+  }
   return false;
 }
 
@@ -143,42 +177,56 @@ export async function handleMute(api, message, groupSettings, flags = {}) {
 
 export async function handleMuteList(api, message, groupSettings) {
   const threadId = message.threadId;
-  if (Object.keys(groupSettings[threadId].muteList).length === 0) {
+  const muteList = groupSettings?.[threadId]?.muteList;
+  if (!muteList || typeof muteList !== "object") {
+    await sendMessageWarning(api, message, "Hiện Không có người dùng nào bị cấm chat.");
+    return;
+  }
+
+  const currentTime = Math.floor(Date.now() / 1000);
+  for (const [id, muteInfo] of Object.entries(muteList)) {
+    if (!muteInfo || (muteInfo.timeMute !== PERMANENT_MUTE && muteInfo.timeMute <= currentTime)) {
+      delete muteList[id];
+    }
+  }
+
+  if (Object.keys(muteList).length === 0) {
     await sendMessageWarning(api, message, "Hiện Không có người dùng nào bị cấm chat.");
     return;
   }
 
   let muteListMessage = "Danh sách người dùng bị cấm chat:\n";
-  const currentTime = Math.floor(Date.now() / 1000);
 
-  if (groupSettings[threadId].muteList[-1]) {
-    const muteInfo = groupSettings[threadId].muteList[-1];
-    const timeStr = muteInfo.timeMute === PERMANENT_MUTE 
+  if (muteList[-1]) {
+    const muteInfo = muteList[-1];
+    const timeStr = muteInfo.timeMute === PERMANENT_MUTE
       ? "vô thời hạn"
       : `còn ${formatSeconds(muteInfo.timeMute - currentTime)}`;
     muteListMessage += `- Tất cả thành viên (${timeStr})\n`;
   }
 
-  const mutedUsers = Object.entries(groupSettings[threadId].muteList)
+  const mutedUsers = Object.entries(muteList)
     .filter(([id]) => id !== "-1")
     .map(([id, muteInfo], index) => {
       const timeStr = muteInfo.timeMute === PERMANENT_MUTE
         ? "vô thời hạn"
         : `còn ${formatSeconds(muteInfo.timeMute - currentTime)}`;
-      return `${index + 1}. ${muteInfo.name} (${timeStr})`;
+      return `${index + 1}. ${muteInfo.name || id} (${timeStr})`;
     });
 
   muteListMessage += mutedUsers.join("\n");
 
   await api.sendMessage(
-    { msg: muteListMessage, quote: message, ttl: 300000 }, 
-    threadId, 
+    { msg: muteListMessage, quote: message, ttl: 300000 },
+    threadId,
     MessageType.GroupMessage
   );
 }
 
 export async function addOrUpdateMute(api, message, userId, userName, duration, groupSettings) {
   const threadId = message.threadId;
+  if (!groupSettings[threadId]) groupSettings[threadId] = {};
+  if (!groupSettings[threadId].muteList) groupSettings[threadId].muteList = {};
   const currentTime = Math.floor(Date.now() / 1000);
   let isChangeSetting = false;
 
@@ -195,7 +243,7 @@ export async function addOrUpdateMute(api, message, userId, userName, duration, 
     const oldDuration =
       existingMute.timeMute === PERMANENT_MUTE
         ? "vô thời hạn"
-        : formatSeconds(existingMute.timeMute - currentTime);
+        : formatSeconds(Math.max(0, existingMute.timeMute - currentTime));
 
     existingMute.timeMute = duration === PERMANENT_MUTE ? PERMANENT_MUTE : currentTime + duration;
     const newDuration = duration === PERMANENT_MUTE ? "vô thời hạn" : `trong ${formatSeconds(duration)}`;
@@ -211,28 +259,36 @@ export async function addOrUpdateMute(api, message, userId, userName, duration, 
   return isChangeSetting;
 }
 
-export async function handleMuteUser(api, message, groupSettings, groupAdmins) {
+export async function handleMuteUser(api, message, groupSettings, groupAdmins, aliasCommand = "mute") {
   const threadId = message.threadId;
+  if (!groupSettings[threadId]) groupSettings[threadId] = {};
+  if (!groupSettings[threadId].muteList) groupSettings[threadId].muteList = {};
+
   const content = removeMention(message);
   const prefix = getGlobalPrefix();
-  const parts = content.split(" ");
+  const safeAlias = typeof aliasCommand === "string" && aliasCommand ? aliasCommand : "";
+  const body = stripSurfaceAliases(content, prefix, [...MUTE_COMMAND_ALIASES, safeAlias]);
+  const tokens = body.split(/\s+/).filter(Boolean);
+  const durationToken = tokens.find((tok) => isDurationToken(tok));
+  const duration = parseTime(durationToken);
 
   let isChangeSetting = false;
 
-  if (content.includes(`${prefix}mute all`)) {
-    let timeStr = parts[2];
-    const duration = parseTime(timeStr);
+  if (tokens.some((tok) => tok.toLowerCase() === "all")) {
     isChangeSetting = await addOrUpdateMute(api, message, -1, "All Users", duration, groupSettings);
     return isChangeSetting;
   }
-  const mentions = message.data.mentions;
-  if (mentions && mentions.length > 0) {
-    let timeStr = parts[1];
-    const duration = parseTime(timeStr);
 
+  const mentions = message.data?.mentions;
+  if (mentions && mentions.length > 0) {
     for (const mention of mentions) {
       const userId = mention.uid;
-      const userName = message.data.content.substr(mention.pos, mention.len).replace("@", "");
+      const rawContent = String(message.data?.content || "");
+      const extractedName =
+        typeof mention.pos === "number" && typeof mention.len === "number"
+          ? rawContent.substr(mention.pos, mention.len).replace(/^@/, "").trim()
+          : "";
+      const userName = extractedName || String(userId);
 
       const targetIsAdmin =
         isAdmin(userId, threadId, groupAdmins) ||
@@ -254,12 +310,19 @@ export async function handleMuteUser(api, message, groupSettings, groupAdmins) {
   return isChangeSetting;
 }
 
-export async function handleUnmuteUser(api, message, groupSettings) {
+export async function handleUnmuteUser(api, message, groupSettings, aliasCommand = "unmute") {
   let isChangeSetting = false;
   const content = removeMention(message);
   const threadId = message.threadId;
+  if (!groupSettings[threadId]) groupSettings[threadId] = {};
+  if (!groupSettings[threadId].muteList) groupSettings[threadId].muteList = {};
 
-  if (content.includes(`${getGlobalPrefix()}unmute all`)) {
+  const prefix = getGlobalPrefix();
+  const safeAlias = typeof aliasCommand === "string" && aliasCommand ? aliasCommand : "";
+  const body = stripSurfaceAliases(content, prefix, [...UNMUTE_COMMAND_ALIASES, safeAlias]);
+  const tokens = body.split(/\s+/).filter(Boolean);
+
+  if (tokens.some((tok) => tok.toLowerCase() === "all")) {
     if (groupSettings[threadId].muteList[-1]) {
       delete groupSettings[threadId].muteList[-1];
       isChangeSetting = true;
@@ -270,7 +333,7 @@ export async function handleUnmuteUser(api, message, groupSettings) {
     return isChangeSetting;
   }
 
-  const unmuteReferences = message.data.mentions;
+  const unmuteReferences = message.data?.mentions;
   if (unmuteReferences && unmuteReferences.length > 0) {
     for (const mention of unmuteReferences) {
       const userId = mention.uid;
@@ -280,11 +343,16 @@ export async function handleUnmuteUser(api, message, groupSettings) {
         isChangeSetting = true;
         await sendMessageComplete(api, message, `Đã mở chat người dùng ${userName.name || userId || userName}.`);
       } else {
-        const userName = message.data.content.substr(mention.pos, mention.len).replace("@", "");
+        const rawContent = String(message.data?.content || "");
+        const extractedName =
+          typeof mention.pos === "number" && typeof mention.len === "number"
+            ? rawContent.substr(mention.pos, mention.len).replace(/^@/, "").trim()
+            : "";
+        const userName = extractedName || String(userId);
         await sendMessageWarning(
           api,
           message,
-          `Người dùng ${userName.name || userName || userId} Không tồn tại trong danh sách cấm chat.`
+          `Người dùng ${userName} Không tồn tại trong danh sách cấm chat.`
         );
       }
     }

@@ -132,6 +132,7 @@ export function sendVideoFactory(api) {
   }) {
     if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent)
       throw new ZaloApiError("Missing required app context fields");
+    const resolvedThreadType = threadType ?? message?.type ?? MessageType.DirectMessage;
     let thumbnailUrl = null;
     const videoPath = normalizeVideoPath(videoUrl);
     const cleanupPaths = [];
@@ -175,13 +176,22 @@ export function sendVideoFactory(api) {
         // fileUrl kiểu zfcloud (không có đuôi file) -> thumbUrl "null" khiến Zalo
         // báo "Tham số không hợp lệ". Ưu tiên extract từ file local gốc nếu có.
         const thumbnailSource = localThumbnailSource || localVideoPath;
+        const ffmpegBin = getFfmpegExecutableSync() || "ffmpeg";
         try {
-          await execFileAsync("ffmpeg", ["-i", thumbnailSource, "-ss", "00:00:01", "-vframes", "1", "-y", tempThumbnail], {
+          await execFileAsync(ffmpegBin, ["-i", thumbnailSource, "-ss", "00:00:01", "-vframes", "1", "-y", tempThumbnail], {
             timeout: 15000,
             windowsHide: true,
           });
-          const linkThumbnail = await api.uploadAttachment([tempThumbnail], threadId, message.type);
-          thumbnailUrl = linkThumbnail ? linkThumbnail[0].hdUrl || linkThumbnail[0].normalUrl : null;
+          if (!fs.existsSync(tempThumbnail) || fs.statSync(tempThumbnail).size === 0) {
+            await execFileAsync(ffmpegBin, ["-i", thumbnailSource, "-vframes", "1", "-y", tempThumbnail], {
+              timeout: 15000,
+              windowsHide: true,
+            });
+          }
+          const linkThumbnail = await api.uploadAttachment([tempThumbnail], threadId, resolvedThreadType);
+          thumbnailUrl = linkThumbnail
+            ? linkThumbnail[0]?.hdUrl || linkThumbnail[0]?.normalUrl || linkThumbnail[0]?.fileUrl
+            : null;
         } catch {
           thumbnailUrl = getFallbackThumbnailUrl(videoUrl);
         }
@@ -227,16 +237,16 @@ export function sendVideoFactory(api) {
       };
 
       if (message && message.mentions) {
-        const { mentionsFinal } = validateVideoMentions(message.type, message.text || "", message.mentions);
+        const { mentionsFinal } = validateVideoMentions(resolvedThreadType, message.text || "", message.mentions);
         payload.params.mentionInfo = mentionsFinal;
       }
 
       let url;
-      if (threadType === MessageType.DirectMessage) {
+      if (resolvedThreadType === MessageType.DirectMessage) {
         url = directMessageServiceURL;
         payload.params.toId = String(threadId);
         payload.params.imei = appContext.imei;
-      } else if (threadType === MessageType.GroupMessage) {
+      } else if (resolvedThreadType === MessageType.GroupMessage) {
         url = groupMessageServiceURL;
         payload.params.visibility = 0;
         payload.params.grid = String(threadId);

@@ -23,7 +23,7 @@ async function processGif(gifUrl, api) {
     } catch (error) {
         throw new ZaloApiError(`Failed to process GIF: ${error.message}`);
     } finally {
-        deleteFile(tempGifPath);
+        await deleteFile(tempGifPath).catch(() => {});
     }
 }
 

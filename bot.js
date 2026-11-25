@@ -32,6 +32,7 @@ import { fixCredentialPaths, startBotWithLauncher } from './src/commands/mybot/S
 import { getAutoRestoreCandidates } from './src/commands/mybot/System/mybot-auto-restore.js';
 import { stripAnsi, terminalLog } from './src/utils/terminal-log.js';
 import { createRestartCoordinator } from './src/utils/restart-coordinator.js';
+import { RESTART_EXIT_CODE } from './src/utils/restart-request.js';
 const isWindows = process.platform === 'win32';
 import { ensureLogFiles, logManagerBot } from './src/utils/io-json.js';
 
@@ -445,6 +446,7 @@ function startBot() {
     BOT_NAME: 'admin',
     CONFIG_PATH: path.join(PROJECT_ROOT, 'assets', 'config.json'),
     BOT_MANAGED: 'true',
+    MYBOT_SUPERVISOR: 'bot-launcher',
     PROJECT_ROOT,
     ProjectRoot: PROJECT_ROOT,
   };
@@ -740,7 +742,7 @@ function attachBotEvents(processHandle) {
       setTimeout(() => process.exit(0), 500);
       return;
     }
-    if (action === 'restart') {
+    if (action === 'restart' || code === RESTART_EXIT_CODE) {
       consecutiveFailures = 0;
       logManagerBot(`Bot đang khởi động lại (mã: ${code})`);
       terminalLog({ scope: 'launcher', level: 'info', title: 'Bot restarting by request', lines: [`exit code: ${code}`] });

@@ -1,25 +1,31 @@
-import { createCanvas } from 'canvas';
-import fs from 'fs';
-import path from 'path';
-import GIFEncoder from 'gifencoder';
-import os from 'os';
-import { MessageType } from '../../../api-zalo/models/Message.js';
+import fs from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { createCanvas } from "canvas";
+import GIFEncoder from "gifencoder";
+import { MessageType } from "../../../api-zalo/models/Message.js";
+import { getGlobalPrefix } from "../../../service-debug/service.js";
+import { tempDir } from "../../../utils/io-json.js";
+import { ensureCanvasFontsRegistered } from "../../../utils/canvas/register-fonts.js";
+import {
+  extractCommandBody,
+  safeThreadType,
+} from "../../shared/command-input-utils.js";
 
 export const des = {
-  name: 'giftxt',
+  name: "giftxt",
   type: 1,
-  permission: 'all',
+  permission: "all",
   countdown: 5,
   active: true,
-  alias: ['giftxt'],
+  alias: ["giftxt"],
 };
 
-// ------------------- HIỆU ỨNG -------------------
+const MAX_GIFTXT_CHARS = 120;
 
-// Tia sét
 function drawLightning(ctx, width, height) {
-  ctx.strokeStyle = 'rgba(173, 216, 230, 0.9)';
-  ctx.shadowColor = 'rgba(248, 246, 124, 0.8)';
+  ctx.strokeStyle = "rgba(173, 216, 230, 0.9)";
+  ctx.shadowColor = "rgba(248, 246, 124, 0.8)";
   ctx.shadowBlur = 15;
   ctx.lineWidth = 2.5;
 
@@ -27,7 +33,7 @@ function drawLightning(ctx, width, height) {
   let x = startX;
   let y = 0;
 
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 2; i += 1) {
     ctx.globalAlpha = 0.6 + Math.random() * 0.4;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -46,7 +52,6 @@ function drawLightning(ctx, width, height) {
   ctx.shadowBlur = 0;
 }
 
-// Trái tim
 function drawHeart(ctx, x, y, size, color) {
   ctx.save();
   ctx.translate(x, y);
@@ -62,7 +67,6 @@ function drawHeart(ctx, x, y, size, color) {
   ctx.restore();
 }
 
-// Giọt nước
 function drawRaindrop(ctx, x, y, size, color) {
   ctx.save();
   ctx.translate(x, y);
@@ -76,31 +80,42 @@ function drawRaindrop(ctx, x, y, size, color) {
   ctx.restore();
 }
 
-// ------------------- COMMAND -------------------
-
-export async function handleGiftext(api, message) {
+export async function handleGiftext(api, message, aliasCommand = "giftxt") {
   const threadId = message.threadId;
-  const threadType = message.type ?? MessageType.DirectMessage;
-  const content = String(message.data?.content || "").trim();
+  const threadType = safeThreadType(message, MessageType.DirectMessage);
+  const prefix = getGlobalPrefix();
+  const cmdName = aliasCommand || "giftxt";
 
-  const parts = content.split(/\s+/);
-  if (parts.length < 2) {
-    return api.sendMessage({
-      msg: `❌ Sai định dạng!\nDùng: /giftxt <chữ muốn tạo GIF>`,
-      ttl: 60000,
-      quote: message,
-    }, threadId, threadType);
+  const rawBody = extractCommandBody(message, prefix, cmdName);
+  if (!rawBody) {
+    return api.sendMessage(
+      {
+        msg: `❌ Sai định dạng!\nDùng: ${prefix}${cmdName} <chữ muốn tạo GIF (tối đa ${MAX_GIFTXT_CHARS} ký tự)>`,
+        ttl: 60000,
+        quote: message,
+      },
+      threadId,
+      threadType,
+    );
   }
 
-  const text = parts.slice(1).join(' ');
+  ensureCanvasFontsRegistered();
+  const text = Array.from(rawBody).slice(0, MAX_GIFTXT_CHARS).join("");
+
   const width = 350;
   const height = 80;
   const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext("2d");
 
+  await fs.promises.mkdir(tempDir, { recursive: true });
+  const gifPath = path.join(tempDir, `giftext_${randomUUID()}.gif`);
   const encoder = new GIFEncoder(width, height);
-  const gifPath = path.join(os.tmpdir(), `giftext_${Date.now()}.gif`);
   const stream = fs.createWriteStream(gifPath);
+
+  const streamFinished = new Promise((resolve, reject) => {
+    stream.on("finish", resolve);
+    stream.on("error", reject);
+  });
 
   encoder.createReadStream().pipe(stream);
   encoder.start();
@@ -108,30 +123,26 @@ export async function handleGiftext(api, message) {
   encoder.setDelay(50);
   encoder.setQuality(10);
 
-  // Matrix config
   const fontSize = 16;
   const columns = Math.floor(width / fontSize);
   const drops = Array(columns).fill(0);
 
-  // Hearts config
   const hearts = Array.from({ length: 12 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
     size: Math.random() * 0.4 + 0.2,
     speed: Math.random() * 2 + 1,
-    color: `hsl(${Math.random() * 360}, 100%, 60%)`
+    color: `hsl(${Math.random() * 360}, 100%, 60%)`,
   }));
 
-  // Raindrops config
   const raindrops = Array.from({ length: 15 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
     size: Math.random() * 0.3 + 0.2,
     speed: Math.random() * 3 + 2,
-    color: 'rgba(135,206,250,0.8)'
+    color: "rgba(135,206,250,0.8)",
   }));
 
-  // Icons nền
   const icons = ["🔥", "❤️", "⚡", "✨", "🌈", "💎", "🌟"];
   const bgIcons = Array.from({ length: 10 }, () => ({
     x: Math.random() * width,
@@ -139,119 +150,124 @@ export async function handleGiftext(api, message) {
     size: Math.random() * 18 + 13,
     speed: Math.random() * 2 + 1,
     icon: icons[Math.floor(Math.random() * icons.length)],
-    color: `hsl(${Math.random() * 360}, 100%, 60%)`
+    color: `hsl(${Math.random() * 360}, 100%, 60%)`,
   }));
 
-  // Text chính
   const mainFontSize = 28;
-  ctx.font = `${mainFontSize}px sans-serif`;
+  const mainFontSpec = `bold ${mainFontSize}px "BeVietnamPro", sans-serif`;
+  ctx.font = mainFontSpec;
   const textWidth = ctx.measureText(text).width;
   const totalFrames = Math.min(120, Math.max(20, Math.ceil((textWidth + width) / 4)));
   const stepX = (textWidth + width) / totalFrames;
 
-  for (let i = 0; i < totalFrames; i++) {
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, width, height);
+  try {
+    for (let i = 0; i < totalFrames; i += 1) {
+      if (i > 0 && i % 10 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
 
-    // matrix
-    ctx.font = `${fontSize}px monospace`;
-    for (let x = 0; x < drops.length; x++) {
-      const char = String.fromCharCode(0x30A0 + Math.random() * 96);
-      const hue = (x * 20 + drops[x] * 10 + i * 5) % 360;
-      ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
-      ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
-      ctx.shadowBlur = 8;
-      ctx.fillText(char, x * fontSize, drops[x] * fontSize);
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, width, height);
 
-      if (drops[x] * fontSize > height && Math.random() > 0.975) drops[x] = 0;
-      drops[x]++;
+      ctx.font = `${fontSize}px monospace`;
+      for (let x = 0; x < drops.length; x += 1) {
+        const char = String.fromCharCode(0x30a0 + Math.random() * 96);
+        const hue = (x * 20 + drops[x] * 10 + i * 5) % 360;
+        ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+        ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
+        ctx.shadowBlur = 8;
+        ctx.fillText(char, x * fontSize, drops[x] * fontSize);
+
+        if (drops[x] * fontSize > height && Math.random() > 0.975) drops[x] = 0;
+        drops[x] += 1;
+      }
+
+      if (Math.random() > 0.85) drawLightning(ctx, width, height);
+
+      hearts.forEach((h) => {
+        drawHeart(ctx, h.x, h.y, h.size * 3, h.color);
+        h.y += h.speed;
+        if (h.y > height + 10) {
+          h.y = -10;
+          h.x = Math.random() * width;
+          h.size = Math.random() * 0.4 + 0.2;
+          h.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
+        }
+      });
+
+      raindrops.forEach((r) => {
+        drawRaindrop(ctx, r.x, r.y, r.size * 3, r.color);
+        r.y += r.speed;
+        if (r.y > height + 10) {
+          r.y = -10;
+          r.x = Math.random() * width;
+          r.size = Math.random() * 0.3 + 0.2;
+        }
+      });
+
+      bgIcons.forEach((ic) => {
+        ctx.font = `${ic.size}px sans-serif`;
+        ctx.fillStyle = ic.color;
+        ctx.shadowColor = ic.color;
+        ctx.shadowBlur = 12;
+        ctx.fillText(ic.icon, ic.x, ic.y);
+
+        ic.y += ic.speed;
+        if (ic.y > height + 20) {
+          ic.y = -10;
+          ic.x = Math.random() * width;
+          ic.size = Math.random() * 20 + 15;
+          ic.icon = icons[Math.floor(Math.random() * icons.length)];
+          ic.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
+        }
+      });
+      ctx.shadowBlur = 0;
+
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, "red");
+      gradient.addColorStop(0.16, "orange");
+      gradient.addColorStop(0.33, "yellow");
+      gradient.addColorStop(0.5, "green");
+      gradient.addColorStop(0.66, "blue");
+      gradient.addColorStop(0.83, "indigo");
+      gradient.addColorStop(1, "violet");
+
+      ctx.fillStyle = gradient;
+      ctx.shadowColor = "white";
+      ctx.shadowBlur = 20;
+      ctx.font = mainFontSpec;
+      ctx.fillText(text, width - i * stepX, height / 2 + mainFontSize / 3);
+      ctx.shadowBlur = 0;
+
+      encoder.addFrame(ctx);
     }
 
-    // sét ngẫu nhiên
-    if (Math.random() > 0.85) drawLightning(ctx, width, height);
+    encoder.finish();
+    await streamFinished;
 
-    // mưa trái tim
-    hearts.forEach(h => {
-      drawHeart(ctx, h.x, h.y, h.size * 3, h.color);
-      h.y += h.speed;
-      if (h.y > height + 10) {
-        h.y = -10;
-        h.x = Math.random() * width;
-        h.size = Math.random() * 0.4 + 0.2;
-        h.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
-      }
-    });
-
-    // mưa giọt nước
-    raindrops.forEach(r => {
-      drawRaindrop(ctx, r.x, r.y, r.size * 3, r.color);
-      r.y += r.speed;
-      if (r.y > height + 10) {
-        r.y = -10;
-        r.x = Math.random() * width;
-        r.size = Math.random() * 0.3 + 0.2;
-      }
-    });
-
-    // icon nền
-    bgIcons.forEach(ic => {
-      ctx.font = `${ic.size}px sans-serif`;
-      ctx.fillStyle = ic.color;
-      ctx.shadowColor = ic.color;
-      ctx.shadowBlur = 12;
-      ctx.fillText(ic.icon, ic.x, ic.y);
-
-      ic.y += ic.speed;
-      if (ic.y > height + 20) {
-        ic.y = -10;
-        ic.x = Math.random() * width;
-        ic.size = Math.random() * 20 + 15;
-        ic.icon = icons[Math.floor(Math.random() * icons.length)];
-        ic.color = `hsl(${Math.random() * 360}, 100%, 60%)`;
-      }
-    });
-    ctx.shadowBlur = 0;
-
-    // chữ chính 7 màu
-    const gradient = ctx.createLinearGradient(0, 0, width, 0);
-    gradient.addColorStop(0, 'red');
-    gradient.addColorStop(0.16, 'orange');
-    gradient.addColorStop(0.33, 'yellow');
-    gradient.addColorStop(0.5, 'green');
-    gradient.addColorStop(0.66, 'blue');
-    gradient.addColorStop(0.83, 'indigo');
-    gradient.addColorStop(1, 'violet');
-
-    ctx.fillStyle = gradient;
-    ctx.shadowColor = 'white';
-    ctx.shadowBlur = 20;
-    ctx.font = `${mainFontSize}px sans-serif`;
-    ctx.fillText(text, width - i * stepX, height / 2 + mainFontSize / 3);
-    ctx.shadowBlur = 0;
-
-    encoder.addFrame(ctx);
-  }
-
-  encoder.finish();
-
-  try {
-    await new Promise((resolve, reject) => {
-      stream.on('finish', resolve);
-      stream.on('error', reject);
-    });
-    await api.sendMessage({
-      msg: '',
-      attachments: [gifPath],
-      ttl: 6000000,
-      quote: message,
-    }, threadId, threadType);
+    await api.sendMessage(
+      {
+        msg: "",
+        attachments: [gifPath],
+        ttl: 6000000,
+        quote: message,
+      },
+      threadId,
+      threadType,
+    );
   } catch (err) {
-    console.error('Lỗi gửi GIF:', err);
-    await api.sendMessage({
-      msg: `❌ Lỗi khi tạo hoặc gửi ảnh GIF!`,
-      ttl: 60000,
-      quote: message,
-    }, threadId, threadType).catch(() => {});
+    console.error("[giftxt] Lỗi gửi GIF:", err);
+    await api
+      .sendMessage(
+        {
+          msg: "❌ Lỗi khi tạo hoặc gửi ảnh GIF!",
+          ttl: 60000,
+          quote: message,
+        },
+        threadId,
+        threadType,
+      )
+      .catch(() => {});
   } finally {
     await fs.promises.unlink(gifPath).catch(() => {});
   }

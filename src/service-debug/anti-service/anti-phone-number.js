@@ -76,7 +76,10 @@ function normalizePhone(phone) {
 function isWhitelisted(phone, whitelistedPatterns) {
   if (!whitelistedPatterns.length) return false;
   const normalized = normalizePhone(phone);
-  return whitelistedPatterns.some(pattern => normalized.includes(pattern));
+  return whitelistedPatterns.some((pattern) => {
+    const normPattern = normalizePhone(pattern) || String(pattern || "").toLowerCase();
+    return Boolean(normPattern) && normalized.includes(normPattern);
+  });
 }
 
 function detectPhoneNumber(content) {
@@ -143,7 +146,7 @@ export async function handleAntiPhoneNumberCommand(
   const threadId = message.threadId;
   let isChangeSetting = false;
   const content = removeMention(message);
-  const parts = content.split(" ");
+  const parts = content.trim().split(/\s+/);
   const subcommand = parts[1]?.toLowerCase();
   const phoneSettings = await readPhoneSettings();
   if (!phoneSettings[threadId]) {

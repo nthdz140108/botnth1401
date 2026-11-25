@@ -1,27 +1,16 @@
 import fetch from "node-fetch";
 import { getGlobalPrefix } from "../service.js";
-
 import {
   sendMessageStateQuote,
-  sendMessageFailed
+  sendMessageFailed,
 } from "../chat-zalo/chat-style/chat-style.js";
-
-import { nameServer } from "../../utils/server-config.js";
-
-// ✅ Ghép tag + chữ đỏ vào header tin nhắn
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line)
-  );
-
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
+import { removeMention } from "../../utils/format-util.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCleanArgs,
+  getRawMessageText,
+} from "../../commands/shared/command-input-utils.js";
 
 export const des = {
   name: "dinhgiasim",
@@ -31,92 +20,106 @@ export const des = {
   active: true,
 };
 
-export async function handledinhgiasimCommand(api, message) {
-  const content = message.data.content.trim();
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function withSafeMessageType(message) {
+  const fallbackType =
+    message?.threadId &&
+    message?.data?.uidFrom &&
+    String(message.threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage;
+  const resolvedType = safeThreadType(message, fallbackType);
+  return message?.type === resolvedType ? message : { ...message, type: resolvedType };
+}
+
+function matchesSimCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "dinhgiasim").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
+
+export async function handledinhgiasimCommand(api, message, aliasCommand = "dinhgiasim") {
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "dinhgiasim";
 
-  if (!content.startsWith(`${currentPrefix}dinhgiasim`)) return false;
+  if (!matchesSimCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
+  }
 
-  const args = content.slice(currentPrefix.length + 11).trim().split(/\s+/).filter(Boolean);
+  const msgCtx = withSafeMessageType(message);
+  const args = extractCleanArgs(msgCtx, currentPrefix, effectiveAlias);
 
-  // ✅ Nếu không nhập số điện thoại
   if (args.length === 0) {
     return sendMessageStateQuote(
       api,
-      message,
-      `${getCleanNameServer()}❌ Vui lòng nhập số điện thoại để định giá!\n👉 Cú pháp: ${currentPrefix}dinhgiasim <sdt>`,
-      true,
+      msgCtx,
+      `❌ Vui lòng nhập số điện thoại để định giá!\n👉 Cú pháp: ${currentPrefix}${effectiveAlias} <số_điện_thoại>`,
+      false,
       60000,
-      false
+      true
     );
   }
 
-  // ✅ Nếu nhập nhiều hơn 1 tham số
   if (args.length !== 1) {
     return sendMessageStateQuote(
       api,
-      message,
-      `${getCleanNameServer()}❌ Sai cú pháp! Dùng: ${currentPrefix}dinhgiasim <sdt>`,
-      true,
+      msgCtx,
+      `❌ Sai cú pháp! Dùng: ${currentPrefix}${effectiveAlias} <số_điện_thoại>`,
+      false,
       60000,
-      false
+      true
     );
   }
 
-  const sdt = args[0];
-
+  const sdt = args[0].replace(/[.\-\s]/g, "");
   if (!/^\d{9,11}$/.test(sdt)) {
     return sendMessageStateQuote(
       api,
-      message,
-      `${getCleanNameServer()}❌ Vui lòng nhập số điện thoại hợp lệ (9-11 chữ số)!`,
-      true,
+      msgCtx,
+      `❌ Vui lòng nhập số điện thoại hợp lệ (9–11 chữ số)!`,
+      false,
       60000,
-      false
+      true
     );
   }
 
-  const apiUrl = `https://api.nemg.me/valuation?sdt=${sdt}`;
-  console.log("Gọi API định giá sim:", apiUrl);
+  const apiUrl = `https://api.nemg.me/valuation?sdt=${encodeURIComponent(sdt)}`;
 
   try {
-    const res = await fetch(apiUrl);
+    const res = await fetch(apiUrl, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
     const json = await res.json();
 
-    if (!res.ok || !json.success || !json.data?.valuation) {
+    if (!json?.success || !json?.data?.valuation) {
       return sendMessageStateQuote(
         api,
-        message,
-        `${getCleanNameServer()}❌ Không tìm thấy định giá cho số ${sdt}.`,
-        true,
+        msgCtx,
+        `❌ Không tìm thấy dữ liệu định giá cho số ${sdt}.`,
+        false,
         60000,
-        false
+        true
       );
     }
 
     const valuation = json.data.valuation[sdt] || "Không rõ";
+    const msg =
+      `📱 ĐỊNH GIÁ SIM THÀNH CÔNG\n\n` +
+      `➤ Số điện thoại: ${sdt}\n` +
+      `➤ Định giá tham khảo: ${valuation}\n\n` +
+      `✨ Chúc bạn luôn 8386`;
 
-    const msg = `📱 ĐỊNH GIÁ SIM THÀNH CÔNG
-
-➤ Số điện thoại: ${sdt}
-➤ Định giá: ${valuation}
-
-✨ Chúc bạn luôn 8386`;
-
-    return sendMessageStateQuote(
-      api,
-      message,
-      `${getCleanNameServer()}${msg}`,
-      true,
-      3600000,
-      false
-    );
+    return sendMessageStateQuote(api, msgCtx, msg, true, 3600000, false);
   } catch (e) {
-    console.error("Lỗi API định giá sim:", e);
     return sendMessageFailed(
       api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
+      msgCtx,
+      `❌ Lỗi khi định giá sim: ${e?.message || "Hết thời gian chờ kết nối"}`,
       true
     );
   }

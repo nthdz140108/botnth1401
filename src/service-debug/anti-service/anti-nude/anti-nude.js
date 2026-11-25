@@ -8,6 +8,7 @@ import { MessageType } from "../../../api-zalo/models/Message.js";
 
 import { sendMessageStateQuote } from "../../chat-zalo/chat-style/chat-style.js";
 import { deleteFile, downloadFile } from "../../../utils/util.js";
+import { writeGroupSettings } from "../../../utils/io-json.js";
 import { withTempFile } from "../../../utils/temp-lease-manager.js";
 import { getFfmpegExecutableSync } from "../../../utils/runtime-dependencies.js";
 import { isInWhiteList } from "../white-list.js";
@@ -132,15 +133,22 @@ async function loadViolations() {
 async function saveViolation(senderId, count, senderName, threadId) {
   const antiState = getAntiState();
   const { violations } = pruneExpiredNudeViolations(antiState.data.violationsNude);
+  const violationKey = threadId ? `${threadId}:${senderId}` : String(senderId);
+
+  // Clean up legacy unscoped key for the same thread if present
+  if (threadId && violations[senderId] && (!violations[senderId].threadId || violations[senderId].threadId === threadId)) {
+    delete violations[senderId];
+  }
 
   if (count <= 0) {
-    delete violations[senderId];
+    delete violations[violationKey];
   } else {
-    violations[senderId] = {
+    violations[violationKey] = {
       count,
       lastViolation: Date.now(),
       senderName,
       threadId,
+      senderId,
     };
   }
 
@@ -448,10 +456,15 @@ async function executeRevocation({
     return false;
   }
 
-  // Serialize per-user violation updates
-  await withUserViolationLock(senderId, async () => {
+  // Serialize per-group-per-user violation updates
+  const violationKey = `${threadId}:${senderId}`;
+  await withUserViolationLock(violationKey, async () => {
     const violations = await loadViolations();
-    const userViolation = violations[senderId] || {
+    const legacyViolation =
+      violations[senderId] && (!violations[senderId].threadId || violations[senderId].threadId === threadId)
+        ? violations[senderId]
+        : null;
+    const userViolation = violations[violationKey] || legacyViolation || {
       count: 0,
       lastViolation: 0,
     };
@@ -483,7 +496,7 @@ async function executeRevocation({
       await api.sendMessage(
         {
           msg:
-            `⚠️ Cảnh cáo ${senderName}!\n` +
+            `⚠️ Cảnh cáo ${senderName} (lần ${userViolation.count}/5)!\n` +
             `Không gửi nội dung nhạy cảm trong nhóm! (Độ nhạy cảm: ${Math.max(nsfwProb, 50)}%).` +
             `\nVi phạm nhiều lần sẽ bị chặn khỏi nhóm!`,
           mentions: [MessageMention(senderId, senderName.length, "⚠️ Cảnh cáo ".length)],
@@ -507,13 +520,14 @@ export async function antiNude(api, message, isAdminBox, groupSettings, botIsAdm
   const threadId = message?.threadId;
 
   // Fast preflight validation
+  const blockedKey = `${threadId}:${senderId}`;
   if (
     !threadId ||
     !senderId ||
     isAdminBox ||
     isSelf ||
     !botIsAdminBox ||
-    blockedUsers.has(senderId) ||
+    blockedUsers.has(blockedKey) ||
     !groupSettings?.[threadId]?.antiNude
   ) {
     return false;
@@ -601,7 +615,7 @@ export async function antiNude(api, message, isAdminBox, groupSettings, botIsAdm
 
 async function handleNudeContent(api, message, threadId, senderId) {
   try {
-    blockedUsers.set(senderId, true);
+    blockedUsers.set(`${threadId}:${senderId}`, true);
     await api.deleteMessage(message, false);
     await api.blockUsers(threadId, [senderId]);
   } catch (error) {
@@ -635,16 +649,22 @@ async function showNudeViolationHistory(api, message) {
 
     for (const mention of mentions) {
       const userId = mention.uid;
-      const userName = message.data.content.substr(mention.pos, mention.len).replace("@", "");
-      const violation = violations[userId];
+      const userName = String(message.data?.content || "").substr(mention.pos, mention.len).replace("@", "") || `UID ${userId}`;
+      const scopedViolation = violations[`${threadId}:${userId}`];
+      const legacyViolation =
+        violations[userId] && (!violations[userId].threadId || violations[userId].threadId === threadId)
+          ? violations[userId]
+          : null;
+      const violation = scopedViolation || legacyViolation;
 
       messageMentions.push(MessageMention(userId, userName.length, mentionPosition));
 
-      if (!violation) {
-        responseMsg += `${userName} chưa có vi phạm nào.\n\n`;
+      if (!violation || !violation.count) {
+        responseMsg += `${userName} chưa có vi phạm nào trong nhóm này.\n\n`;
       } else {
         responseMsg += `${userName}:\n`;
-        responseMsg += `Lần vi phạm gần nhất: ${new Date(violation.lastViolation).toLocaleString()}\n\n`;
+        responseMsg += `• Số lần vi phạm: ${violation.count}/5\n`;
+        responseMsg += `• Lần vi phạm gần nhất: ${new Date(violation.lastViolation).toLocaleString("vi-VN")}\n\n`;
       }
 
       mentionPosition = responseMsg.length;
@@ -677,7 +697,7 @@ async function showNudeViolationHistory(api, message) {
 export async function handleAntiNudeCommand(api, message, groupSettings) {
   const content = removeMention(message);
   const threadId = message.threadId;
-  const args = content.split(" ");
+  const args = content.trim().split(/\s+/);
   const command = args[1]?.toLowerCase();
 
   if (!groupSettings[threadId]) {
@@ -700,6 +720,9 @@ export async function handleAntiNudeCommand(api, message, groupSettings) {
     groupSettings[threadId].antiNude = !groupSettings[threadId].antiNude;
     newStatus = groupSettings[threadId].antiNude ? "bật" : "tắt";
   }
+
+  // Persist immediately because antinude executes on the heavy lane (ACCEPTED)
+  writeGroupSettings(groupSettings);
 
   const caption = `Chức năng chống nội dung nhạy cảm đã được ${newStatus}!`;
   await sendMessageStateQuote(api, message, caption, groupSettings[threadId].antiNude, 300000);

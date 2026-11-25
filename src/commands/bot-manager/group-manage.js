@@ -1,66 +1,128 @@
 import { MessageType } from "../../api-zalo/models/Message.js";
+import { appContext } from "../../api-zalo/context.js";
 import * as cv from "../../utils/canvas/index.js";
 import { getUserInfoData } from "../../service-debug/info-service/user-info.js";
-import { sendMessageWarning, sendMessageFromSQL, sendMessageInsufficientAuthority, sendMessageStateQuote } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
-import { tempDir, writeCommandConfig, writeGroupSettings, readGroupSettings, getActiveRuntimeContext } from "../../utils/io-json.js";
+import { getGroupInfoData } from "../../service-debug/info-service/group-info-data.js";
+import {
+  sendMessageWarning,
+  sendMessageFromSQL,
+  sendMessageInsufficientAuthority,
+  sendMessageStateQuote,
+  sendMessageCompleteRequest,
+} from "../../service-debug/chat-zalo/chat-style/chat-style.js";
+import {
+  tempDir,
+  readGroupSettings,
+  getCommandConfig,
+  isMainBotAdmin,
+} from "../../utils/io-json.js";
 import { getGlobalPrefix } from "../../service-debug/service.js";
-import { getCommandConfig } from "../../utils/io-json.js";
 import { isAdmin } from "../../utils/role-policy.js";
 import { getBotId } from "../../utils/env.js";
 import { removeMention } from "../../utils/format-util.js";
 import { managerData, saveManagerData } from "./active-bot.js";
-import fs from "fs/promises";
 import fsOnly from "fs";
 import path from "path";
-import { createBlockedListImage } from "../../utils/canvas/listblocked-canvas.js";
 import { createBlockedBotListImage } from "../../utils/canvas/listblockbot-cavas.js";
-import { fileURLToPath } from "url";
 import { createCanvas, loadImage } from "canvas";
 import { deleteFile } from "../../utils/util.js";
-import { sendMessageCompleteRequest } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
+import {
+  extractCleanArgs,
+  getQuotedUid,
+  resolveTargetUsers,
+  safeThreadType,
+} from "../shared/command-input-utils.js";
+import {
+  executeUnifiedTargetCommand,
+  isUserTargeted,
+  processUnifiedTargetJoin,
+} from "./nqduan-bridge.js";
 
-export async function handleKick(api, message, groupInfo) {
+const BATCH_MODERATION_SIZE = 50;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function resolveSafeAlias(aliasCommand, fallback) {
+  return typeof aliasCommand === "string" && aliasCommand.trim() ? aliasCommand.trim() : fallback;
+}
+
+function normalizeId(value) {
+  return String(value ?? "").trim().split("_")[0];
+}
+
+function extractMentionNameMap(message) {
+  const map = new Map();
+  const rawContent = typeof message?.data?.content === "string" ? message.data.content : "";
+  const mentions = Array.isArray(message?.data?.mentions) ? message.data.mentions : [];
+  for (const m of mentions) {
+    const uid = normalizeId(m?.uid);
+    if (!uid) continue;
+    if (typeof m.pos === "number" && typeof m.len === "number" && rawContent) {
+      map.set(uid, rawContent.substring(m.pos, m.pos + m.len).replace("@", "").trim());
+    }
+  }
+  return map;
+}
+
+export async function handleKick(api, message, groupInfo, aliasCommand = "kick") {
   const threadId = message.threadId;
-  const groupName = groupInfo.name;
-  const senderName = message.data.dName;
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "kick");
+  const prefix = getGlobalPrefix();
 
-  if (!message.data.mentions || message.data.mentions.length === 0) {
+  let resolvedGroup =
+    groupInfo && (groupInfo.name || groupInfo.creatorId || groupInfo.gridInfoMap)
+      ? groupInfo.gridInfoMap?.[threadId] || groupInfo
+      : null;
+  if (!resolvedGroup && typeof api?.getGroupInfo === "function" && threadId) {
+    try {
+      const fetched = await api.getGroupInfo(threadId);
+      resolvedGroup = fetched?.gridInfoMap?.[threadId] || fetched || null;
+    } catch {}
+  }
+
+  const groupName = resolvedGroup?.name || "Nhóm";
+  const groupType = resolvedGroup?.groupType ?? resolvedGroup?.type ?? 1;
+  const senderName = message?.data?.dName || "Quản trị viên";
+  const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
+  const candidateUids = resolveTargetUsers(message, cleanArgs);
+
+  if (candidateUids.length === 0) {
     await sendMessageWarning(
       api,
       message,
-      ":D Đại Ca muốn kick ai? 🚀",
+      ":D Đại Ca muốn kick ai? Hãy @mention, reply tin nhắn hoặc nhập UID! 🚀",
       false
     );
     return;
   }
 
-  const botId = String(getBotId() || "");
+  const botId = String(getBotId() || appContext?.uid || "");
   const nativeGroupAdmins = new Set(
-    [groupInfo?.creatorId, ...(groupInfo?.adminIds || [])].filter(Boolean).map(String)
+    [resolvedGroup?.creatorId, ...(resolvedGroup?.adminIds || [])].filter(Boolean).map(String)
   );
+  const mentionNames = extractMentionNameMap(message);
   const uids = [];
-  const UserDataMentions = [];
-  for (const mention of message.data.mentions) {
-    if (String(mention.uid) === botId || isAdmin(mention.uid, threadId) || nativeGroupAdmins.has(String(mention.uid))) {
+  const userInfoByUid = new Map();
+
+  for (const targetUid of candidateUids) {
+    if (String(targetUid) === botId || isAdmin(targetUid, threadId) || nativeGroupAdmins.has(String(targetUid))) {
       await sendMessageWarning(
         api,
         message,
-        "Đại Ca Không thể bảo em kick quản trị bot được 🚀",
+        "Đại Ca không thể bảo em kick quản trị viên hoặc chính bot được 🚀",
         false
       );
       continue;
     }
-    uids.push(mention.uid);
+    uids.push(targetUid);
     try {
-      const userInfo = await getUserInfoData(api, mention.uid);
+      const userInfo = await getUserInfoData(api, targetUid);
       if (userInfo) {
-        UserDataMentions.push(userInfo);
+        userInfoByUid.set(String(targetUid), userInfo);
+      } else {
+        userInfoByUid.set(String(targetUid), { uid: targetUid, name: mentionNames.get(targetUid) || targetUid });
       }
-    } catch (error) {
-      console.error(
-        ` Không lấy được thông tin cho người dùng ${mention.uid}:`,
-        error
-      );
+    } catch {
+      userInfoByUid.set(String(targetUid), { uid: targetUid, name: mentionNames.get(targetUid) || targetUid });
     }
   }
 
@@ -70,7 +132,11 @@ export async function handleKick(api, message, groupInfo) {
 
   try {
     const result = await api.removeUserFromGroup(threadId, uids);
-    if (result.errorMembers.length > 0) {
+    const errorList = Array.isArray(result?.errorMembers) ? result.errorMembers.map(String) : [];
+    const errorSet = new Set(errorList);
+    const succeededUids = uids.filter((id) => !errorSet.has(String(id)));
+
+    if (succeededUids.length === 0) {
       await sendMessageWarning(
         api,
         message,
@@ -82,37 +148,59 @@ export async function handleKick(api, message, groupInfo) {
 
     const useKickImage = Boolean(readGroupSettings()?.[threadId]?.enableKickImage);
     if (!useKickImage) {
-      const kickedNames = UserDataMentions.map((u) => u.name || u.dName || u.uid).filter(Boolean);
-      const summary = kickedNames.length > 0 ? kickedNames.join(", ") : uids.join(", ");
-      await sendMessageStateQuote(api, message, `🚨 Đã kick ${summary} khỏi nhóm!`, true, 300000);
+      const kickedNames = succeededUids.map((uid) => {
+        const info = userInfoByUid.get(String(uid));
+        return info?.name || info?.dName || uid;
+      });
+      const failSuffix = errorSet.size > 0 ? `\n⚠️ Không thể kick: ${[...errorSet].join(", ")}` : "";
+      await sendMessageStateQuote(
+        api,
+        message,
+        `🚨 Đã kick ${kickedNames.join(", ")} khỏi nhóm!${failSuffix}`,
+        true,
+        300000
+      );
       return;
     }
 
-    for (const userInfo of UserDataMentions) {
+    for (const uid of succeededUids) {
+      const userInfo = userInfoByUid.get(String(uid)) || { uid, name: uid };
       let imagePath = null;
       try {
         imagePath = await cv.createKickImage(
           userInfo,
           groupName,
-          groupInfo.type,
+          groupType,
           userInfo.genderId,
-          senderName
+          senderName,
+          false
         );
 
-        const kickMessage = {
-          msg: "",
-          attachments: imagePath ? [imagePath] : [],
-        };
-
-        await api.sendMessage(kickMessage, threadId, MessageType.GroupMessage);
+        await api.sendMessage(
+          {
+            msg: "",
+            attachments: imagePath ? [imagePath] : [],
+          },
+          threadId,
+          MessageType.GroupMessage
+        );
       } catch (error) {
-        console.error("Lỗi khi tạo và gửi ảnh kết quả:", error);
+        console.error("Lỗi khi tạo và gửi ảnh kết quả kick:", error);
       } finally {
         await cv.clearImagePath(imagePath);
       }
     }
+
+    if (errorSet.size > 0) {
+      await sendMessageWarning(
+        api,
+        message,
+        `⚠️ Một số thành viên không thể kick (${[...errorSet].join(", ")}).`,
+        false
+      );
+    }
   } catch (error) {
-    console.error("Chắc Chắn Là Đã Có Lỗi Gì Đó :D", error);
+    console.error("Lỗi khi thực hiện kick:", error);
     await sendMessageWarning(
       api,
       message,
@@ -124,68 +212,99 @@ export async function handleKick(api, message, groupInfo) {
 
 export async function handleKickAll(api, message, groupInfo) {
   const threadId = message.threadId;
-  const groupName = groupInfo.name;
-  const senderName = message.data.dName;
   try {
     let group;
     try {
       group = await api.getGroupInfo(threadId);
-    } catch (error) {
-      await sendMessageWarning(api, message, "Không thể lấy thông tin nhóm, vui lòng thử lại sau", false);
+    } catch {
+      await sendMessageWarning(api, message, "Không thể lấy thông tin nhóm, vui lòng thử lại sau!", false);
       return;
     }
-    if (!group || !group.gridInfoMap || !group.gridInfoMap[threadId]) {
-      console.error("Không thể lấy thông tin nhóm:", threadId);
+
+    const groupData = group?.gridInfoMap?.[threadId] || group;
+    if (!groupData || typeof groupData !== "object") {
       await sendMessageWarning(api, message, "Lỗi: Không thể lấy thông tin nhóm! 🚀", false);
       return;
     }
-    const groupData = group.gridInfoMap[threadId];
-    const creatorId = String(groupData.creatorId || '');
-    const botId = String(getBotId() || '');
+
+    const creatorId = String(groupData.creatorId || "");
+    const botId = String(getBotId() || appContext?.uid || api?.getOwnId?.() || "");
     const groupAdminSet = new Set((groupData.adminIds || []).map(String));
-    // Lấy danh sách thành viên nhóm
-    const memberList = groupData.memVerList ? groupData.memVerList.map(member => String(member).split('_')[0]) : [];
-    if (!Array.isArray(memberList) || memberList.length === 0) {
-      console.error("Danh sách thành viên nhóm không hợp lệ:", memberList);
+
+    if (botId && (creatorId || groupAdminSet.size > 0) && creatorId !== botId && !groupAdminSet.has(botId)) {
+      await sendMessageWarning(
+        api,
+        message,
+        "🔑 Bot chưa có quyền Quản trị viên nhóm (Key Vàng/Key Bạc) để kick toàn bộ thành viên!",
+        false
+      );
+      return;
+    }
+
+    const rawMembers = Array.isArray(groupData.memVerList)
+      ? groupData.memVerList
+      : Array.isArray(groupData.memberIds)
+        ? groupData.memberIds
+        : [];
+    const memberList = rawMembers.map((member) => String(member).split("_")[0]).filter(Boolean);
+
+    if (memberList.length === 0) {
       await sendMessageWarning(api, message, "Lỗi: Không thể lấy danh sách thành viên nhóm! 🚀", false);
       return;
     }
-    // Loại trừ creator, bot, phó nhóm và admin bot
-    const validMembers = memberList.filter(
-      uid => uid && uid !== creatorId && uid !== botId && !groupAdminSet.has(uid) && !isAdmin(uid, threadId)
+
+    const validMembers = [...new Set(memberList)].filter(
+      (uid) => uid && uid !== creatorId && uid !== botId && !groupAdminSet.has(uid) && !isAdmin(uid, threadId)
     );
     if (validMembers.length === 0) {
-      await sendMessageWarning(api, message, "Không có thành viên nào để kick! 🚀", false);
+      await sendMessageWarning(api, message, "Không có thành viên thường nào để kick! 🚀", false);
       return;
     }
-    // Thực hiện kick các thành viên hợp lệ
+
+    const batches = chunkArray(validMembers, BATCH_MODERATION_SIZE);
     let kickedCount = 0;
-    try {
-      const result = await api.removeUserFromGroup(threadId, validMembers);
-      const errorMembers = Array.isArray(result?.errorMembers) ? result.errorMembers : [];
-      if (errorMembers.length > 0) {
-        console.warn(`Không thể kick một số thành viên: ${errorMembers.join(', ')}`);
+    let failedCount = 0;
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      try {
+        const result = await api.removeUserFromGroup(threadId, batch);
+        const errorMembers = Array.isArray(result?.errorMembers) ? result.errorMembers : [];
+        kickedCount += Math.max(0, batch.length - errorMembers.length);
+        failedCount += errorMembers.length;
+      } catch (err) {
+        failedCount += batch.length;
+        console.error("Lỗi khi kick batch thành viên:", err?.message || err);
       }
-      kickedCount = validMembers.length - errorMembers.length;
-    } catch (error) {
-      console.error("Lỗi khi kick tất cả thành viên:", error);
-      return;
+      if (i + 1 < batches.length) {
+        await sleep(300);
+      }
     }
 
     if (kickedCount === 0) {
-      await sendMessageWarning(api, message, "Không thể kick bất kỳ thành viên nào! 🚀", false);
+      await sendMessageWarning(
+        api,
+        message,
+        "Không thể kick thành viên — hãy kiểm tra quyền Key Vàng/Key Bạc của Bot trong nhóm! 🚀",
+        false
+      );
       return;
     }
 
-    await sendMessageStateQuote(api, message, `Đã kick ${kickedCount} thành viên!`, true, 300000);
+    await sendMessageStateQuote(
+      api,
+      message,
+      `✅ Đã kick ${kickedCount}/${validMembers.length} thành viên${failedCount > 0 ? ` (Thất bại: ${failedCount})` : ""}!`,
+      true,
+      300000
+    );
   } catch (error) {
     console.error("Lỗi khi kick tất cả thành viên:", error);
     await sendMessageWarning(api, message, "Đưa Em Key Vàng 🔑, Em Kick Tất Cả Cho Đại Ca Xem :D 🚀", false);
   }
 }
 
-
-export async function handleGroupManage(api, message, args) {
+export async function handleGroupManage(api, message) {
   const { threadId, senderId } = message;
 
   if (!isAdmin(senderId, threadId)) {
@@ -193,54 +312,142 @@ export async function handleGroupManage(api, message, args) {
     return;
   }
 
-  const config = getCommandConfig();
-  console.log("Cấu hình lệnh:", config);
-
+  getCommandConfig();
   await api.sendMessage("Đang xử lý lệnh quản lý nhóm...", threadId);
 }
 
-export async function handleBlock(api, message, groupInfo) {
+export async function handleBlock(api, message, groupInfo, aliasCommand = "block") {
   const threadId = message.threadId;
-  const groupName = groupInfo.name;
-  const senderName = message.data.dName;
+  const senderId = normalizeId(message?.data?.uidFrom);
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "block").toLowerCase();
+  const prefix = getGlobalPrefix();
+  const msgType = safeThreadType(message);
+  const isDM = msgType === MessageType.DirectMessage || message?.type === 0;
+  const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
 
-  if (!message.data.mentions || message.data.mentions.length === 0) {
+  // Branch explicitly for blockmessage / block-user: block personal Zalo messages (works in both DM & Group)
+  if (effectiveAlias === "blockmessage" || effectiveAlias === "block-user") {
+    let targets = resolveTargetUsers(message, cleanArgs);
+    if (
+      targets.length === 0 &&
+      isDM &&
+      threadId &&
+      normalizeId(threadId) !== senderId &&
+      /^\d+$/.test(normalizeId(threadId))
+    ) {
+      targets = [normalizeId(threadId)];
+    }
+
+    if (targets.length === 0) {
+      await sendMessageWarning(
+        api,
+        message,
+        `Vui lòng nhập UID, @mention hoặc reply người cần chặn tin nhắn Zalo:\n${prefix}${effectiveAlias} <UID | @user>`,
+        false
+      );
+      return true;
+    }
+
+    if (typeof api?.blockUser !== "function") {
+      await sendMessageWarning(api, message, "API hiện tại chưa hỗ trợ chặn tin nhắn cá nhân Zalo.", false);
+      return true;
+    }
+
+    const botId = String(getBotId() || appContext?.uid || "");
+    const blockedList = [];
+    const failedList = [];
+
+    for (const uid of targets) {
+      if (String(uid) === botId || isAdmin(uid, threadId)) {
+        failedList.push(`${uid} (Không thể chặn Admin/Bot)`);
+        continue;
+      }
+      try {
+        await api.blockUser(uid);
+        const info = await getUserInfoData(api, uid).catch(() => null);
+        blockedList.push(info?.name ? `${info.name} (${uid})` : uid);
+      } catch (err) {
+        failedList.push(`${uid} (${err?.message || "Lỗi"})`);
+      }
+    }
+
+    const summaryLines = [];
+    if (blockedList.length > 0) summaryLines.push(`🚫 Đã chặn tin nhắn Zalo: ${blockedList.join(", ")}`);
+    if (failedList.length > 0) summaryLines.push(`❌ Không thể chặn: ${failedList.join(", ")}`);
+
+    await api.sendMessage(
+      { msg: summaryLines.join("\n"), quote: message, ttl: 300000 },
+      threadId,
+      msgType
+    );
+    return true;
+  }
+
+  // Group block (`block` / `chan`) requires group scope
+  if (isDM) {
     await sendMessageWarning(
       api,
       message,
-      ":D Đại Ca muốn chặn ai? 🚀",
+      `⚠️ Lệnh "${prefix}${effectiveAlias}" chỉ dùng để chặn thành viên trong nhóm!\n💡 Để chặn tin nhắn riêng Zalo, hãy dùng: ${prefix}blockmessage <UID>`,
+      false
+    );
+    return true;
+  }
+
+  let resolvedGroup =
+    groupInfo && (groupInfo.name || groupInfo.creatorId || groupInfo.gridInfoMap)
+      ? groupInfo.gridInfoMap?.[threadId] || groupInfo
+      : null;
+  if (!resolvedGroup && typeof api?.getGroupInfo === "function" && threadId) {
+    try {
+      const fetched = await api.getGroupInfo(threadId);
+      resolvedGroup = fetched?.gridInfoMap?.[threadId] || fetched || null;
+    } catch {}
+  }
+
+  const groupName = resolvedGroup?.name || "Nhóm";
+  const groupType = resolvedGroup?.groupType ?? resolvedGroup?.type ?? 1;
+  const senderName = message?.data?.dName || "Quản trị viên";
+  const candidateUids = resolveTargetUsers(message, cleanArgs);
+
+  if (candidateUids.length === 0) {
+    await sendMessageWarning(
+      api,
+      message,
+      ":D Đại Ca muốn chặn ai? Hãy @mention, reply tin nhắn hoặc nhập UID! 🚀",
       false
     );
     return;
   }
 
-  const botId = String(getBotId() || "");
+  const botId = String(getBotId() || appContext?.uid || "");
   const nativeGroupAdmins = new Set(
-    [groupInfo?.creatorId, ...(groupInfo?.adminIds || [])].filter(Boolean).map(String)
+    [resolvedGroup?.creatorId, ...(resolvedGroup?.adminIds || [])].filter(Boolean).map(String)
   );
+  const mentionNames = extractMentionNameMap(message);
   const uids = [];
-  const UserDataMentions = [];
-  for (const mention of message.data.mentions) {
-    if (String(mention.uid) === botId || isAdmin(mention.uid, threadId) || nativeGroupAdmins.has(String(mention.uid))) {
+  const userInfoByUid = new Map();
+
+  for (const targetUid of candidateUids) {
+    if (String(targetUid) === botId || isAdmin(targetUid, threadId) || nativeGroupAdmins.has(String(targetUid))) {
       await sendMessageWarning(
         api,
         message,
-        "Đại Ca Không thể bảo em block quản trị bot được 🚀",
+        "Đại Ca không thể bảo em block quản trị viên hoặc chính bot được 🚀",
         false
       );
       continue;
     }
-    uids.push(mention.uid);
+    uids.push(targetUid);
     try {
-      const userInfo = await getUserInfoData(api, mention.uid);
+      const userInfo = await getUserInfoData(api, targetUid);
       if (userInfo) {
-        UserDataMentions.push(userInfo);
+        userInfoByUid.set(String(targetUid), userInfo);
+      } else {
+        userInfoByUid.set(String(targetUid), { uid: targetUid, name: mentionNames.get(targetUid) || targetUid });
       }
-    } catch (error) {
-      console.error(
-        `Không lấy thông tin cho người dùng ${mention.uid}:`,
-        error
-      );
+    } catch {
+      userInfoByUid.set(String(targetUid), { uid: targetUid, name: mentionNames.get(targetUid) || targetUid });
     }
   }
 
@@ -250,7 +457,11 @@ export async function handleBlock(api, message, groupInfo) {
 
   try {
     const result = await api.blockUsers(threadId, uids);
-    if (result.errorMembers && result.errorMembers.length > 0) {
+    const errorList = Array.isArray(result?.errorMembers) ? result.errorMembers.map(String) : [];
+    const errorSet = new Set(errorList);
+    const succeededUids = uids.filter((id) => !errorSet.has(String(id)));
+
+    if (succeededUids.length === 0) {
       await sendMessageWarning(
         api,
         message,
@@ -262,37 +473,59 @@ export async function handleBlock(api, message, groupInfo) {
 
     const useBlockImage = Boolean(readGroupSettings()?.[threadId]?.enableBlockImage);
     if (!useBlockImage) {
-      const blockedNames = UserDataMentions.map((u) => u.name || u.dName || u.uid).filter(Boolean);
-      const summary = blockedNames.length > 0 ? blockedNames.join(", ") : uids.join(", ");
-      await sendMessageStateQuote(api, message, `🚨 Đã chặn ${summary} khỏi nhóm!`, true, 300000);
+      const blockedNames = succeededUids.map((uid) => {
+        const info = userInfoByUid.get(String(uid));
+        return info?.name || info?.dName || uid;
+      });
+      const failSuffix = errorSet.size > 0 ? `\n⚠️ Không thể chặn: ${[...errorSet].join(", ")}` : "";
+      await sendMessageStateQuote(
+        api,
+        message,
+        `🚨 Đã chặn ${blockedNames.join(", ")} khỏi nhóm!${failSuffix}`,
+        true,
+        300000
+      );
       return;
     }
 
-    for (const userInfo of UserDataMentions) {
+    for (const uid of succeededUids) {
+      const userInfo = userInfoByUid.get(String(uid)) || { uid, name: uid };
       let imagePath = null;
       try {
         imagePath = await cv.createBlockImage(
           userInfo,
           groupName,
-          groupInfo.type,
+          groupType,
           userInfo.genderId,
-          senderName
+          senderName,
+          false
         );
 
-        const blockMessage = {
-          msg: "",
-          attachments: imagePath ? [imagePath] : [],
-        };
-
-        await api.sendMessage(blockMessage, threadId, message.type);
+        await api.sendMessage(
+          {
+            msg: "",
+            attachments: imagePath ? [imagePath] : [],
+          },
+          threadId,
+          MessageType.GroupMessage
+        );
       } catch (error) {
-        console.error("Lỗi khi tạo và gửi ảnh kết quả:", error);
+        console.error("Lỗi khi tạo và gửi ảnh kết quả block:", error);
       } finally {
         await cv.clearImagePath(imagePath);
       }
     }
+
+    if (errorSet.size > 0) {
+      await sendMessageWarning(
+        api,
+        message,
+        `⚠️ Một số thành viên không thể chặn (${[...errorSet].join(", ")}).`,
+        false
+      );
+    }
   } catch (error) {
-    console.error("Chắc Chắn Là Đã Có Lỗi Gì Đó :D", error);
+    console.error("Lỗi khi thực hiện block:", error);
     await sendMessageWarning(
       api,
       message,
@@ -302,15 +535,9 @@ export async function handleBlock(api, message, groupInfo) {
   }
 }
 
-export async function handleBlockAll(api, message, groupInfo) {
+export async function handleBlockAll(api, message, groupInfo, options = {}) {
   const threadId = message.threadId;
-  const groupName = groupInfo.name;
-  const senderId = message.data.uidFrom;
-
-  function hasSilverKey(uid, threadId, groupData) {
-    const adminIds = groupData.adminIds ? [...groupData.adminIds] : [];
-    return adminIds.includes(uid);
-  }
+  const senderId = String(message?.data?.uidFrom || "");
 
   try {
     if (!senderId) {
@@ -321,145 +548,221 @@ export async function handleBlockAll(api, message, groupInfo) {
     let group;
     try {
       group = await api.getGroupInfo(threadId);
-    } catch (error) {
-      await sendMessageWarning(api, message, "Không thể lấy thông tin nhóm, vui lòng thử lại sau", false);
+    } catch {
+      await sendMessageWarning(api, message, "Không thể lấy thông tin nhóm, vui lòng thử lại sau!", false);
       return;
     }
-    if (!group || !group.gridInfoMap || !group.gridInfoMap[threadId]) {
+
+    const groupData = group?.gridInfoMap?.[threadId] || group;
+    if (!groupData || typeof groupData !== "object") {
       await sendMessageWarning(api, message, "Lỗi: Không thể lấy thông tin nhóm! 🚀", false);
       return;
     }
-    const groupData = group.gridInfoMap[threadId];
-    const creatorId = groupData.creatorId || '';
 
-    if (senderId !== creatorId && !hasSilverKey(senderId, threadId, groupData)) {
-      await sendMessageWarning(api, message, "Bạn cần là creator hoặc có key bạc để thực hiện lệnh này! 🔑", false);
+    const creatorId = String(groupData.creatorId || "");
+    const adminSet = new Set((groupData.adminIds || []).map(String));
+    const botId = String(getBotId() || appContext?.uid || api?.getOwnId?.() || "");
+    const callerIsSupreme = Boolean(
+      (options && typeof options === "object" && options.isAdminLevelHighest) ||
+      options === true ||
+      isMainBotAdmin(senderId)
+    );
+
+    if (senderId !== creatorId && !adminSet.has(senderId) && !callerIsSupreme) {
+      await sendMessageWarning(
+        api,
+        message,
+        "Bạn cần là Quản trị tối cao hoặc cầm Key Vàng/Key Bạc để thực hiện lệnh này! 🔑",
+        false
+      );
       return;
     }
 
-    const memberList = groupData.memVerList ? groupData.memVerList.map(member => member.split('_')[0]) : [];
-    if (!Array.isArray(memberList) || memberList.length === 0) {
+    if (botId && (creatorId || adminSet.size > 0) && botId !== creatorId && !adminSet.has(botId)) {
+      await sendMessageWarning(
+        api,
+        message,
+        "🔑 Bot chưa có quyền Quản trị viên nhóm (Key Vàng/Key Bạc) để chặn toàn bộ thành viên!",
+        false
+      );
+      return;
+    }
+
+    const rawMembers = Array.isArray(groupData.memVerList)
+      ? groupData.memVerList
+      : Array.isArray(groupData.memberIds)
+        ? groupData.memberIds
+        : [];
+    const memberList = rawMembers.map((member) => String(member).split("_")[0]).filter(Boolean);
+    if (memberList.length === 0) {
       await sendMessageWarning(api, message, "Lỗi: Không thể lấy danh sách thành viên nhóm! 🚀", false);
       return;
     }
 
-    const botId = String(getBotId() || '');
-    const validMembers = memberList.filter(
-      uid => uid && uid !== String(creatorId) && uid !== botId && !isAdmin(uid, threadId) && !hasSilverKey(uid, threadId, groupData)
+    const validMembers = [...new Set(memberList)].filter(
+      (uid) => uid && uid !== creatorId && uid !== botId && !isAdmin(uid, threadId) && !adminSet.has(uid)
     );
     if (validMembers.length === 0) {
-      await sendMessageWarning(api, message, "Không có thành viên nào để chặn! 🚀", false);
+      await sendMessageWarning(api, message, "Không có thành viên thường nào để chặn! 🚀", false);
       return;
     }
 
+    const batches = chunkArray(validMembers, BATCH_MODERATION_SIZE);
     let blockedCount = 0;
-    try {
-      const result = await api.blockUsers(threadId, validMembers);
-      const errorMembers = Array.isArray(result?.errorMembers) ? result.errorMembers : [];
-      blockedCount = validMembers.length - errorMembers.length;
-    } catch (error) {
-      await sendMessageWarning(api, message, "Đưa Em Key Vàng hoặc Key Bạc 🔑, Em Block Tất Cả Cho Đại Ca Xem :D 🚀", false);
-      return;
+    let failedCount = 0;
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      try {
+        const result = await api.blockUsers(threadId, batch);
+        const errorMembers = Array.isArray(result?.errorMembers) ? result.errorMembers : [];
+        blockedCount += Math.max(0, batch.length - errorMembers.length);
+        failedCount += errorMembers.length;
+      } catch {
+        failedCount += batch.length;
+      }
+      if (i + 1 < batches.length) {
+        await sleep(300);
+      }
     }
 
     if (blockedCount === 0) {
-      await sendMessageWarning(api, message, "Không thể chặn bất kỳ thành viên nào! 🚀", false);
+      await sendMessageWarning(
+        api,
+        message,
+        "Không thể chặn thành viên — hãy kiểm tra Key Vàng/Key Bạc của Bot trong nhóm! 🚀",
+        false
+      );
       return;
     }
 
-    await sendMessageStateQuote(api, message, `Đã chặn ${blockedCount} thành viên!`, true, 300000);
-  } catch (error) {
+    await sendMessageStateQuote(
+      api,
+      message,
+      `✅ Đã chặn ${blockedCount}/${validMembers.length} thành viên${failedCount > 0 ? ` (Thất bại: ${failedCount})` : ""}!`,
+      true,
+      300000
+    );
+  } catch {
     await sendMessageWarning(api, message, "Đưa Em Key Vàng hoặc Key Bạc 🔑, Em Block Tất Cả Cho Đại Ca Xem :D 🚀", false);
   }
 }
 
-export async function handleKeyCommands(api, message, groupSettings, isAdminLevelHighest) {
+export async function handleKeyCommands(
+  api,
+  message,
+  groupSettings,
+  isAdminLevelHighest,
+  aliasCommand = "",
+  canonicalName = ""
+) {
   const content = removeMention(message).trim();
-  const senderId = message.data.uidFrom;
+  const senderId = normalizeId(message?.data?.uidFrom);
   const threadId = message.threadId;
   const prefix = getGlobalPrefix();
-  const cmdToken = content.startsWith(prefix)
-    ? content.slice(prefix.length).trim().split(/\s+/)[0]?.toLowerCase()
-    : content.split(/\s+/)[0]?.toLowerCase();
+
+  const cmdToken = String(
+    canonicalName ||
+    (typeof aliasCommand === "string" ? aliasCommand : "") ||
+    (content.toLowerCase().startsWith(prefix.toLowerCase())
+      ? content.slice(prefix.length).trim().split(/\s+/)[0]
+      : content.split(/\s+/)[0]) ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
 
   const goldAliases = new Set(["keygold", "keyvang"]);
   const silverAliases = new Set(["keysilver", "keybac"]);
   const unkeyAliases = new Set(["unkey", "xoakey"]);
 
-  if (!goldAliases.has(cmdToken) && !silverAliases.has(cmdToken) && !unkeyAliases.has(cmdToken)) {
-    return false;
-  }
-
-  const action = goldAliases.has(cmdToken) ? "gold" : silverAliases.has(cmdToken) ? "silver" : "unkey";
+  let action = "";
+  if (canonicalName === "keygold" || goldAliases.has(cmdToken)) action = "gold";
+  else if (canonicalName === "keysilver" || silverAliases.has(cmdToken)) action = "silver";
+  else if (canonicalName === "unkey" || unkeyAliases.has(cmdToken)) action = "unkey";
+  else return false;
 
   if (!isAdminLevelHighest) {
-    const caption = "Không phải quản trị bot cấp mà sử dụng lệnh này!";
+    const caption = "Chỉ Quản trị viên cấp cao mới được sử dụng lệnh này!";
     await sendMessageInsufficientAuthority(api, message, caption);
     return false;
   }
 
-  const mentions = message.data.mentions;
-  const quotedUid = message.data?.quote?.uidFrom;
+  const effectiveAlias = resolveSafeAlias(aliasCommand, canonicalName || cmdToken);
+  const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
+  const mentionNames = extractMentionNameMap(message);
+  const targetUids = resolveTargetUsers(message, cleanArgs);
 
-  if ((!mentions || mentions.length === 0) && !quotedUid) {
+  if (targetUids.length === 0) {
     if (action === "unkey") {
-      await sendMessageWarning(api, message, "Vui lòng @mention hoặc reply người cần gỡ key!", false);
+      await sendMessageWarning(api, message, "Vui lòng @mention, reply tin nhắn hoặc nhập UID người cần gỡ key!", false);
       return true;
     }
-    await handleKeyAction(api, message, groupSettings, threadId, senderId, action, "Bạn");
-  } else if (mentions && mentions.length > 0) {
-    for (const mention of mentions) {
-      const targetId = mention.uid;
-      const targetName = message.data.content.substring(mention.pos, mention.pos + mention.len).replace("@", "");
-      await handleKeyAction(api, message, groupSettings, threadId, targetId, action, targetName);
-    }
-  } else if (quotedUid) {
-    const targetName = message.data?.quote?.fromD || quotedUid;
-    await handleKeyAction(api, message, groupSettings, threadId, quotedUid, action, targetName);
+    await handleKeyAction(api, message, threadId, senderId, action, "Bạn");
+    return true;
   }
 
-  writeGroupSettings(groupSettings);
+  if (action === "gold" && targetUids.length > 1) {
+    await sendMessageWarning(
+      api,
+      message,
+      "⚠️ Chỉ có thể nhường Key Vàng (Trưởng nhóm) cho duy nhất 1 thành viên!",
+      false
+    );
+    return true;
+  }
+
+  for (const targetId of targetUids) {
+    const targetName =
+      mentionNames.get(targetId) ||
+      (targetId === getQuotedUid(message) ? message?.data?.quote?.fromD : "") ||
+      targetId;
+    await handleKeyAction(api, message, threadId, targetId, action, targetName);
+  }
+
   return true;
 }
 
-async function handleKeyAction(api, message, groupSettings, threadId, targetId, action, targetName) {
+async function handleKeyAction(api, message, threadId, targetId, action, targetName) {
   switch (action) {
     case "gold":
       try {
         await api.changeGroupOwner(threadId, targetId);
         await sendMessageStateQuote(api, message, `Đã nhường key vàng cho ${targetName}.`, true, 300000);
-      } catch (error) {
-        await sendMessageStateQuote(api, message, `Không quyền hạn để nhường key cho ${targetName}.`, false, 300000);
+      } catch {
+        await sendMessageStateQuote(api, message, `Không đủ quyền hạn để nhường key vàng cho ${targetName}.`, false, 300000);
       }
       break;
     case "silver":
       try {
         await api.addGroupAdmins(threadId, targetId);
         await sendMessageStateQuote(api, message, `Đã phong key bạc cho ${targetName}.`, true, 300000);
-      } catch (error) {
-        await sendMessageStateQuote(api, message, `Không hạn để phong key bạc cho ${targetName}.`, false, 300000);
+      } catch {
+        await sendMessageStateQuote(api, message, `Không đủ quyền hạn để phong key bạc cho ${targetName}.`, false, 300000);
       }
       break;
     case "unkey":
       try {
         await api.removeGroupAdmins(threadId, targetId);
-        await sendMessageStateQuote(api, message, `Đã xóa key của ${targetName}.`, true, 300000);
-      } catch (error) {
-        await sendMessageStateQuote(api, message, `${targetName} Không có key để xóa.`, false, 300000);
+        await sendMessageStateQuote(api, message, `Đã xóa key phó nhóm của ${targetName}.`, true, 300000);
+      } catch {
+        await sendMessageStateQuote(api, message, `${targetName} không có key để xóa hoặc bot thiếu quyền.`, false, 300000);
       }
       break;
   }
 }
 
-export async function handleBlockBot(api, message, groupSettings) {
+export async function handleBlockBot(api, message, groupSettings, aliasCommand = "blockbot") {
   const threadId = message.threadId;
-  const senderId = message.data.uidFrom;
-  const senderName = message.data.dName;
-  let listIdBlock = [];
+  const senderId = normalizeId(message?.data?.uidFrom);
+  const msgType = safeThreadType(message);
+  const isDM = msgType === MessageType.DirectMessage || message?.type === 0;
+  const prefix = getGlobalPrefix();
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "blockbot");
+  const listIdBlock = [];
   let messageContent = "";
 
-  // Kiểm tra quyền admin
-  if (!isAdmin(senderId, threadId)) {
+  if (!isAdmin(senderId, isDM ? undefined : threadId)) {
     try {
       await sendMessageInsufficientAuthority(api, message, "Bạn không có quyền sử dụng lệnh này!");
     } catch (error) {
@@ -468,58 +771,74 @@ export async function handleBlockBot(api, message, groupSettings) {
     return;
   }
 
-  // Khởi tạo managerData.data và blockBot nếu chưa tồn tại
   if (!managerData.data) {
     managerData.data = { blockBot: [] };
-  } else if (!managerData.data.blockBot) {
+  } else if (!Array.isArray(managerData.data.blockBot)) {
     managerData.data.blockBot = [];
   }
 
   try {
-    if (groupSettings) {
-      const mentions = message.data.mentions;
-      if (mentions && mentions.length > 0) {
-        for (const mention of mentions) {
-          const targetId = mention.uid;
-          const targetName = message.data.content.substring(mention.pos, mention.pos + mention.len).replace("@", "");
-          if (!isAdmin(targetId, threadId)) {
-            listIdBlock.push({ targetId, targetName });
-          } else {
-            messageContent += `🚨 Không block được Quản Trị Cấp Cao: ${targetName}\n`;
-          }
-        }
-      } else {
-        messageContent = "🚨 Vui lòng đề cập người dùng qua @mention để chặn!";
+    const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
+    const mentionNames = extractMentionNameMap(message);
+    let candidateUids = resolveTargetUsers(message, cleanArgs);
+
+    // In DM with no explicit UID/quote/mention: target peer threadId ONLY when threadId !== senderId!
+    if (
+      candidateUids.length === 0 &&
+      isDM &&
+      threadId &&
+      normalizeId(threadId) !== senderId &&
+      /^\d+$/.test(normalizeId(threadId))
+    ) {
+      candidateUids = [normalizeId(threadId)];
+    }
+
+    if (candidateUids.length === 0) {
+      await api.sendMessage(
+        {
+          msg: isDM
+            ? `🚨 Vui lòng nhập UID người dùng cần chặn tương tác bot: ${prefix}${effectiveAlias} <UID>`
+            : `🚨 Vui lòng @mention, reply tin nhắn hoặc nhập UID người dùng để chặn!`,
+          quote: message,
+          ttl: 120000,
+        },
+        threadId,
+        msgType
+      );
+      return true;
+    }
+
+    const botId = String(getBotId() || appContext?.uid || "");
+
+    for (const targetId of candidateUids) {
+      let targetName = mentionNames.get(targetId) || "";
+      if (!targetName) {
+        const userInfo = await getUserInfoData(api, targetId).catch(() => null);
+        targetName = userInfo?.name || targetId;
       }
-    } else {
-      try {
-        const userInfo = await getUserInfoData(api, senderId);
-        if (!isAdmin(senderId, threadId)) {
-          listIdBlock.push({ targetId: senderId, targetName: userInfo.name });
-        } else {
-          messageContent = `🚨 Không block được Quản Trị Cấp Cao: ${userInfo.name}\n`;
-        }
-      } catch (error) {
-        console.error(`Lỗi khi lấy thông tin người dùng ${senderId}:`, error);
-        messageContent = "🚨 Lỗi khi lấy thông tin người dùng, vui lòng thử lại!";
+
+      if (targetId === botId || isAdmin(targetId, isDM ? undefined : threadId)) {
+        messageContent += `🚨 Không thể chặn Quản trị viên / Bot: ${targetName}\n`;
+      } else {
+        listIdBlock.push({ targetId, targetName });
       }
     }
 
     if (listIdBlock.length > 0) {
       const blockData = managerData.data;
-      let blockedUsers = [];
-      let alreadyBlockedUsers = [];
+      const blockedUsers = [];
+      const alreadyBlockedUsers = [];
 
       for (const item of listIdBlock) {
-        const isBlocked = blockData.blockBot.some((blocked) => blocked.idUserZalo === item.targetId);
+        const isBlocked = blockData.blockBot.some((blocked) => String(blocked.idUserZalo) === String(item.targetId));
         if (isBlocked) {
-          alreadyBlockedUsers.push(item.targetName);
+          alreadyBlockedUsers.push(`${item.targetName} (${item.targetId})`);
         } else {
           blockData.blockBot.push({
             idUserZalo: item.targetId,
             senderName: item.targetName,
           });
-          blockedUsers.push(item.targetName);
+          blockedUsers.push(`${item.targetName} (${item.targetId})`);
         }
       }
 
@@ -531,7 +850,6 @@ export async function handleBlockBot(api, message, groupSettings) {
       }
     }
 
-    // Đảm bảo luôn có phản hồi
     if (messageContent.trim() === "") {
       messageContent = "🚨 Không có mục tiêu hợp lệ để chặn!";
     }
@@ -543,7 +861,7 @@ export async function handleBlockBot(api, message, groupSettings) {
         ttl: 300000,
       },
       threadId,
-      message.type
+      msgType
     );
 
     if (listIdBlock.length > 0) {
@@ -556,113 +874,302 @@ export async function handleBlockBot(api, message, groupSettings) {
     try {
       await api.sendMessage(
         {
-          msg: "🚨 Đã có lỗi xảy ra khi xử lý lệnh blockbot, vui lòng thử lại!",
+          msg: "🚨 Đã có lỗi xảy ra khi xử lý lệnh chặn bot, vui lòng thử lại!",
           quote: message,
           ttl: 300000,
         },
         threadId,
-        message.type
+        msgType
       );
-    } catch (sendError) {
-      console.error("Lỗi khi gửi thông báo lỗi:", sendError);
-    }
+    } catch {}
   }
 }
-export async function handleUnblockBot(api, message, groupSettings) {
-  const threadId = message.threadId;
-  const senderName = message.data.dName;
-  let listIdUnblock = [];
 
-  if (groupSettings) {
-    const mentions = message.data.mentions;
-    if (mentions && mentions.length > 0) {
-      for (const mention of mentions) {
-        const targetId = mention.uid;
-        const targetName = message.data.content.substring(mention.pos, mention.pos + mention.len).replace("@", "");
-        listIdUnblock.push({ targetId, targetName });
-      }
-    }
-  } else {
-    const userInfo = await getUserInfoData(api, threadId);
-    listIdUnblock.push({ targetId: threadId, targetName: userInfo.name });
+export async function handleUnblockBot(api, message, groupSettings, aliasCommand = "unblockbot") {
+  const threadId = message.threadId;
+  const senderId = normalizeId(message?.data?.uidFrom);
+  const msgType = safeThreadType(message);
+  const isDM = msgType === MessageType.DirectMessage || message?.type === 0;
+  const prefix = getGlobalPrefix();
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "unblockbot").toLowerCase();
+
+  const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
+  const mentionNames = extractMentionNameMap(message);
+  let candidateUids = resolveTargetUsers(message, cleanArgs);
+
+  if (
+    candidateUids.length === 0 &&
+    isDM &&
+    threadId &&
+    normalizeId(threadId) !== senderId &&
+    /^\d+$/.test(normalizeId(threadId))
+  ) {
+    candidateUids = [normalizeId(threadId)];
   }
 
-  if (listIdUnblock.length > 0) {
-    if (!managerData.data) managerData.data = { blockBot: [] };
-    if (!Array.isArray(managerData.data.blockBot)) managerData.data.blockBot = [];
-    const blockData = managerData.data;
-    let unblockUsers = [];
-    let notBlockedUsers = [];
+  // Branch explicitly for unblockmessage: unblock personal Zalo messages
+  if (effectiveAlias === "unblockmessage") {
+    if (candidateUids.length === 0) {
+      await api.sendMessage(
+        {
+          msg: `🚨 Vui lòng nhập UID, @mention hoặc reply người cần mở chặn tin nhắn Zalo: ${prefix}unblockmessage <UID>`,
+          quote: message,
+          ttl: 60000,
+        },
+        threadId,
+        msgType
+      );
+      return true;
+    }
 
-    for (const item of listIdUnblock) {
-      const blockedUserIndex = blockData.blockBot.findIndex((blocked) => blocked.idUserZalo === item.targetId);
+    if (typeof api?.unblockUser !== "function") {
+      await sendMessageWarning(api, message, "API hiện tại chưa hỗ trợ mở chặn tin nhắn cá nhân Zalo.", false);
+      return true;
+    }
 
-      if (blockedUserIndex !== -1) {
-        blockData.blockBot.splice(blockedUserIndex, 1);
-        unblockUsers.push(item.targetName);
-      } else {
-        notBlockedUsers.push(item.targetName);
+    const okList = [];
+    const failList = [];
+    for (const uid of candidateUids) {
+      try {
+        await api.unblockUser(uid);
+        const info = await getUserInfoData(api, uid).catch(() => null);
+        okList.push(info?.name ? `${info.name} (${uid})` : uid);
+      } catch (err) {
+        failList.push(`${uid} (${err?.message || "Lỗi"})`);
       }
     }
 
-    let messageContent = "";
-    if (unblockUsers.length > 0) {
-      messageContent += `✅ Đã bỏ chặn tương tác bot đối với: ${unblockUsers.join(", ")}\n`;
-    }
-    if (notBlockedUsers.length > 0) {
-      messageContent += `❌ Các thành viên sau Không bị chặn: ${notBlockedUsers.join(", ")}`;
-    }
-
-    if (messageContent.trim() === "") {
-      messageContent = "🚨 Éo có mục tiêu để bỏ chặn, vui lòng đề cập thông qua @mention";
-    }
+    const lines = [];
+    if (okList.length > 0) lines.push(`✅ Đã mở chặn tin nhắn Zalo: ${okList.join(", ")}`);
+    if (failList.length > 0) lines.push(`❌ Không thể mở chặn: ${failList.join(", ")}`);
 
     await api.sendMessage(
-      { msg: messageContent.trim(), quote: message, ttl: 300000 },
-      message.threadId,
-      message.type
+      { msg: lines.join("\n"), quote: message, ttl: 300000 },
+      threadId,
+      msgType
     );
-
-    managerData.hasChanges = true;
-    saveManagerData();
     return true;
   }
-  await api.sendMessage(
-    { msg: "🚨 Vui lòng @mention người dùng cần bỏ chặn tương tác bot!", quote: message, ttl: 60000 },
-    message.threadId,
-    message.type
-  );
-  return true;
-}
 
-export async function handleListBlockBot(api, message) {
+  if (candidateUids.length === 0) {
+    await api.sendMessage(
+      {
+        msg: `🚨 Vui lòng @mention, reply tin nhắn hoặc nhập UID người dùng cần bỏ chặn tương tác bot!`,
+        quote: message,
+        ttl: 60000,
+      },
+      threadId,
+      msgType
+    );
+    return true;
+  }
+
   if (!managerData.data) managerData.data = { blockBot: [] };
   if (!Array.isArray(managerData.data.blockBot)) managerData.data.blockBot = [];
   const blockData = managerData.data;
-  const listBlockedUsers = blockData.blockBot.map((blocked) => blocked);
+
+  const unblockUsers = [];
+  const notBlockedUsers = [];
+
+  for (const targetId of candidateUids) {
+    const blockedUserIndex = blockData.blockBot.findIndex(
+      (blocked) => String(blocked.idUserZalo) === String(targetId)
+    );
+    const storedEntry = blockedUserIndex !== -1 ? blockData.blockBot[blockedUserIndex] : null;
+    let displayName = mentionNames.get(targetId) || storedEntry?.senderName || "";
+    if (!displayName) {
+      const userInfo = await getUserInfoData(api, targetId).catch(() => null);
+      displayName = userInfo?.name || targetId;
+    }
+
+    if (blockedUserIndex !== -1) {
+      blockData.blockBot.splice(blockedUserIndex, 1);
+      unblockUsers.push(`${displayName} (${targetId})`);
+    } else {
+      notBlockedUsers.push(`${displayName} (${targetId})`);
+    }
+  }
+
+  let messageContent = "";
+  if (unblockUsers.length > 0) {
+    messageContent += `✅ Đã bỏ chặn tương tác bot đối với: ${unblockUsers.join(", ")}\n`;
+  }
+  if (notBlockedUsers.length > 0) {
+    messageContent += `❌ Các người dùng sau không bị chặn: ${notBlockedUsers.join(", ")}`;
+  }
+
+  await api.sendMessage(
+    { msg: messageContent.trim(), quote: message, ttl: 300000 },
+    threadId,
+    msgType
+  );
+
+  if (unblockUsers.length > 0) {
+    managerData.hasChanges = true;
+    saveManagerData();
+  }
+  return true;
+}
+
+export async function handleListBlockBot(api, message, aliasCommand = "listblockbot") {
+  const threadId = message.threadId;
+  const msgType = safeThreadType(message);
+  const isDM = msgType === MessageType.DirectMessage || message?.type === 0;
+  const prefix = getGlobalPrefix();
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "listblockbot").toLowerCase();
+  const cleanArgs = extractCleanArgs(message, prefix, effectiveAlias);
+  const requestedPage = Math.max(1, Number.parseInt(cleanArgs[0], 10) || 1);
+  const PAGE_SIZE = 50;
+
+  // Branch explicitly for list-block-group: list Zalo group blocked members
+  if (effectiveAlias === "list-block-group") {
+    if (isDM) {
+      await sendMessageWarning(
+        api,
+        message,
+        `⚠️ Lệnh "${prefix}list-block-group" chỉ dùng trong nhóm để xem danh sách bị chặn của nhóm Zalo!`,
+        false
+      );
+      return true;
+    }
+
+    try {
+      let rawList = [];
+      if (typeof api?.getGroupBlockedMember === "function") {
+        const res = await api.getGroupBlockedMember({ page: requestedPage, count: PAGE_SIZE }, threadId);
+        rawList = Array.isArray(res?.blocked_members)
+          ? res.blocked_members
+          : Array.isArray(res?.members)
+            ? res.members
+            : Array.isArray(res)
+              ? res
+              : [];
+      } else if (typeof api?.getGroupBlockList === "function") {
+        const res = await api.getGroupBlockList(threadId, requestedPage);
+        rawList = Array.isArray(res?.blocked_members) ? res.blocked_members : [];
+      } else {
+        await sendMessageWarning(api, message, "API hiện tại chưa hỗ trợ xem danh sách chặn của nhóm.", false);
+        return true;
+      }
+
+      if (rawList.length === 0) {
+        await api.sendMessage(
+          {
+            msg: requestedPage > 1
+              ? `📭 Trang ${requestedPage} không có thành viên bị chặn nào.`
+              : `✅ Hiện không có ai nằm trong danh sách chặn của nhóm này.`,
+            quote: message,
+            ttl: 180000,
+          },
+          threadId,
+          msgType
+        );
+        return true;
+      }
+
+      const normalizedMembers = rawList.map((m) => ({
+        id: String(m?.id || m?.userId || m?.uid || "").trim(),
+        dName: String(m?.dName || m?.zaloName || m?.displayName || m?.id || "Không xác định").trim(),
+        avatar: m?.avatar && !String(m.avatar).startsWith("http") ? `https:${m.avatar}` : m?.avatar || "",
+      }));
+
+      let imagePath = null;
+      try {
+        imagePath = await createBlockListImage(normalizedMembers, "Nhóm");
+        await api.sendMessage(
+          {
+            msg: `🛑 Danh sách thành viên bị chặn trong nhóm (Trang ${requestedPage} — ${normalizedMembers.length} người):`,
+            attachments: [imagePath],
+            quote: message,
+            ttl: 300000,
+          },
+          threadId,
+          msgType
+        );
+      } catch {
+        const startIdx = (requestedPage - 1) * PAGE_SIZE;
+        const lines = normalizedMembers.map((m, idx) => `${startIdx + idx + 1}. ${m.dName}${m.id ? ` (${m.id})` : ""}`);
+        await api.sendMessage(
+          {
+            msg: `🛑 Danh sách thành viên bị chặn trong nhóm (Trang ${requestedPage}):\n${lines.join("\n")}`,
+            quote: message,
+            ttl: 300000,
+          },
+          threadId,
+          msgType
+        );
+      } finally {
+        if (imagePath) {
+          await deleteFile(imagePath);
+        }
+      }
+    } catch (error) {
+      await sendMessageWarning(
+        api,
+        message,
+        `Không thể tải danh sách chặn của nhóm (hãy kiểm tra quyền QTV nhóm của bot): ${error?.message || error}`,
+        false
+      );
+    }
+    return true;
+  }
+
+  if (!managerData.data) managerData.data = { blockBot: [] };
+  if (!Array.isArray(managerData.data.blockBot)) managerData.data.blockBot = [];
+  const listBlockedUsers = managerData.data.blockBot;
 
   if (listBlockedUsers.length === 0) {
     await api.sendMessage(
-      { msg: `🚨 Không có ai bị chặn tương tác với bot`, ttl: 300000 },
-      message.threadId,
-      message.type
+      { msg: `✅ Hiện không có ai bị chặn tương tác với bot.`, ttl: 300000 },
+      threadId,
+      msgType
     );
-  } else {
-    const filePath = await createBlockedBotListImage(listBlockedUsers);
-    try {
-      await api.sendMessage(
-        {
-          msg: `🛑 Đây là danh sách người dùng bị chặn tương tác với bot.`,
-          attachments: [filePath], 
-          ttl: 300000,
-        },
-        message.threadId,
-        message.type
-      );
-    } finally {
-      await deleteFile(filePath, { delayMs: 30 * 1000 });
+    return true;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(listBlockedUsers.length / PAGE_SIZE));
+  const safePage = Math.min(requestedPage, totalPages);
+  const startIndex = (safePage - 1) * PAGE_SIZE;
+  const pageItems = listBlockedUsers.slice(startIndex, startIndex + PAGE_SIZE);
+
+  let filePath = null;
+  try {
+    filePath = await createBlockedBotListImage(pageItems, {
+      page: safePage,
+      totalPages,
+      startIndex,
+    });
+    const pageCaption =
+      totalPages > 1
+        ? `🛑 Danh sách người dùng bị chặn tương tác bot (${listBlockedUsers.length} người — Trang ${safePage}/${totalPages}).\n💡 Gõ ${prefix}${effectiveAlias} <trang> để xem trang khác.`
+        : `🛑 Danh sách người dùng bị chặn tương tác với bot (${listBlockedUsers.length} người).`;
+    await api.sendMessage(
+      {
+        msg: pageCaption,
+        attachments: [filePath],
+        ttl: 300000,
+      },
+      threadId,
+      msgType
+    );
+  } catch {
+    const lines = pageItems.map(
+      (u, idx) => `${startIndex + idx + 1}. ${u.senderName || u.idUserZalo} (${u.idUserZalo})`
+    );
+    await api.sendMessage(
+      {
+        msg: `🛑 Danh sách bị chặn bot (Trang ${safePage}/${totalPages}):\n${lines.join("\n")}`,
+        ttl: 300000,
+      },
+      threadId,
+      msgType
+    );
+  } finally {
+    if (filePath) {
+      await deleteFile(filePath);
     }
   }
+  return true;
 }
 
 export function isUserBlocked(senderId) {
@@ -672,42 +1179,50 @@ export function isUserBlocked(senderId) {
       return false;
     }
 
-    return blockData.blockBot.some((blocked) => blocked.idUserZalo === senderId);
+    return blockData.blockBot.some((blocked) => String(blocked.idUserZalo) === String(senderId));
   } catch (error) {
     console.error("Lỗi khi kiểm tra trạng thái block:", error);
     return false;
   }
 }
 
-export async function handleSettingGroupCommand(api, message, groupInfo, aliasCommand) {
-  const content = removeMention(message);
+export async function handleSettingGroupCommand(api, message, groupInfo, aliasCommand = "settinggroup") {
   const threadId = message.threadId;
   const prefix = getGlobalPrefix();
-  const args = content.slice(prefix.length).trim().split(/\s+/);
+  const effectiveAlias = resolveSafeAlias(aliasCommand, "settinggroup");
+  const args = extractCleanArgs(message, prefix, effectiveAlias);
 
-  args.shift();
+  let resolvedGroup =
+    groupInfo && (groupInfo.setting || groupInfo.name || groupInfo.creatorId || groupInfo.gridInfoMap)
+      ? groupInfo.gridInfoMap?.[threadId] || groupInfo
+      : null;
+
+  if (!resolvedGroup?.setting) {
+    const freshInfo = await getGroupInfoData(api, threadId).catch(() => null);
+    if (freshInfo) resolvedGroup = freshInfo;
+  }
 
   if (args.length < 1) {
     const result = {
       success: false,
-      message: `Sử dụng: ${prefix}${aliasCommand} <loại config> <giá trị>` +
+      message:
+        `Sử dụng: ${prefix}${effectiveAlias} <loại config> <giá trị>` +
         `\n\n[Cài đặt Bật/Tắt] (on/off hoặc 1/0):` +
-        `\n- lockchat: ${groupInfo?.setting?.lockSendMsg ? "Tắt" : "Mở"} chat trong nhóm` +
-        `\n- lockview: ${groupInfo?.setting?.lockViewMember ? "Tắt" : "Mở"} xem thành viên trong nhóm` +
-        `\n- history: ${groupInfo?.setting?.enableMsgHistory ? "Mở" : "Tắt"} cho phép thành viên mới đọc tin nhắn gần nhất` +
-        `\n- joinappr: ${groupInfo?.setting?.joinAppr ? "Mở" : "Tắt"} chế độ phê duyệt thành viên` +
-        `\n- showkey: ${groupInfo?.setting?.signAdminMsg ? "Mở" : "Tắt"} hiển thị key quản trị` +
+        `\n- lockchat: ${resolvedGroup?.setting?.lockSendMsg ? "Tắt" : "Mở"} chat trong nhóm` +
+        `\n- lockview: ${resolvedGroup?.setting?.lockViewMember ? "Tắt" : "Mở"} xem thành viên trong nhóm` +
+        `\n- history: ${resolvedGroup?.setting?.enableMsgHistory ? "Mở" : "Tắt"} cho phép thành viên mới đọc tin nhắn gần nhất` +
+        `\n- joinappr: ${resolvedGroup?.setting?.joinAppr ? "Mở" : "Tắt"} chế độ phê duyệt thành viên` +
+        `\n- showkey: ${resolvedGroup?.setting?.signAdminMsg ? "Mở" : "Tắt"} hiển thị key quản trị` +
         `\n\n[Cài đặt Chuỗi]:` +
-        `\n- name <tên mới>: Đổi tên nhóm`
+        `\n- name <tên mới>: Đổi tên nhóm`,
     };
     await sendMessageFromSQL(api, message, result, false, 60000);
     return;
   }
 
   const settingType = args[0].toLowerCase();
-  const value = args.slice(1).join(" ");
+  const value = args.slice(1).join(" ").trim();
 
-  // Xử lý các cài đặt chuỗi
   if (["name"].includes(settingType)) {
     if (!value) {
       await sendMessageStateQuote(api, message, `Vui lòng nhập giá trị cho cài đặt ${settingType}`, false, 60000);
@@ -715,12 +1230,8 @@ export async function handleSettingGroupCommand(api, message, groupInfo, aliasCo
     }
 
     try {
-      switch (settingType) {
-        case "name":
-          await api.changeGroupName(threadId, value);
-          await sendMessageStateQuote(api, message, `Tên nhóm đã được đổi thành ${value}`, true, 60000);
-          break;
-      }
+      await api.changeGroupName(threadId, value);
+      await sendMessageStateQuote(api, message, `Tên nhóm đã được đổi thành ${value}`, true, 60000);
       return;
     } catch (error) {
       console.error(`Lỗi khi thay đổi ${settingType}:`, error);
@@ -729,55 +1240,57 @@ export async function handleSettingGroupCommand(api, message, groupInfo, aliasCo
     }
   }
 
-  // Xử lý các cài đặt on/off
   if (!value || !["on", "off", "0", "1"].includes(value.toLowerCase())) {
     await sendMessageStateQuote(api, message, `Vui lòng chọn on/off hoặc 1/0 để thay đổi cài đặt`, false, 60000);
     return;
   }
 
   const newValue = ["on", "1"].includes(value.toLowerCase()) ? 1 : 0;
-  const currentSettings = groupInfo.setting || {};
+  if (!resolvedGroup?.setting) {
+    const fresh = await getGroupInfoData(api, threadId).catch(() => null);
+    if (fresh) resolvedGroup = fresh;
+  }
+  const currentSettings = { ...(resolvedGroup?.setting || {}) };
 
   try {
     switch (settingType) {
-      case "lockchat":
+      case "lockchat": {
         currentSettings.lockSendMsg = newValue;
         const status = newValue === 1 ? "tắt" : "mở";
         await updateGroupSetting(api, message, threadId, currentSettings, `Đã ${status} chat cho tất cả thành viên!`);
         break;
+      }
 
-      case "lockview":
+      case "lockview": {
         currentSettings.lockViewMember = newValue;
         const memberStatus = newValue === 1 ? "tắt" : "mở";
         await updateGroupSetting(api, message, threadId, currentSettings, `Đã ${memberStatus} xem thành viên trong nhóm!`);
         break;
+      }
 
-      case "history":
+      case "history": {
         currentSettings.enableMsgHistory = newValue;
         const historyStatus = newValue === 1 ? "mở" : "tắt";
         await updateGroupSetting(api, message, threadId, currentSettings, `Đã ${historyStatus} cho phép thành viên mới đọc tin nhắn gần nhất!`);
         break;
+      }
 
-      case "joinappr":
+      case "joinappr": {
         currentSettings.joinAppr = newValue;
         const joinApprStatus = newValue === 1 ? "mở" : "tắt";
         await updateGroupSetting(api, message, threadId, currentSettings, `Đã ${joinApprStatus} chế độ phê duyệt thành viên!`);
         break;
+      }
 
-      case "showkey":
+      case "showkey": {
         currentSettings.signAdminMsg = newValue;
         const showKeyStatus = newValue === 1 ? "mở" : "tắt";
         await updateGroupSetting(api, message, threadId, currentSettings, `Đã ${showKeyStatus} hiển thị key quản trị!`);
         break;
-
-      // Thêm các case khác ở đây trong tương lai
-      // case "setting_name":
-      //   currentSettings.settingKey = newValue;
-      //   await updateGroupSetting(...);
-      //   break;
+      }
 
       default:
-        await sendMessageStateQuote(api, message, `Loại cài đặt '${settingType}' Không hợp lệ!`, false, 60000);
+        await sendMessageStateQuote(api, message, `Loại cài đặt '${settingType}' không hợp lệ!`, false, 60000);
         break;
     }
   } catch (error) {
@@ -1217,383 +1730,14 @@ async function updateGroupSetting(api, message, threadId, settings, successMessa
   await sendMessageStateQuote(api, message, successMessage, true, 60000);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const LEGACY_TAGET_FILE_PATH = path.join(__dirname, "tagetList.json");
-
-function resolveTagetFilePath() {
-  const dataDir = getActiveRuntimeContext()?.dataDir;
-  return dataDir ? path.join(dataDir, "tagetList.json") : LEGACY_TAGET_FILE_PATH;
-}
-
-// Hàm đọc danh sách taget từ file JSON
-async function readTagetList() {
-  const filePath = resolveTagetFilePath();
-  try {
-    if (!fsOnly.existsSync(filePath) && fsOnly.existsSync(LEGACY_TAGET_FILE_PATH)) {
-      const legacyRaw = await fs.readFile(LEGACY_TAGET_FILE_PATH, "utf8");
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, legacyRaw, "utf8");
-    }
-    const data = await fs.readFile(filePath, "utf8");
-    const parsed = JSON.parse(data);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      const initialData = {};
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, JSON.stringify(initialData, null, 2), "utf8");
-      return initialData;
-    }
-    return {};
-  }
-}
-
-// Hàm ghi danh sách taget vào file JSON
-async function writeTagetList(tagetData) {
-  const filePath = resolveTagetFilePath();
-  try {
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(tagetData, null, 2), "utf8");
-  } catch (error) {
-    throw new Error(`Không thể ghi vào tagetList.json: ${error.message}`);
-  }
-}
-
-// Hàm kiểm tra xem người dùng có bị taget trong nhóm không
 export async function isUserTagged(senderId, threadId) {
-  try {
-    const tagetData = await readTagetList();
-    const normalizedSenderId = String(senderId);
-    const groupData = tagetData[threadId] || { tagetList: [] };
-    const isTagged = groupData.tagetList.some((tagged) => {
-      const match = tagged.idUserZalo === normalizedSenderId;
-
-      return match;
-    });
-    return isTagged;
-  } catch (error) {
-
-    return false;
-  }
+  return isUserTargeted(senderId, threadId);
 }
 
-// Hàm xử lý lệnh taget để chặn và thêm người dùng vào danh sách taget theo nhóm
-export async function handleTaget(api, message, groupInfo) {
-  const threadId = message.threadId;
-  const groupName = groupInfo?.name || "Nhóm";
-  const senderId = message.data.uidFrom;
-
-  // Kiểm tra quyền quản trị
-  if (!isAdmin(senderId, threadId)) {
-    await sendMessageInsufficientAuthority(api, message, "Bạn không có quyền sử dụng lệnh này!");
-    return;
-  }
-
-  // Kiểm tra xem có người được nhắc đến không
-  if (!message.data.mentions || message.data.mentions.length === 0) {
-    await sendMessageWarning(
-      api,
-      message,
-      ":D Đại Ca muốn taget ai? 🚀",
-      false
-    );
-    return;
-  }
-
-  // Đọc danh sách taget hiện tại
-  const tagetData = await readTagetList();
-  if (!tagetData[threadId]) {
-    tagetData[threadId] = { tagetList: [] };
-  }
-  const uids = [];
-  const userDataMentions = [];
-  let messageContent = "";
-
-  const botId = String(getBotId() || "");
-  const nativeGroupAdmins = new Set(
-    [groupInfo?.creatorId, ...(groupInfo?.adminIds || [])].filter(Boolean).map(String)
-  );
-  // Xử lý từng người được nhắc đến
-  for (const mention of message.data.mentions) {
-    const userId = String(mention.uid); // Chuẩn hóa ID thành chuỗi
-    if (userId === botId || isAdmin(userId, threadId) || nativeGroupAdmins.has(userId)) {
-
-      await sendMessageWarning(
-        api,
-        message,
-        `Đại Ca không thể taget quản trị viên: ${userId} 🚀`,
-        false
-      );
-      continue;
-    }
-    uids.push(userId);
-    try {
-      const userInfo = await getUserInfoData(api, userId);
-      if (userInfo) {
-        userDataMentions.push(userInfo);
-      } else {
-
-      }
-    } catch (error) {
-
-    }
-  }
-
-  if (uids.length === 0) {
-    await sendMessageWarning(
-      api,
-      message,
-      "🚨 Không có người dùng hợp lệ để taget!",
-      false
-    );
-    return;
-  }
-
-  try {
-    // Thêm độ trễ để đảm bảo API ổn định
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Chặn người dùng
-    const result = await api.blockUsers(threadId, uids);
-    if (result.errorMembers && result.errorMembers.length > 0) {
-      await sendMessageWarning(
-        api,
-        message,
-        `🚨 Không thể chặn một số thành viên: ${result.errorMembers.join(", ")}`,
-        false
-      );
-      return;
-    }
-
-    let taggedUsers = [];
-    let alreadyTaggedUsers = [];
-
-    for (const userInfo of userDataMentions) {
-      const userId = String(userInfo.uid);
-      const isTagged = tagetData[threadId].tagetList.some((tagged) => tagged.idUserZalo === userId);
-      if (isTagged) {
-        alreadyTaggedUsers.push(userInfo.name);
-      } else {
-        tagetData[threadId].tagetList.push({
-          idUserZalo: userId,
-          senderName: userInfo.name || "Không xác định",
-        });
-        taggedUsers.push(userInfo.name);
-      }
-
-      // Gửi thông báo text cho mỗi người dùng bị chặn
-      await api.sendMessage(
-        {
-          msg: `🚨 Đã chặn và taget ${userInfo.name} trong nhóm!`,
-          quote: message,
-          ttl: 300000,
-        },
-        threadId,
-        message.type
-      );
-    }
-
-    // Tạo thông báo tóm tắt
-    if (taggedUsers.length > 0) {
-      messageContent += `✅ Đã taget và chặn: ${taggedUsers.join(", ")}\n`;
-    }
-    if (alreadyTaggedUsers.length > 0) {
-      messageContent += `❌ Đã taget từ trước: ${alreadyTaggedUsers.join(", ")}\n`;
-    }
-
-    if (messageContent.trim() === "") {
-      messageContent = "🚨 Không có mục tiêu hợp lệ để taget!";
-    }
-
-    await api.sendMessage(
-      {
-        msg: messageContent.trim(),
-        quote: message,
-        ttl: 300000,
-      },
-      threadId,
-      message.type
-    );
-
-    // Lưu danh sách taget vào file JSON
-    if (taggedUsers.length > 0) {
-
-      await writeTagetList(tagetData);
-    } else {
-
-    }
-  } catch (error) {
-
-    await sendMessageWarning(
-      api,
-      message,
-      `🚨 Lỗi khi xử lý lệnh taget: ${error.message}`,
-      false
-    );
-  }
+export async function handleTaget(api, message, groupInfo, aliasCommand = "taget") {
+  return executeUnifiedTargetCommand(api, message, groupInfo, resolveSafeAlias(aliasCommand, "taget"));
 }
+
 export async function handleMemberJoin(api, event) {
-  const threadId = event.threadId;
-  const updateMembers = event.data?.updateMembers || [];
-  const groupName = event.data?.groupName || "Nhóm";
-
-  if (!updateMembers.length) {
-    return;
-  }
-
-  // Thử lấy bot ID từ api.getBotId()
-  let botId;
-  try {
-    botId = await api.getBotId();
-    if (!botId) {
-      throw new Error("ID bot trả về là undefined hoặc null");
-    }
-  } catch (error) {
-    await api.sendMessage(
-      {
-        msg: `🚨 Cảnh báo: Không thể lấy ID bot từ API: ${error.message}. Tính năng chặn người dùng bị tạm vô hiệu hóa.`,
-        ttl: 300000,
-      },
-      threadId,
-      MessageType.GroupMessage
-    );
-    return; // Thoát hàm nếu không lấy được botId
-  }
-
-  const tagetData = await readTagetList();
-  const groupTagetList = tagetData[threadId]?.tagetList || [];
-  if (!groupTagetList.length) {
-    return;
-  }
-  const taggedIdSet = new Set(groupTagetList.map((item) => String(item.idUserZalo)));
-  let groupInfo = null;
-
-  for (const member of updateMembers) {
-    const userId = String(member.id); // Chuẩn hóa ID thành chuỗi
-
-    try {
-      if (taggedIdSet.has(userId)) {
-        if (!groupInfo) {
-          try {
-            groupInfo = await api.getGroupInfo(threadId);
-            if (!groupInfo || !groupInfo.gridInfoMap?.[threadId]) {
-              await api.sendMessage(
-                {
-                  msg: `🚨 Lỗi: Không thể lấy thông tin nhóm ${threadId}!`,
-                  ttl: 300000,
-                },
-                threadId,
-                MessageType.GroupMessage
-              );
-              return;
-            }
-          } catch (error) {
-            await api.sendMessage(
-              {
-                msg: `Không thể lấy thông tin nhóm, vui lòng thử lại sau`,
-                ttl: 300000,
-              },
-              threadId,
-              MessageType.GroupMessage
-            );
-            return;
-          }
-        }
-
-        let userName = "Không xác định";
-        try {
-          const userInfo = await getUserInfoData(api, userId);
-          userName = userInfo.name || userName;
-        } catch (error) {
-        }
-
-        try {
-          if (!botId) {
-            await api.sendMessage(
-              {
-                msg: `🚨 Lỗi: ID bot không được cấu hình! Vui lòng liên hệ quản trị viên hệ thống.`,
-                ttl: 300000,
-              },
-              threadId,
-              MessageType.GroupMessage
-            );
-            continue;
-          }
-          const gridData = groupInfo.gridInfoMap[threadId];
-          const botStr = String(botId);
-          const isBotGroupAdmin =
-            String(gridData.creatorId) === botStr ||
-            (Array.isArray(gridData.adminIds) && gridData.adminIds.map(String).includes(botStr)) ||
-            isAdmin(botId, threadId);
-          if (!isBotGroupAdmin) {
-            await api.sendMessage(
-              {
-                msg: `🚨 Lỗi: Bot không có quyền chặn người dùng trong nhóm ${groupName}! Vui lòng thêm bot làm quản trị viên.`,
-                ttl: 300000,
-              },
-              threadId,
-              MessageType.GroupMessage
-            );
-            continue;
-          }
-        } catch (error) {
-          await api.sendMessage(
-            {
-              msg: `🚨 Lỗi: Không thể xác định quyền của bot trong nhóm ${groupName}: ${error.message}`,
-              ttl: 300000,
-            },
-            threadId,
-            MessageType.GroupMessage
-          );
-          continue;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        try {
-          const result = await api.blockUsers(threadId, [userId]);
-          if (result.errorMembers && result.errorMembers.includes(userId)) {
-            await api.sendMessage(
-              {
-                msg: `🚨 Lỗi khi chặn ${userName}: Không thể chặn! Error: ${JSON.stringify(result.errorMembers)}`,
-                ttl: 300000,
-              },
-              threadId,
-              MessageType.GroupMessage
-            );
-            continue;
-          }
-
-          await api.sendMessage(
-            {
-              msg: `🚨 ${userName} đã bị chặn do nằm trong danh sách taget!`,
-              ttl: 300000,
-            },
-            threadId,
-            MessageType.GroupMessage
-          );
-        } catch (error) {
-          await api.sendMessage(
-            {
-              msg: `🚨 Lỗi khi chặn ${userName}: ${error.message}`,
-              ttl: 300000,
-            },
-            threadId,
-            MessageType.GroupMessage
-          );
-          continue;
-        }
-      }
-    } catch (error) {
-      await api.sendMessage(
-        {
-          msg: `🚨 Lỗi xử lý thành viên tham gia ${userId}: ${error.message}`,
-          ttl: 300000,
-        },
-        threadId,
-        MessageType.GroupMessage
-      );
-    }
-  }
+  return processUnifiedTargetJoin(api, event);
 }

@@ -1,27 +1,16 @@
 import fetch from "node-fetch";
 import { getGlobalPrefix } from "../service.js";
-
 import {
   sendMessageStateQuote,
-  sendMessageFailed
+  sendMessageFailed,
 } from "../chat-zalo/chat-style/chat-style.js";
-
-import { nameServer } from "../../utils/server-config.js";
-
-// ✅ Hàm lấy header (giống lovelink)
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith("@"));
-  const boldLine = lines.find(
-    line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line)
-  );
-
-  return [tagLine, boldLine].filter(Boolean).join(" ");
-};
+import { removeMention } from "../../utils/format-util.js";
+import { MessageType } from "../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCleanArgs,
+  getRawMessageText,
+} from "../../commands/shared/command-input-utils.js";
 
 export const des = {
   name: "checklq",
@@ -31,102 +20,181 @@ export const des = {
   active: true,
 };
 
-export async function handlechecklqCommand(api, message) {
-  const content = message.data.content.trim();
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesCheckLqCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const alias = escapeRegExp(String(aliasCommand || "checklq").trim());
+  return new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*${alias}(?:[\\s_]+|$)`, "i").test(cleaned);
+}
+
+export function maskEmail(raw) {
+  const str = String(raw ?? "").trim();
+  if (!str || str === "Không có" || str === "N/A") return str || "Không có";
+  const atIdx = str.indexOf("@");
+  if (atIdx <= 0) return maskGenericSecret(str);
+  const local = str.slice(0, atIdx);
+  const domain = str.slice(atIdx);
+  if (local.length <= 2) return `${local[0] || "*"}***${domain}`;
+  return `${local.slice(0, 2)}***${local.slice(-1)}${domain}`;
+}
+
+export function maskPhone(raw) {
+  const str = String(raw ?? "").trim();
+  if (!str || str === "Không có" || str === "N/A") return str || "Không có";
+  const digits = str.replace(/\D/g, "");
+  if (digits.length < 6) return "***";
+  return `${digits.slice(0, 3)}****${digits.slice(-2)}`;
+}
+
+export function maskGenericSecret(raw) {
+  const str = String(raw ?? "").trim();
+  if (!str || str === "Không có" || str === "N/A") return str || "Không có";
+  if (str.length <= 4) return "****";
+  return `${str.slice(0, 2)}****${str.slice(-2)}`;
+}
+
+export function maskIpAddress(raw) {
+  const str = String(raw ?? "").trim();
+  if (!str) return "N/A";
+  const parts = str.split(".");
+  if (parts.length === 4) {
+    return `${parts[0]}.${parts[1]}.*.*`;
+  }
+  return maskGenericSecret(str);
+}
+
+export async function handlechecklqCommand(api, message, aliasCommand = "checklq") {
   const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "checklq";
 
-  if (!content.startsWith(`${currentPrefix}checklq`)) return false;
+  if (!matchesCheckLqCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
+  }
 
-  const args = content.slice(currentPrefix.length + 8).trim().split(/\s+/).filter(Boolean);
+  // P0 SECURITY: Strictly enforce DirectMessage (0) so user passwords are NEVER handled or quoted in groups
+  const threadType = safeThreadType(message, MessageType.GroupMessage);
+  if (threadType !== MessageType.DirectMessage || message?.isGroup === true) {
+    try {
+      await api?.deleteMessage?.(message, false);
+    } catch {}
+    return api.sendMessage(
+      {
+        msg:
+          `🔒 Bảo mật: Tuyệt đối không nhập tài khoản và mật khẩu trong nhóm công khai!\n` +
+          `Vui lòng xóa tin nhắn vừa gửi (hoặc đổi mật khẩu ngay) và chỉ sử dụng lệnh ${currentPrefix}${effectiveAlias} trong tin nhắn riêng (Direct Message).`,
+        ttl: 60000,
+      },
+      message.threadId,
+      threadType
+    );
+  }
 
-  // ❌ Nếu không nhập đủ acc + pass
+  const dmCtx = message?.type === MessageType.DirectMessage
+    ? message
+    : { ...message, type: MessageType.DirectMessage };
+
+  const args = extractCleanArgs(dmCtx, currentPrefix, effectiveAlias);
   if (args.length < 2) {
-    const guide = `❌ Vui lòng nhập tài khoản và mật khẩu để check thông tin tài khoản Liên Quân
-👉 Cú pháp: ${currentPrefix}checklq <tài khoản> <mật khẩu>`;
+    return sendMessageStateQuote(
+      api,
+      dmCtx,
+      `❌ Vui lòng nhập tài khoản và mật khẩu trong tin nhắn riêng.\n` +
+        `👉 Cú pháp: ${currentPrefix}${effectiveAlias} <tài_khoản> <mật_khẩu>`,
+      false,
+      60000,
+      true
+    );
+  }
 
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${guide}`, true, 60000, false);
+  const checkApiBase = String(process.env.LQ_CHECK_API_URL || "").trim();
+  if (!checkApiBase) {
+    return sendMessageStateQuote(
+      api,
+      dmCtx,
+      `🔒 Bảo mật: Máy chủ kiểm tra nội bộ (LQ_CHECK_API_URL) hiện chưa được cấu hình.\n` +
+        `Hệ thống đã chặn việc gửi thông tin đăng nhập sang máy chủ bên thứ ba để bảo vệ an toàn tài khoản của bạn.`,
+      false,
+      60000,
+      true
+    );
   }
 
   const account = args[0];
-  const password = args[1];
-
-  const apiUrl = `https://api.nemg.me/checkacclq?acc=${encodeURIComponent(account)}&pass=${encodeURIComponent(password)}`;
-  console.log("Gọi API checklq:", apiUrl);
+  const password = args.slice(1).join(" ");
 
   try {
-    const res = await fetch(apiUrl);
-    const json = await res.json();
+    const endpoint = new URL(checkApiBase);
+    const res = await fetch(endpoint.toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ acc: account, pass: password }),
+      signal: AbortSignal.timeout(8000),
+    });
 
-    if (!res.ok || !json.ok) {
+    if (!res.ok) {
       return sendMessageStateQuote(
         api,
-        message,
-        `${getCleanNameServer()}❌ Không tìm thấy thông tin tài khoản hoặc mật khẩu sai.`,
-        true,
+        dmCtx,
+        `❌ Máy chủ kiểm tra phản hồi lỗi (HTTP ${res.status}).`,
+        false,
         60000,
-        false
+        true
       );
     }
 
-    // Xóa ảnh
-    delete json.skinID;
-    delete json.canvas_url;
+    const json = await res.json();
+    if (!json || !json.ok) {
+      return sendMessageStateQuote(
+        api,
+        dmCtx,
+        `❌ Không tìm thấy thông tin tài khoản hoặc thông tin đăng nhập không chính xác.`,
+        false,
+        60000,
+        true
+      );
+    }
 
-    // ===== Nhóm thông tin =====
+    // Explicitly purge any tokens before formatting output
+    delete json.access_token;
+    delete json.token;
+    delete json.password;
+
     let msg = `🔍 THÔNG TIN TÀI KHOẢN LIÊN QUÂN\n\n`;
+    msg += `👤 Username: ${json.username || account}\n`;
+    msg += `🆔 UID: ${json.uid || "N/A"}\n`;
+    msg += `🔑 Loại tài khoản: ${json.loaiacc || "N/A"}\n`;
+    msg += `🎮 Nickname: ${json.playername || "N/A"}\n`;
+    msg += `⭐ Level: ${json.level ?? "N/A"}\n`;
+    msg += `🏆 Rank: ${json.rank || "N/A"}\n`;
+    msg += `🎨 Skin: ${json.skin ?? "N/A"}\n`;
+    msg += `📅 Ngày tạo: ${json.regtime || "N/A"}\n`;
+    msg += `🚫 Tình trạng khóa: ${json.bantime || "Không"}\n`;
+    msg += `💎 Quân huy: ${json.quanhuy ?? "N/A"}\n`;
+    msg += `📩 Email: ${maskEmail(json.email)}\n`;
+    msg += `📱 SĐT: ${maskPhone(json.mobile)}\n`;
+    msg += `📘 Facebook: ${json.fb ? maskGenericSecret(json.fb) : "Không liên kết"}\n`;
+    msg += `🔒 CCCD/CMND: ${json.cmnd ? maskGenericSecret(json.cmnd) : "Không có"}\n`;
 
-    // 🧾 Thông tin cơ bản
-    msg += `👤 Username: ${json.username}\n`;
-    msg += `🆔 UID: ${json.uid}\n`;
-    msg += `🔑 Loại tài khoản: ${json.loaiacc}\n`;
-    msg += `🎮 Nickname: ${json.playername}\n`;
-    msg += `⭐ Level: ${json.level}\n`;
-    msg += `🏆 Rank: ${json.rank}\n`;
-    msg += `🎨 Skin: ${json.skin}\n`;
-    msg += `📅 Ngày tạo: ${json.regtime}\n`;
-    msg += `🚫 Tình trạng ban: ${json.bantime}\n`;
-    msg += `💎 Quân huy: ${json.quanhuy}\n`;
-    msg += `📩 Email: ${json.email}\n`;
-    msg += `📱 Mobile: ${json.mobile}\n`;
-    msg += `📘 Facebook: ${json.fb}\n`;
-    msg += `🔒 CMND: ${json.cmnd}\n\n`;
-
-    // 📜 Lịch sử đăng nhập
-    if (json.login_history?.length) {
-      msg += `🕒 LỊCH SỬ ĐĂNG NHẬP:\n`;
+    if (Array.isArray(json.login_history) && json.login_history.length > 0) {
+      msg += `\n🕒 LỊCH SỬ ĐĂNG NHẬP GẦN ĐÂY:\n`;
       json.login_history.slice(0, 3).forEach((item, i) => {
-        msg += `#${i + 1}:\n`;
-        msg += `   🌍 IP: ${item.ip}\n`;
-        msg += `   📍 ${item.thanh_pho}, ${item.quoc_gia}\n`;
-        msg += `   📱 Nguồn: ${item.nguon}\n`;
-        msg += `   ⏰ ${item.thoigian}\n\n`;
+        msg += `#${i + 1}: IP ${maskIpAddress(item?.ip)} • ${item?.thanh_pho || "?"}, ${item?.quoc_gia || "?"} (${item?.thoigian || ""})\n`;
       });
     }
 
-    // ⚙️ Hành động
-    if (json.hanh_dong?.length) {
-      msg += `⚙️ HÀNH ĐỘNG:\n`;
-      json.hanh_dong.forEach((item, i) => {
-        msg += `#${i + 1}:\n`;
-        msg += `   🔧 Hành động: ${item.hanh_dong}\n`;
-        msg += `   🌍 IP: ${item.ip}\n`;
-        msg += `   📍 ${item.thanh_pho}, ${item.quoc_gia}\n`;
-        msg += `   ⏰ ${item.thoigian}\n\n`;
-      });
-    }
-
-    // 🔑 Thông tin khác
-    msg += `📑 Access Token: ${json.access_token}\n`;
-    msg += `📊 Tổng request: ${json.total_requests}\n`;
-
-    return sendMessageStateQuote(api, message, `${getCleanNameServer()}${msg}`, true, 1800000, false);
-
-  } catch (e) {
-    console.error("Lỗi API checklq:", e);
+    return sendMessageStateQuote(api, dmCtx, msg.trim(), true, 1800000, false);
+  } catch {
     return sendMessageFailed(
       api,
-      message,
-      `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
+      dmCtx,
+      `❌ Không thể kết nối máy chủ kiểm tra tài khoản lúc này. Vui lòng thử lại sau.`,
       true
     );
   }

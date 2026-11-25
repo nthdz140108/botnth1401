@@ -1,17 +1,77 @@
+import crypto from "node:crypto";
 import { createCanvas, loadImage } from "canvas";
 import fs from "fs";
 import path from "path";
+import sharp from "sharp";
+import { LRUCache } from "lru-cache";
+import { getProjectRoot } from "../env.js";
 import { createCanvasTempPath } from "./temp-path.js";
+import { ensureCanvasFontsRegistered } from "./register-fonts.js";
 import { getRandomGradient } from "./color.js";
 
 const cv = {
   getRandomGradient,
 };
 
-export const linkBackgroundDefault = "./src/service-debug/chat-zalo/chat-special/data-send/help.txt";
+const decodedBgCache = new LRUCache({ max: 40, ttl: 30 * 60 * 1000 });
+
+export const linkBackgroundDefault = path.join(
+  getProjectRoot(),
+  "src",
+  "service-debug",
+  "chat-zalo",
+  "chat-special",
+  "data-send",
+  "help.txt"
+);
+
+export function parseBackgroundLinksFromText(fileContent) {
+  return String(fileContent || "")
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/(?=https?:\/\/)/g))
+    .map((s) => s.trim())
+    .filter((s) => /^https?:\/\//i.test(s));
+}
+
+async function fetchAndDecodeBackgroundImage(url) {
+  let pngBuffer = decodedBgCache.get(url);
+  if (!pngBuffer) {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "image/*,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      throw new Error(`Background HTTP ${res.status}`);
+    }
+    const rawBuffer = Buffer.from(await res.arrayBuffer());
+    const isExotic = /\.(jxl|webp|avif|heif)(\?|$)/i.test(url);
+    try {
+      pngBuffer = await sharp(rawBuffer, { animated: false }).png().toBuffer();
+    } catch (sharpErr) {
+      if (isExotic) {
+        throw sharpErr;
+      }
+      pngBuffer = rawBuffer;
+    }
+    decodedBgCache.set(url, pngBuffer);
+  }
+  return loadImage(pngBuffer);
+}
+
+function fillFallbackGradient(ctx, width, height) {
+  const backgroundGradient = ctx.createLinearGradient(0, 0, 0, height);
+  backgroundGradient.addColorStop(0, "#3B82F6");
+  backgroundGradient.addColorStop(1, "#111827");
+  ctx.fillStyle = backgroundGradient;
+  ctx.fillRect(0, 0, width, height);
+}
 
 // Tạo Hình Lệnh !Help
 export async function createInstructionsImage(helpContent, isAdminBox, width = 800) {
+  ensureCanvasFontsRegistered();
   const ctxTemp = createCanvas(999, 999).getContext("2d");
 
   const space = 36;
@@ -53,62 +113,57 @@ export async function createInstructionsImage(helpContent, isAdminBox, width = 8
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
-  // Đọc danh sách link ảnh từ file và chọn ngẫu nhiên
-  let backgroundImageUrl = null;
+  // Đọc danh sách link ảnh từ file (tự tách các URL bị dính liền trên cùng 1 dòng)
+  let candidateUrls = [];
   try {
     const fileContent = fs.readFileSync(linkBackgroundDefault, "utf-8");
-    const imageLinks = fileContent
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line && line.startsWith("http")); // Lọc các dòng hợp lệ
+    const imageLinks = parseBackgroundLinksFromText(fileContent);
     if (imageLinks.length > 0) {
-      backgroundImageUrl = imageLinks[Math.floor(Math.random() * imageLinks.length)];
+      // Shuffle up to 4 candidates (prioritizing first random pick, with fallback if a remote link fails)
+      const shuffled = [...imageLinks].sort(() => Math.random() - 0.5);
+      const nonJxlFallback = imageLinks.find((u) => /\.(jpe?g|png)(\?|$)/i.test(u));
+      candidateUrls = shuffled.slice(0, 3);
+      if (nonJxlFallback && !candidateUrls.includes(nonJxlFallback)) {
+        candidateUrls.push(nonJxlFallback);
+      }
     }
   } catch (error) {
     console.error("Lỗi khi đọc file chứa link ảnh:", error);
   }
 
-  // Tải và vẽ ảnh nền
-  if (backgroundImageUrl) {
+  // Tải, giải mã (.jxl/.webp qua sharp -> PNG) và vẽ ảnh nền
+  let drewBackground = false;
+  for (const bgUrl of candidateUrls) {
     try {
-      const backgroundImage = await loadImage(backgroundImageUrl);
-      // Tỷ lệ ảnh để phù hợp với canvas
+      const backgroundImage = await fetchAndDecodeBackgroundImage(bgUrl);
       const imgAspectRatio = backgroundImage.width / backgroundImage.height;
       const canvasAspectRatio = width / height;
 
       let drawWidth, drawHeight, offsetX, offsetY;
-
       if (imgAspectRatio > canvasAspectRatio) {
-        // Ảnh rộng hơn canvas: fit theo chiều cao, căn giữa theo chiều ngang
         drawHeight = height;
         drawWidth = height * imgAspectRatio;
-        offsetX = (width - drawWidth) / 2; // Căn giữa ngang
+        offsetX = (width - drawWidth) / 2;
         offsetY = 0;
       } else {
-        // Ảnh cao hơn canvas: fit theo chiều rộng, căn giữa theo chiều dọc
         drawWidth = width;
         drawHeight = width / imgAspectRatio;
         offsetX = 0;
-        offsetY = (height - drawHeight) / 2; // Căn giữa dọc
+        offsetY = (height - drawHeight) / 2;
       }
 
       ctx.drawImage(backgroundImage, offsetX, offsetY, drawWidth, drawHeight);
-    } catch (error) {
-      console.error("Lỗi khi tải ảnh nền:", error);
-      // Dự phòng: sử dụng nền đen với gradient
-      const backgroundGradient = ctx.createLinearGradient(0, 0, 0, height);
-      backgroundGradient.addColorStop(0, "#3B82F6");
-      backgroundGradient.addColorStop(1, "#111827");
-      ctx.fillStyle = "#000000";
+      ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
       ctx.fillRect(0, 0, width, height);
+      drewBackground = true;
+      break;
+    } catch (error) {
+      console.warn(`Không tải/giải mã được ảnh nền (${bgUrl}): ${error.message}`);
     }
-  } else {
-    // Không có link ảnh hợp lệ: sử dụng nền đen với gradient
-    const backgroundGradient = ctx.createLinearGradient(0, 0, 0, height);
-    backgroundGradient.addColorStop(0, "#3B82F6");
-    backgroundGradient.addColorStop(1, "#111827");
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, width, height);
+  }
+
+  if (!drewBackground) {
+    fillFallbackGradient(ctx, width, height);
   }
 
   // Vẽ icon nổi như background
@@ -194,7 +249,7 @@ const icons = [
     }
   }
 
-  const filePath = createCanvasTempPath(`help_${Date.now()}.png`);
+  const filePath = createCanvasTempPath(`help_${crypto.randomUUID()}.png`);
   const out = fs.createWriteStream(filePath);
   const stream = canvas.createPNGStream();
   stream.pipe(out);

@@ -1,11 +1,11 @@
+import crypto from "node:crypto";
 import { createCanvas, loadImage } from "canvas";
 import fs from "fs";
-import path from "path";
 import os from "os";
 import fsPromises from "fs/promises";
-import { networkInterfaces } from "os";
 import si from "systeminformation";
 import { createCanvasTempPath } from "./temp-path.js";
+import { ensureCanvasFontsRegistered } from "./register-fonts.js";
 import { getRandomGradient } from "./color.js";
 import { normalizeBotInfo } from "../../service-debug/info-service/bot-details-utils.js";
 
@@ -113,7 +113,7 @@ async function getCpuTemp() {
   }
 }
 
-async function getDiskUsage() {
+async function getDiskMetrics() {
   try {
     const disks = await si.fsSize();
     if (Array.isArray(disks) && disks.length > 0) {
@@ -121,24 +121,14 @@ async function getDiskUsage() {
       const usedGB = (((mainDisk.used ?? (mainDisk.size - mainDisk.available))) / (1024 * 1024 * 1024)).toFixed(1);
       const totalGB = (mainDisk.size / (1024 * 1024 * 1024)).toFixed(1);
       const freeGB = (mainDisk.available / (1024 * 1024 * 1024)).toFixed(1);
-      return `${usedGB} GB / ${totalGB} GB (Free ${freeGB} GB)`;
+      return {
+        usage: `${usedGB} GB / ${totalGB} GB (Free ${freeGB} GB)`,
+        total: `${totalGB} GB`,
+      };
     }
-    return "N/A";
+    return { usage: "N/A", total: "N/A" };
   } catch {
-    return "N/A";
-  }
-}
-
-async function getDiskTotal() {
-  try {
-    const disks = await si.fsSize();
-    if (Array.isArray(disks) && disks.length > 0) {
-      const mainDisk = disks.find(d => d.mount === "C:" || d.mount === "/") || disks[0];
-      return `${(mainDisk.size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-    }
-    return "N/A";
-  } catch {
-    return "N/A";
+    return { usage: "N/A", total: "N/A" };
   }
 }
 
@@ -219,6 +209,7 @@ async function getTerminal() {
 }
 
 export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInput, onConfigsInput, offConfigsInput) {
+  ensureCanvasFontsRegistered();
   const botInfo = normalizeBotInfo(botInfoInput);
   const uptime = uptimeInput || formatUptime(process.uptime());
   const botStats = botStatsInput || {};
@@ -228,21 +219,21 @@ export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInpu
   let width = 1400;
   let height = 0;
 
-  const loadAverage = await getLoadAverage();
-  const runningProcesses = await getRunningProcesses();
   const kernelVersion = os.release() || "Unknown";
   const hostname = os.hostname() || "localhost";
-  const terminal = await getTerminal();
 
-  let osVersion = "Unknown";
-  try {
-    osVersion = await getWindowsVersion();
-  } catch {}
+  const [loadAverage, runningProcesses, osVersion, diskMetrics, networkUsage, terminal] = await Promise.all([
+    getLoadAverage(),
+    getRunningProcesses(),
+    getWindowsVersion().catch(() => "Unknown"),
+    getDiskMetrics(),
+    botStats.network ? Promise.resolve(botStats.network) : getNetworkUsage(),
+    getTerminal(),
+  ]);
 
   const totalMemory = (os.totalmem() / (1024 * 1024 * 1024)).toFixed(2) + " GB";
   const freeMemory = (os.freemem() / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-  const diskTotal = await getDiskTotal();
-  const networkUsage = await getNetworkUsage();
+  const diskTotal = diskMetrics.total;
 
   const cpus = os.cpus() || [];
   const cpuCount = cpus.length || 1;
@@ -264,7 +255,7 @@ export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInpu
     { label: "🌡️ CPU Temp:", value: botStats.cpuTemp || "36°C" },
     { label: "📈 RAM Usage:", value: botStats.ram || `${((os.totalmem() - os.freemem()) / (1024 * 1024 * 1024)).toFixed(2)} GB / ${totalMemory}` },
     { label: "💿 Free Memory:", value: freeMemory },
-    { label: "💽 Disk Usage:", value: botStats.disk || (await getDiskUsage()) },
+    { label: "💽 Disk Usage:", value: botStats.disk || diskMetrics.usage },
     { label: "💽 Disk Total:", value: diskTotal },
     { label: "🌐 Network:", value: botStats.network || networkUsage },
     { label: "📊 Load Average:", value: loadAverage },
@@ -303,7 +294,7 @@ export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInpu
   const headerH = 220;
   const headerY = 30;
   const sysBoxHeight = systemFields.length * 50 + 100;
-  const resBoxHeight = resourceFields.length * 50 + 100;
+  const resBoxHeight = resourceFields.length * 50 + 160;
   const netBoxHeight = networkFields.length * 50 + 100;
 
   const maxConfigItems = onConfigs.length > 0 && offConfigs.length > 0 ? Math.max(onConfigs.length, offConfigs.length) : onConfigs.length > 0 ? onConfigs.length : offConfigs.length;
@@ -410,7 +401,7 @@ export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInpu
 
   const resBoxY = sysBoxY + sysBoxHeight + 30;
   drawBox(ctx, leftColumnX, resBoxY, leftColumnWidth, resBoxHeight, "Resource Usage");
-  let yRes = resBoxY + 60;
+  let yRes = resBoxY + 90;
   resourceFields.forEach(f => {
     ctx.textAlign = "left";
     ctx.font = "bold 28px BeVietnamPro";
@@ -510,7 +501,7 @@ export async function createBotInfoImage(botInfoInput, uptimeInput, botStatsInpu
     }
   }
 
-  const filePath = createCanvasTempPath(`bot_info_${Date.now()}.png`);
+  const filePath = createCanvasTempPath(`bot_info_${crypto.randomUUID()}.png`);
   const out = fs.createWriteStream(filePath);
   const stream = canvas.createPNGStream();
   stream.pipe(out);

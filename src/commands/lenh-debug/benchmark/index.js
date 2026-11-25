@@ -14,10 +14,15 @@ let currentTester = {
 const benchmarkPromise = new Map();
 let idRq = "BENCHMARK";
 
+function resolveDefaultWorkerCount() {
+  const cpuCount = Math.max(1, os.cpus()?.length || 1);
+  return Math.min(cpuCount, 4);
+}
+
 export class CpuBenchmark {
   constructor(options = {}) {
     this.durationMs = options.durationMs ?? 3000;
-    this.workers = options.workers ?? os.cpus().length;
+    this.workers = options.workers ?? resolveDefaultWorkerCount();
   }
 
   async runSingleThreadBenchmark(durationMs = this.durationMs) {
@@ -83,51 +88,85 @@ export async function runBench(options = {}) {
 }
 
 export async function handleBenchmarkCommand(api, message) {
-  const senderId = message.data.uidFrom;
-  const senderName = message.data.dName;
+  const senderId = message.data?.uidFrom;
+  const senderName = message.data?.dName || "Quản trị viên";
   const threadId = message.threadId;
-  let tempObj = {};
 
   if (isTestingBenchmark) {
-    tempObj = {
-      caption: `Hiện tại bot đang thực hiện đánh giá hiệu năng CPU theo yêu cầu của ${currentTester.name}. Vui lòng đợi kết quả.`,
-    };
-    await sendMessageCompleteRequest(api, message, tempObj, 30000);
-  }
-
-  if (benchmarkPromise.has(idRq)) {
-    let result = await benchmarkPromise.get(idRq);
-    tempObj = { message: `Đây là kết quả đánh giá hiệu năng CPU của bot!\n\n${result}` };
-    await sendMessageFromSQL(api, message, tempObj, false, TIME_TO_LIVE_MESSAGE);
+    await sendMessageCompleteRequest(
+      api,
+      message,
+      {
+        caption: `Hiện tại bot đang thực hiện đánh giá hiệu năng CPU theo yêu cầu của ${currentTester.name || "Quản trị viên"}. Vui lòng đợi kết quả.`,
+      },
+      30000
+    );
     return;
   }
 
+  if (benchmarkPromise.has(idRq)) {
+    try {
+      const cachedOutput = await benchmarkPromise.get(idRq);
+      await sendMessageFromSQL(
+        api,
+        message,
+        { message: `Đây là kết quả đánh giá hiệu năng CPU của bot!\n\n${cachedOutput}` },
+        false,
+        TIME_TO_LIVE_MESSAGE
+      );
+    } catch (cachedErr) {
+      benchmarkPromise.delete(idRq);
+      console.error("Lỗi khi đọc kết quả benchmark đã lưu:", cachedErr);
+      await sendMessageFromSQL(
+        api,
+        message,
+        { message: `Đã xảy ra lỗi khi đánh giá hiệu năng CPU. Vui lòng thử lại sau.`, success: false },
+        true,
+        30000
+      );
+    }
+    return;
+  }
+
+  // Acquire lock and register promise synchronously BEFORE any await
+  isTestingBenchmark = true;
+  currentTester = {
+    id: senderId,
+    name: senderName,
+    threadId,
+  };
+  const runningPromise = createBenchmarkResult();
+  runningPromise.catch(() => {});
+  benchmarkPromise.set(idRq, runningPromise);
+
   try {
-    isTestingBenchmark = true;
-    currentTester = {
-      id: senderId,
-      name: senderName,
-      threadId: threadId,
-    };
+    await sendMessageCompleteRequest(
+      api,
+      message,
+      { caption: `Vui lòng đợi bot đánh giá hiệu năng CPU...` },
+      TEST_DURATION
+    );
 
-    tempObj = { caption: `Vui lòng đợi bot đánh giá hiệu năng CPU...` };
-    await sendMessageCompleteRequest(api, message, tempObj, TEST_DURATION);
-
-    const result = createBenchmarkResult();
-    benchmarkPromise.set(idRq, result);
-    const output = await result;
-
-    tempObj = { message: `Đây là kết quả đánh giá hiệu năng CPU của bot!\n\n${output}` };
-    await sendMessageFromSQL(api, message, tempObj, false, TIME_TO_LIVE_MESSAGE);
+    const output = await runningPromise;
+    await sendMessageFromSQL(
+      api,
+      message,
+      { message: `Đây là kết quả đánh giá hiệu năng CPU của bot!\n\n${output}` },
+      false,
+      TIME_TO_LIVE_MESSAGE
+    );
   } catch (error) {
+    benchmarkPromise.delete(idRq);
     console.error("Lỗi khi đánh giá hiệu năng CPU:", error);
     const objectTemp = { message: `Đã xảy ra lỗi khi đánh giá hiệu năng CPU. Vui lòng thử lại sau.`, success: false };
     await sendMessageFromSQL(api, message, objectTemp, true, 30000);
   } finally {
     isTestingBenchmark = false;
     currentTester = { id: null, name: null, threadId: null };
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    benchmarkPromise.delete(idRq);
+    const timer = setTimeout(() => {
+      benchmarkPromise.delete(idRq);
+    }, 5000);
+    timer.unref?.();
   }
 }
 

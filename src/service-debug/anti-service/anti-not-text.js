@@ -1,21 +1,24 @@
 import { removeMention } from "../../utils/format-util.js";
 import { sendMessageStateQuote, sendMessageWarning } from "../chat-zalo/chat-style/chat-style.js";
+import { getGlobalPrefix } from "../service.js";
+import { isInWhiteList } from "./white-list.js";
 
 export async function handleOnlyText(api, message, groupSettings) {
   const threadId = message.threadId;
+  const prefix = getGlobalPrefix();
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-  const content = removeMention(message);
-  const parts = content.split(" ");
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
 
   if (parts.length === 1) {
-    // Chuyển đổi trạng thái nếu Không có đối số
     groupSettings[threadId].onlyText = !groupSettings[threadId].onlyText;
-  } else if (parts[1] === "on") {
+  } else if (option === "on") {
     groupSettings[threadId].onlyText = true;
-  } else if (parts[1] === "off") {
+  } else if (option === "off") {
     groupSettings[threadId].onlyText = false;
   } else {
-    const caption = "Cú pháp Không hợp lệ. Sử dụng @onlytext hoặc @onlytext on/off";
+    const caption = `Cú pháp không hợp lệ. Sử dụng ${prefix}onlytext hoặc ${prefix}onlytext [on/off]`;
     await sendMessageWarning(api, message, caption);
     return false;
   }
@@ -29,8 +32,10 @@ export async function handleOnlyText(api, message, groupSettings) {
 
 export async function antiNotText(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf) {
   const threadId = message.threadId;
+  const senderId = message.data?.uidFrom;
   const isPlainText = typeof message.data.content === "string";
   if (!botIsAdminBox || isAdminBox || isPlainText || isSelf) return false;
+  if (isInWhiteList(groupSettings, threadId, senderId)) return false;
 
   if (groupSettings[threadId]?.onlyText && message.data.msgType !== "webchat") {
     try {
@@ -42,10 +47,5 @@ export async function antiNotText(api, message, isAdminBox, groupSettings, botIs
     }
   }
 
-  //webchat - tin nhắn
-  //chat.recommended - tin nhắn được gợi ý
-  //chat.photo - hình ảnh
-  //chat.video.msg - video
-  //chat.sticker - sticker
-  //chat.voice - voice
+  return false;
 }

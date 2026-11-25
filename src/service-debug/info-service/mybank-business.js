@@ -1,6 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
-import { getBotId } from "../../utils/env.js";
+import { getBotId, getProjectRoot } from "../../utils/env.js";
+import { getActiveRuntimeContext } from "../../utils/io-json.js";
+import { extractCommandBody } from "../../commands/shared/command-input-utils.js";
 import { getGlobalPrefix } from '../service.js'; 
 
 import { sendMessageQuery } from '../chat-zalo/chat-style/chat-style.js';
@@ -77,23 +80,36 @@ function findBankCode(text) {
 
 // --- QUẢN LÝ DỮ LIỆU JSON ---
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DATA_FILE_PATH = path.join(DATA_DIR, 'mybank-data.json');
+const LEGACY_DATA_FILE_PATH = path.join(getProjectRoot(), 'data', 'mybank-data.json');
 
-function ensureDataDirExists() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+function resolveDataFilePath() {
+  const ctxDataDir = getActiveRuntimeContext()?.dataDir;
+  const targetDir = ctxDataDir
+    ? (path.isAbsolute(ctxDataDir) ? ctxDataDir : path.resolve(getProjectRoot(), ctxDataDir))
+    : path.join(getProjectRoot(), 'data');
+  return path.join(targetDir, 'mybank-data.json');
+}
+
+function escapeRegExp(value) {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function readAllData() {
-  ensureDataDirExists();
-  if (!fs.existsSync(DATA_FILE_PATH)) {
+  const filePath = resolveDataFilePath();
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const sourcePath = fs.existsSync(filePath)
+    ? filePath
+    : (fs.existsSync(LEGACY_DATA_FILE_PATH) ? LEGACY_DATA_FILE_PATH : null);
+  if (!sourcePath) {
     return {};
   }
   try {
-    const rawData = fs.readFileSync(DATA_FILE_PATH, 'utf8');
-    return JSON.parse(rawData);
+    const rawData = fs.readFileSync(sourcePath, 'utf8');
+    const parsed = JSON.parse(rawData);
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
     console.error("Lỗi nghiêm trọng khi đọc mybank-data.json:", error);
     return {};
@@ -118,13 +134,22 @@ function saveBotBankData(botBankList) {
     return;
   }
 
+  const filePath = resolveDataFilePath();
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+
   const allData = readAllData();
   allData[botId] = botBankList;
 
+  const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(DATA_FILE_PATH, JSON.stringify(allData, null, 2), 'utf8');
+    fs.writeFileSync(tempPath, JSON.stringify(allData, null, 2), 'utf8');
+    fs.renameSync(tempPath, filePath);
   } catch (error) {
     console.error("Lỗi nghiêm trọng khi ghi mybank-data.json:", error);
+    try {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    } catch {}
   }
 }
 
@@ -149,8 +174,8 @@ async function handleAddBank(api, message, addArgsString) {
   }
   
   const text = addArgsString
-    .replace(accountNumber, '')
-    .replace(new RegExp(bankInfo.word, 'i'), '')
+    .replace(new RegExp(`\\b${escapeRegExp(accountNumber)}\\b`), '')
+    .replace(new RegExp(`\\b${escapeRegExp(bankInfo.word)}\\b`, 'i'), '')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -282,8 +307,9 @@ export async function myBankBusinessCommand(api, message, aliasCommand) {
   const botId = getBotId();
   const threadId = message.threadId;
   const prefixCommand = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "mybank";
 
-  const argsString = message.data.content.substring(prefixCommand.length + aliasCommand.length).trim();
+  const argsString = extractCommandBody(message, prefixCommand, effectiveAlias);
   const args = argsString.split(/\s+/).filter(Boolean);
 
   if (botId === -1) {
@@ -297,7 +323,7 @@ export async function myBankBusinessCommand(api, message, aliasCommand) {
 
   try {
     if (subCommand === 'add') {
-      const addArgsString = argsString.substring(4).trim();
+      const addArgsString = argsString.replace(/^add\b/i, '').trim();
       await handleAddBank(api, message, addArgsString);
       
     } else if (subCommand === 'list') {

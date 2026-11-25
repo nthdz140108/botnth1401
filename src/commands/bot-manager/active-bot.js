@@ -3,13 +3,15 @@ import { nameServer, updateNameServer } from "../../utils/server-config.js";
 import {
   sendMessageComplete,
   sendMessageFailed,
-  sendMessageResultRequest, 
+  sendMessageResultRequest,
+  sendMessageStateQuote,
 } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
 import { removeMention } from "../../utils/format-util.js";
-import { requestRestartForBot, resolveRestartBotId } from "../../utils/util.js";
+import { restartSelf, requestRestartForBot, resolveRestartBotId } from "../../utils/util.js";
 import { RESTART_EXIT_CODE } from "../../utils/restart-request.js";
 import { readManagerFile, writeManagerFile, writeGroupSettings, readGroupSettings } from "../../utils/io-json.js";
 import { getGlobalPrefix } from "../../service-debug/service.js";
+import { safeThreadType } from "../shared/command-input-utils.js";
 
 // Khởi tạo managerData từ file
 export const managerData = {
@@ -19,19 +21,22 @@ export const managerData = {
 
 export async function notifyResetGroup(api) {
   const groupRequiredReset = managerData.data.groupRequiredReset;
-  if (groupRequiredReset !== "-1") {
+  if (groupRequiredReset && groupRequiredReset !== "-1") {
     let group;
     try {
       group = await api.getGroupInfo(groupRequiredReset);
-    } catch (error) {
-      await sendMessageResultRequest(api, MessageType.GroupMessage, groupRequiredReset, "Không thể lấy thông tin nhóm, vui lòng thử lại sau!", true, 30000);
-      return;
+    } catch {
+      group = null;
     }
 
-    await sendMessageResultRequest(api,
+    await sendMessageResultRequest(
+      api,
       group ? MessageType.GroupMessage : MessageType.DirectMessage,
       groupRequiredReset,
-      "Khởi động lại hoàn tất!\nBot đã hoạt động trở lại!", true, 30000);
+      "Khởi động lại hoàn tất!\nBot đã hoạt động trở lại!",
+      true,
+      30000
+    );
     managerData.data.groupRequiredReset = "-1";
     managerData.hasChanges = true;
     saveManagerData();
@@ -41,19 +46,15 @@ export async function notifyResetGroup(api) {
 export async function exitRestartBot(api, message) {
   try {
     const threadId = message.threadId;
-    managerData.data.groupRequiredReset = threadId;
-    managerData.hasChanges = true;
-    saveManagerData();
+    const threadType = safeThreadType(message);
+    await sendMessageResultRequest(api, threadType, threadId, "Tiến hành khởi động lại...", true, 12000);
 
-    await sendMessageResultRequest(api, message.type ?? MessageType.GroupMessage, threadId, "Tiến hành khởi động lại...", true, 12000);
-
-    requestRestartForBot(resolveRestartBotId(api), { threadId, type: message.type });
-
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    process.exit(RESTART_EXIT_CODE);
+    await restartSelf(api, { ...message, type: threadType }, "rs", {
+      suppressNotifyBeforeExit: true,
+      exitCode: RESTART_EXIT_CODE,
+    });
   } catch (error) {
-    await sendMessageFailed(api, message, "Không thể tắt bot: " + error.message, false, 15000);
+    await sendMessageFailed(api, message, "Không thể khởi động lại bot: " + error.message, false, 15000);
   }
 }
 
@@ -85,7 +86,8 @@ async function persistActiveBotSetting(groupSettings, threadId, newStatus) {
 
 async function handleSetNameServer(api, message, newName) {
   if (!newName) {
-    return api.sendMessage("❌ Vui lòng nhập tên server mới!", message.threadId);
+    await sendMessageFailed(api, message, "Vui lòng nhập tên server mới!");
+    return;
   }
 
   try {
@@ -97,8 +99,18 @@ async function handleSetNameServer(api, message, newName) {
   }
 }
 
+function buildBotCommandUsage(prefix) {
+  return [
+    "🤖 HƯỚNG DẪN LỆNH QUẢN LÝ BOT",
+    `• ${prefix}bot [on|off]: Bật/tắt tương tác thành viên với bot trong nhóm`,
+    `• ${prefix}bot privatebot [on|off]: Bật/tắt tương tác lệnh ở tin nhắn riêng tư (Admin cấp cao)`,
+    `• ${prefix}bot rs: Khởi động lại bot (Admin cấp cao)`,
+    `• ${prefix}bot nameserver [tên mới]: Xem hoặc đổi tên server bot (Admin cấp cao)`,
+  ].join("\n");
+}
+
 export async function handleActiveBotUser(api, message, groupSettings, authorization = null) {
-  const content = removeMention(message).trim();
+  const content = (removeMention(message) || "").trim();
   const threadId = message.threadId;
   const prefix = getGlobalPrefix() || "!";
   const authorizationSnapshot = authorization?.authorizationSnapshot || authorization || null;
@@ -115,7 +127,7 @@ export async function handleActiveBotUser(api, message, groupSettings, authoriza
   const subToken = (parts[1] || botCommand.split(/\s+/)[0] || "").toLowerCase();
 
   if (!subToken || subToken === "on" || subToken === "off") {
-    if (groupSettings) {
+    if (groupSettings && message?.type !== MessageType.DirectMessage) {
       if (!groupSettings[threadId]) {
         groupSettings[threadId] = {};
       }
@@ -128,9 +140,6 @@ export async function handleActiveBotUser(api, message, groupSettings, authoriza
 
       groupSettings[threadId].activeBot = newStatus;
 
-      // Persist to the CURRENT instance's settings file and confirm by
-      // re-reading from disk. Only report success once the value actually
-      // round-trips (groupId + activeBot present).
       const didPersist = await persistActiveBotSetting(groupSettings, threadId, newStatus);
 
       const statusMessage = newStatus ? "kích hoạt" : "vô hiệu hóa";
@@ -138,16 +147,12 @@ export async function handleActiveBotUser(api, message, groupSettings, authoriza
         ? `Đã ${statusMessage} tương tác thành viên với bot trong nhóm này.`
         : `Không thể lưu trạng thái ${statusMessage} tương tác thành viên với bot trong nhóm này!`;
       if (didPersist) {
-        if (newStatus) {
-          await sendMessageComplete(api, message, caption);
-        } else {
-          await sendMessageFailed(api, message, caption);
-        }
+        await sendMessageStateQuote(api, message, caption, true, 60000);
       } else {
         await sendMessageFailed(api, message, caption);
       }
     } else {
-      await sendMessageFailed(api, message, "Không thể setup nhóm ở tin nhắn riêng tư!");
+      await sendMessageFailed(api, message, "Không thể bật/tắt chế độ nhóm ở tin nhắn riêng tư! Dùng `privatebot [on|off]` cho tin nhắn riêng.");
     }
 
     return true;
@@ -159,27 +164,33 @@ export async function handleActiveBotUser(api, message, groupSettings, authoriza
       return true;
     }
     const privateCommand = (parts[2] || "").trim().toLowerCase();
+    if (privateCommand && privateCommand !== "on" && privateCommand !== "off") {
+      await sendMessageStateQuote(
+        api,
+        message,
+        `⚠️ Cú pháp: ${prefix}bot privatebot [on|off]`,
+        true,
+        60000,
+        false
+      );
+      return true;
+    }
     let newStatus;
     if (!privateCommand) {
       newStatus = !managerData.data.onBotPrivate;
     } else {
-      newStatus = privateCommand === "on" ? true : false;
+      newStatus = privateCommand === "on";
     }
     managerData.data.onBotPrivate = newStatus;
     managerData.hasChanges = true;
     saveManagerData();
     const statusMessage = newStatus ? "kích hoạt" : "vô hiệu hóa";
     const caption = `Đã ${statusMessage} tương tác lệnh trong tin nhắn riêng tư với tất cả người dùng.`;
-    if (newStatus) {
-      await sendMessageComplete(api, message, caption);
-    } else {
-      await sendMessageFailed(api, message, caption);
-    }
+    await sendMessageStateQuote(api, message, caption, true, 60000);
     return true;
   }
 
   if (parts[1]?.toLowerCase() === "rs" || subToken === "rs") {
-    // Strictly require adminLevelHigh (instance owner / supreme admin)
     if (isHigh) {
       await exitRestartBot(api, message);
       return true;
@@ -202,5 +213,13 @@ export async function handleActiveBotUser(api, message, groupSettings, authoriza
     return true;
   }
 
-  return false;
+  await sendMessageStateQuote(
+    api,
+    message,
+    buildBotCommandUsage(prefix),
+    true,
+    60000,
+    false
+  );
+  return true;
 }

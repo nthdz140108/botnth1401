@@ -84,11 +84,9 @@ export async function antiAllEffectSticker(
 
 export async function handleAntiAllEffectStickerCommand(api, message, groupSettings) {
   const threadId = message.threadId;
-  const senderName = message.data.dName;
-  const senderId = message.data.uidFrom;
   let isChangeSetting = false;
   const content = removeMention(message);
-  const status = content.split(" ")[1]?.toLowerCase();
+  const status = content.trim().split(/\s+/)[1]?.toLowerCase();
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};
   }
@@ -102,7 +100,22 @@ export async function handleAntiAllEffectStickerCommand(api, message, groupSetti
   groupSettings[threadId].allowSticker = newStatus;
   isChangeSetting = true;
   const statusText = newStatus ? "bật" : "tắt";
-  const caption = `Chức năng xóa sticker đã được ${statusText}!`;
+  let caption = `Chức năng xóa sticker đã được ${statusText}!`;
+
+  if (newStatus && typeof api?.getGroupInfo === "function") {
+    try {
+      const res = await api.getGroupInfo(threadId);
+      const gridInfo = res?.gridInfoMap?.[threadId];
+      const botUid = String(api?.getOwnId?.() || api?.getBotId?.() || getBotId() || "");
+      if (gridInfo && botUid && botUid !== "-1") {
+        const admins = [gridInfo.creatorId, ...(gridInfo.adminIds || gridInfo.admins || [])].filter(Boolean).map(String);
+        if (!admins.includes(botUid)) {
+          caption += "\n⚠️ Lưu ý: Hãy cấp Key Bạc/Vàng cho Bot để Bot có quyền xóa sticker.";
+        }
+      }
+    } catch {}
+  }
+
   await sendMessageStateQuote(api, message, caption, newStatus, 300000);
   return isChangeSetting;
 }

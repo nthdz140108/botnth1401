@@ -8,6 +8,7 @@ import { getUserInfoData } from "../info-service/user-info.js";
 import { LRUCache } from "lru-cache";
 import { createAntiStickerEffectImage } from "../../utils/canvas/event-image.js";
 import { clearImagePath } from "../../utils/canvas/index.js";
+import { isInWhiteList } from "./white-list.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -33,43 +34,53 @@ const stickerEffectList = loadStickerEffectList();
 const stickerEffectSpamState = new LRUCache({ max: 5000, ttl: 10 * 60 * 1000 });
 
 export async function handleAntiStickerEffect(api, message, groupSettings) {
-  const threadId = message.threadId, prefix = getGlobalPrefix(), content = removeMention(message).trim();
-  if (!content.startsWith(`${prefix}antistickereffect`)) return false;
+  const threadId = message.threadId;
+  const prefix = getGlobalPrefix();
+  const content = removeMention(message).trim();
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-  const parts = content.split(" ");
-  if (parts.length === 1) groupSettings[threadId].antiStickerEffect = !groupSettings[threadId].antiStickerEffect;
-  else if (parts[1] === "on") groupSettings[threadId].antiStickerEffect = true;
-  else if (parts[1] === "off") groupSettings[threadId].antiStickerEffect = false;
-  else {
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
+
+  if (!option) {
+    groupSettings[threadId].antiStickerEffect = !groupSettings[threadId].antiStickerEffect;
+  } else if (option === "on") {
+    groupSettings[threadId].antiStickerEffect = true;
+  } else if (option === "off") {
+    groupSettings[threadId].antiStickerEffect = false;
+  } else {
     await sendMessageWarning(api, message, `❌ Sai cú pháp. Dùng: ${prefix}antistickereffect [on/off]`);
-    return true;
+    return false;
   }
   const status = groupSettings[threadId].antiStickerEffect ? "bật" : "tắt";
-  await sendMessageStateQuote(api, message, `Chức năng chống gửi sticker hiệu ứng đã ${status}`, groupSettings[threadId].antiStickerEffect, 300000);
-  return true; 
+  await sendMessageStateQuote(api, message, `Chức năng chống gửi sticker hiệu ứng đã ${status}!`, groupSettings[threadId].antiStickerEffect, 300000);
+  return true;
 }
 
 export async function antiStickerEffect(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf) {
   const threadId = message.threadId, senderId = message.data.uidFrom, senderName = message.data.dName, botId = getBotId();
-  if (!botIsAdminBox || isAdminBox || isSelf || !groupSettings?.[threadId]?.antiStickerEffect) {
+  if (
+    !botIsAdminBox ||
+    isAdminBox ||
+    isSelf ||
+    !groupSettings?.[threadId]?.antiStickerEffect ||
+    isInWhiteList(groupSettings, threadId, senderId)
+  ) {
     return false;
   }
 
   if (message?.data?.msgType === "chat.sticker") {
     const { id: stickerId, catId: cateId, type: stickerType } = message?.data?.content || {};
-    const isEffectSticker = stickerEffectList.some(
-      (sticker) =>
-        sticker.stickerType !== undefined &&
-        sticker.stickerId === Number(stickerId) &&
-        sticker.cateId === Number(cateId) &&
-        sticker.stickerType === Number(stickerType)
-    );
+    const isEffectSticker =
+      Number(stickerType) === 3 ||
+      stickerEffectList.some(
+        (sticker) =>
+          sticker.stickerType !== undefined &&
+          sticker.stickerId === Number(stickerId) &&
+          sticker.cateId === Number(cateId) &&
+          sticker.stickerType === Number(stickerType)
+      );
     if (isEffectSticker) {
-      if (botIsAdminBox) {
-        await api.deleteMessage(message, false).catch(error => console.error("Failed to delete sticker:", error.message));
-      } else {
-        console.log("Bot lacks admin permissions, sending warning only");
-      }
+      await api.deleteMessage(message, false).catch(error => console.error("Failed to delete sticker:", error.message));
       await updateStickerEffectCount(api, message, threadId, senderId, senderName, botId, isAdminBox, stickerId, cateId, stickerType);
       return true;
     }

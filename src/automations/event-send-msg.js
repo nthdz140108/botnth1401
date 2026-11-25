@@ -318,7 +318,21 @@ export async function messagesUser(api, message) {
         const handledPrefixReply = await handleQrLoginPrefixReply(api, message);
         continueProcessingChat = continueProcessingChat && !handledPrefixReply;
 
-        continueProcessingChat = continueProcessingChat && !(await handleOnReplyFromUser(api, message));
+        if (continueProcessingChat) {
+          const dmGroupSettings = readGroupSettings();
+          const dmReplyHandled = await eventSendMsgHooks.handleOnReplyFromUser(
+            api,
+            message,
+            {},
+            [],
+            dmGroupSettings,
+            privateAuthorization.isAdminLevelHigh,
+            privateAuthorization.isBotAdmin,
+            privateAuthorization.isAdminLevelHigh || privateAuthorization.isBotAdmin,
+            true
+          );
+          continueProcessingChat = !dmReplyHandled;
+        }
         if (continueProcessingChat) {
           const commandResult = await handleCommandPrivate(api, message, privateAuthorization);
           continueProcessingChat = continueProcessingChat && commandResult === 1 && isSelf;
@@ -535,13 +549,13 @@ export async function messagesUser(api, message) {
             {
               name: "antiLink",
               action: "delete",
-              enabled: () => Boolean(groupSettings[threadId]?.antiLink),
+              enabled: () => Boolean(groupSettings[threadId]?.removeLinks || groupSettings[threadId]?.antiLink),
               run: () => antiLink(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf),
             },
             {
               name: "antiPhoneNumber",
               action: "delete",
-              enabled: () => Boolean(groupSettings[threadId]?.antiPhone),
+              enabled: () => Boolean(groupSettings[threadId]?.antiPhoneNumber || groupSettings[threadId]?.antiPhone),
               run: () => antiPhoneNumber(api, message, isAdminBox, groupSettings, botIsAdminBox, isSelf),
             },
             {
@@ -584,8 +598,9 @@ export async function messagesUser(api, message) {
         });
         protectionHandled = protectionResult.handled;
       }
+      const userBlocked = isUserBlocked(senderId);
       handleChat = !muted && !protectionHandled;
-      handleChat = handleChat && !isUserBlocked(senderId);
+      handleChat = handleChat && !userBlocked;
       isAdminLevelHighest = effectiveAuthorization.isAdminLevelHigh;
       callerIsBotAdmin = effectiveAuthorization.isBotAdmin;
       const canProcessReply = handleChat && (
@@ -611,7 +626,7 @@ export async function messagesUser(api, message) {
         }
         handleChat = handleChat && groupSettings[threadId]?.activeBot === true;
         handleChat = handleChat && isSelf;
-        if (canProcessReply || (callerIsBotAdmin && !protectionHandled && !muted)) {
+        if (canProcessReply || (callerIsBotAdmin && !protectionHandled && !muted && !userBlocked)) {
           const replyHandled = await eventSendMsgHooks.handleOnReplyFromUser(
             api,
             message,
@@ -621,11 +636,18 @@ export async function messagesUser(api, message) {
             isAdminLevelHighest,
             callerIsBotAdmin,
             isAdminBox,
-            canProcessReply || (callerIsBotAdmin && !protectionHandled && !muted)
+            true
           );
           if (replyHandled) { handleChat = true; mediaReplyHandled = true; }
         }
-        if (handleChat) {
+        if (
+          !muted &&
+          !protectionHandled &&
+          !isSelf &&
+          !userBlocked &&
+          groupSettings[threadId]?.activeBot === true &&
+          groupSettings[threadId]?.ifMentioned === true
+        ) {
           const replyTagHandled = await handleCalls(
             api,
             message,
@@ -636,7 +658,7 @@ export async function messagesUser(api, message) {
           );
           if (replyTagHandled) handleChat = false;
         }
-        if (!protectionHandled && !muted) {
+        if (!protectionHandled && !muted && !userBlocked) {
           await handleChatBot(api, message, threadId, groupSettings, nameGroup, numberHandleCommand === 2);
         }
       }
@@ -646,9 +668,14 @@ export async function messagesUser(api, message) {
       }
 
       if (!protectionHandled && !muted) {
+        const isGroupActiveBot = groupSettings[threadId]?.activeBot === true;
         await Promise.all([
-          handleAutoReplyGemini(api, message, groupSettings, isSelf),
-          !mediaReplyHandled && !isUserBlocked(senderId) && handleDownloadZalo(api, message, groupSettings, isSelf),
+          isGroupActiveBot && !userBlocked
+            ? handleAutoReplyGemini(api, message, groupSettings, isSelf)
+            : false,
+          !mediaReplyHandled && isGroupActiveBot && !userBlocked
+            ? handleDownloadZalo(api, message, groupSettings, isSelf)
+            : false,
           handleAutoJoin(api, message, groupSettings, botIsAdminBox, isSelf),
         ]);
       }

@@ -15,25 +15,25 @@ function findDefinition(registry, name) {
   return Array.isArray(def) ? def[0] : def;
 }
 
-test("gpt command requires KIRA_API_KEY via requiredConfig", () => {
+test("gpt command accepts KIRA_API_KEY or OPENAI_API_KEY via requiredConfig", () => {
   const def = findDefinition(phase1Registry, "gpt");
   assert.ok(def, "gpt definition should exist");
-  assert.deepEqual(def.requiredConfig, ["KIRA_API_KEY"]);
+  assert.deepEqual(def.requiredConfig, [["KIRA_API_KEY", "OPENAI_API_KEY"]]);
 });
 
-test("deepseek command requires KIRA_API_KEY via requiredConfig", () => {
+test("deepseek command accepts DEEPSEEK_API_KEY or KIRA_API_KEY via requiredConfig", () => {
   const def = findDefinition(phase2Registry, "deepseek");
   assert.ok(def, "deepseek definition should exist");
-  assert.deepEqual(def.requiredConfig, ["KIRA_API_KEY"]);
+  assert.deepEqual(def.requiredConfig, [["DEEPSEEK_API_KEY", "KIRA_API_KEY"]]);
 });
 
-test("dich command requires KIRA_API_KEY via requiredConfig", () => {
+test("dich command works out of the box without hard requiredConfig", () => {
   const def = findDefinition(phase4Registry, "dich");
   assert.ok(def, "dich definition should exist");
-  assert.deepEqual(def.requiredConfig, ["KIRA_API_KEY"]);
+  assert.deepEqual(def.requiredConfig, []);
 });
 
-test("gpt dispatcher returns MISSING_DEPENDENCY without invoking the handler", async () => {
+test("gpt dispatcher returns MISSING_DEPENDENCY without invoking the handler when both keys missing", async () => {
   let called = false;
   const registry = createPhase1Registry({
     gpt: async () => {
@@ -49,12 +49,11 @@ test("gpt dispatcher returns MISSING_DEPENDENCY without invoking the handler", a
   }, registry);
 
   assert.equal(result.code, "MISSING_DEPENDENCY");
-  assert.deepEqual(result.missing, ["KIRA_API_KEY"]);
   assert.equal(result.missingDetails[0].kind, "config");
-  assert.equal(called, false, "handler must not be invoked when KIRA_API_KEY is missing");
+  assert.equal(called, false, "handler must not be invoked when keys are missing");
 });
 
-test("deepseek dispatcher returns MISSING_DEPENDENCY without invoking the handler", async () => {
+test("deepseek dispatcher returns MISSING_DEPENDENCY without invoking the handler when both keys missing", async () => {
   let called = false;
   const registry = createPhase2Registry({
     deepseek: async () => {
@@ -70,35 +69,42 @@ test("deepseek dispatcher returns MISSING_DEPENDENCY without invoking the handle
   }, registry);
 
   assert.equal(result?.code, "MISSING_DEPENDENCY");
-  assert.deepEqual(result.missing, ["KIRA_API_KEY"]);
   assert.equal(called, false);
 });
 
-test("gpt dispatcher proceeds past dependency gate when KIRA_API_KEY is configured", async () => {
-  let called = false;
+test("gpt dispatcher proceeds past dependency gate when KIRA_API_KEY or OPENAI_API_KEY is configured", async () => {
+  let called = 0;
   const registry = createPhase1Registry({
     gpt: async () => {
-      called = true;
+      called += 1;
       return "ok";
     },
   });
 
-  const result = await dispatchPhase1Command({
+  const resultKira = await dispatchPhase1Command({
     commandParts: ["gpt", "xin chao"],
     scope: "private",
     config: { KIRA_API_KEY: "present" },
     dependencies: { zaloSession: true },
   }, registry);
+  assert.equal(resultKira.code, "HANDLED");
 
-  assert.equal(result.code, "HANDLED");
-  assert.equal(called, true);
+  const resultOpenAi = await dispatchPhase1Command({
+    commandParts: ["gpt", "xin chao"],
+    scope: "private",
+    config: { OPENAI_API_KEY: "present" },
+    dependencies: { zaloSession: true },
+  }, registry);
+  assert.equal(resultOpenAi.code, "HANDLED");
+  assert.equal(called, 2);
 });
 
-test("dich dispatcher returns MISSING_DEPENDENCY without invoking the handler", async () => {
+test("dich dispatcher proceeds without API keys via free fallback", async () => {
   let called = false;
   const registry = createPhase4Registry({
     dich: async () => {
       called = true;
+      return "translated";
     },
   });
 
@@ -109,7 +115,6 @@ test("dich dispatcher returns MISSING_DEPENDENCY without invoking the handler", 
     dependencies: { zaloSession: true },
   }, registry);
 
-  assert.equal(result.code, "MISSING_DEPENDENCY");
-  assert.deepEqual(result.missing, ["KIRA_API_KEY"]);
-  assert.equal(called, false);
+  assert.equal(result.code, "HANDLED");
+  assert.equal(called, true);
 });

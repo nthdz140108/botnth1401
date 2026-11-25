@@ -16,34 +16,42 @@ function resolveTargetTier(tokens, { defaultTier = "bot" } = {}) {
   return { tier: defaultTier, restTokens: tokens };
 }
 
-export function parseAdminCommand(rawContent, prefix = "!", message = {}, scope = "group") {
+export function parseAdminCommand(rawContent, prefix = "!", message = {}, scope = "group", canonicalCommand = "") {
   const isPrivate = scope === "private" || message?.type === 0;
   const content = typeof rawContent === "string" ? rawContent.trim() : "";
   const prefixStr = typeof prefix === "string" ? prefix : "!";
-  const normalized = content.startsWith(prefixStr) ? content.slice(prefixStr.length).trim() : content;
+  const normalized = content.toLowerCase().startsWith(prefixStr.toLowerCase())
+    ? content.slice(prefixStr.length).trim()
+    : content;
   const parts = normalized.split(/\s+/).filter(Boolean);
   const rootVerb = parts[0]?.toLowerCase() || "";
+  const canonical = String(canonicalCommand || "").trim().toLowerCase();
 
   let action = "guide";
   let tokensAfterAction = [];
 
-  if (rootVerb === "listadmin") {
-    action = "list";
-  } else if (rootVerb === "admin") {
-    const sub = parts[1]?.toLowerCase();
-    if (!sub) {
-      action = "guide";
-    } else if (sub === "list" || LIST_ALIASES.has(sub)) {
+  // NOTE: bare `!add` / `!remove` (root verb or canonicalCommand) are intentionally NOT
+  // recognized as admin mutations — admin mutations must go through `!admin add/remove [box|qtv]`.
+  const isStandaloneAddRemove =
+    rootVerb === "add" || rootVerb === "remove" || canonical === "add" || canonical === "remove";
+
+  if (!isStandaloneAddRemove) {
+    if (rootVerb === "listadmin" || canonical === "listadmin") {
       action = "list";
-    } else if (sub === "add" || sub === "remove" || REMOVE_ALIASES.has(sub)) {
-      action = sub === "add" ? "add" : "remove";
-      tokensAfterAction = parts.slice(2);
-    } else {
-      action = "unknown";
+    } else if (rootVerb === "admin" || canonical === "admin") {
+      const sub = parts[1]?.toLowerCase();
+      if (!sub) {
+        action = "guide";
+      } else if (sub === "list" || LIST_ALIASES.has(sub)) {
+        action = "list";
+      } else if (sub === "add" || sub === "remove" || REMOVE_ALIASES.has(sub)) {
+        action = sub === "add" ? "add" : "remove";
+        tokensAfterAction = parts.slice(2);
+      } else {
+        action = "unknown";
+      }
     }
   }
-  // NOTE: bare `!add` / `!remove` (root verb) are intentionally NOT recognized
-  // anymore — admin mutations must go through `!admin add/remove [box|qtv]`.
 
   let targetTier = "bot";
   let targetTokens = [];

@@ -2,7 +2,7 @@ import os from "os";
 import si from "systeminformation";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getBotName } from "../../utils/env.js";
+import { getBotName, getProjectRoot } from "../../utils/env.js";
 import { getUserInfoData } from "./user-info-data.js";
 import { createBotInfoImage, clearImagePath } from "../../utils/canvas/detailSystem-Config.js";
 import { createNqduanBotDetailImage } from "../../utils/canvas/nqduan-detail-renderer.js";
@@ -212,31 +212,30 @@ export async function getBotDetails(api, message, groupSettings = {}) {
   const { onConfigs, offConfigs } = getConfigStatus(threadId, groupSettings);
   const botId = resolveBotId(api);
 
-  let botInfo;
-  try {
-    const rawData = await withTimeout(getUserInfoData(api, botId), DETAIL_STAGE_TIMEOUTS.PROFILE, "profile");
-    botInfo = normalizeBotInfo(rawData);
-  } catch (error) {
-    logDetailError(threadId, scope, "profile", error);
-    botInfo = normalizeBotInfo(null);
-  }
+  const [profileOutcome, sysinfoOutcome] = await Promise.all([
+    withTimeout(getUserInfoData(api, botId), DETAIL_STAGE_TIMEOUTS.PROFILE, "profile")
+      .then((rawData) => normalizeBotInfo(rawData))
+      .catch((error) => {
+        logDetailError(threadId, scope, "profile", error);
+        return normalizeBotInfo(null);
+      }),
+    collectSystemInfo(DETAIL_STAGE_TIMEOUTS.SYSINFO).catch((error) => {
+      logDetailError(threadId, scope, "sysinfo", error);
+      return {
+        version: getBotVersion(),
+        os: getOsInfo(),
+        memoryUsage: getMemoryUsage(),
+        cpu: "N/A",
+        ram: "N/A",
+        cpuModel: "Unknown",
+        disk: "N/A",
+        Name: "Thanh Hung",
+      };
+    }),
+  ]);
 
-  let botStats;
-  try {
-    botStats = await collectSystemInfo(DETAIL_STAGE_TIMEOUTS.SYSINFO);
-  } catch (error) {
-    logDetailError(threadId, scope, "sysinfo", error);
-    botStats = {
-      version: getBotVersion(),
-      os: getOsInfo(),
-      memoryUsage: getMemoryUsage(),
-      cpu: "N/A",
-      ram: "N/A",
-      cpuModel: "Unknown",
-      disk: "N/A",
-      Name: "Thanh Hung",
-    };
-  }
+  const botInfo = profileOutcome;
+  const botStats = sysinfoOutcome;
 
   let imagePath = null;
   let renderStage = "render_primary";
@@ -347,7 +346,7 @@ function getConfigStatus(threadId, groupSettings) {
 
 function getBotVersion() {
   try {
-    const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
+    const packageJson = JSON.parse(readFileSync(join(getProjectRoot(), "package.json"), "utf8"));
     return packageJson.version || "Không xác định";
   } catch (error) {
     console.error("Lỗi khi đọc phiên bản bot:", error);
@@ -373,6 +372,10 @@ function getSettingEmoji(settingKey) {
     antiNude: "🙅‍♀️",
     allowSticker: "🎟️",
     allowStickerlag: "🐢",
+    antiStickerEffect: "✨",
+    antiGif: "🎞️",
+    antiVideo: "🎬",
+    onlyText: "🔤",
     antiUndo: "⏪",
     antiMention: "🔕",
     sendTask: "📢",
@@ -418,10 +421,13 @@ export function getSettingName(settingKey) {
     enableDownload: "Tự động tải xuống",
     allowStickerlag: "Chặn sticker gây lag",
     allowSticker: "Chặn sticker",
+    antiStickerEffect: "Chặn sticker hiệu ứng",
+    antiGif: "Chặn gửi GIF",
+    antiVideo: "Chặn gửi video",
     enableAntiBot: "Chặn bot người dùng",
     autoReplyCommand: "Auto reply (AI)",
     antiFile: "Chặn gửi file",
-    antiPhotoVideo: "Chặn ảnh & video",
+    antiPhotoVideo: "Chặn ảnh",
     antiVoice: "Chặn voice",
     antiText: "Chặn văn bản",
     antiJoinLeave: "Chặn spam vào/ra nhóm",

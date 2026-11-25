@@ -102,6 +102,7 @@ async function createKeyListImage(admins, groupName) {
 
 export async function handleListKeyCommand(api, message) {
   const threadId = message.threadId;
+  let imagePath = null;
 
   try {
     const groupInfo = await getGroupInfoData(api, threadId);
@@ -112,23 +113,29 @@ export async function handleListKeyCommand(api, message) {
     const adminRole = isCommunity ? "Phó cộng đồng" : "Phó nhóm";
     const adminList = [];
 
-    if (groupInfo.creatorId) {
-      try {
-        const creatorInfo = await getUserInfoData(api, groupInfo.creatorId);
-        if (creatorInfo) adminList.push({ ...creatorInfo, role: creatorRole, keyType: "gold" });
-      } catch (error) {
-        console.error(`[ListKey] Lỗi lấy info trưởng nhóm ${groupInfo.creatorId}: ${error.message}`);
-      }
-    }
+    const creatorPromise = groupInfo.creatorId
+      ? getUserInfoData(api, groupInfo.creatorId)
+          .then((creatorInfo) => (creatorInfo ? { ...creatorInfo, role: creatorRole, keyType: "gold" } : null))
+          .catch((error) => {
+            console.error(`[ListKey] Lỗi lấy info trưởng nhóm ${groupInfo.creatorId}: ${error.message}`);
+            return null;
+          })
+      : Promise.resolve(null);
 
-    const adminIds = (groupInfo.adminIds || []).filter((id) => id !== groupInfo.creatorId);
-    for (const id of adminIds) {
-      try {
-        const info = await getUserInfoData(api, id);
-        if (info) adminList.push({ ...info, role: adminRole, keyType: "silver" });
-      } catch (error) {
-        console.error(`[ListKey] Lỗi lấy info phó nhóm ${id}: ${error.message}`);
-      }
+    const adminIds = (groupInfo.adminIds || []).filter((id) => String(id) !== String(groupInfo.creatorId));
+    const silverPromises = adminIds.map((id) =>
+      getUserInfoData(api, id)
+        .then((info) => (info ? { ...info, role: adminRole, keyType: "silver" } : null))
+        .catch((error) => {
+          console.error(`[ListKey] Lỗi lấy info phó nhóm ${id}: ${error.message}`);
+          return null;
+        })
+    );
+
+    const [creatorItem, ...silverItems] = await Promise.all([creatorPromise, ...silverPromises]);
+    if (creatorItem) adminList.push(creatorItem);
+    for (const item of silverItems) {
+      if (item) adminList.push(item);
     }
 
     if (adminList.length === 0) {
@@ -136,13 +143,14 @@ export async function handleListKeyCommand(api, message) {
       return false;
     }
 
-    const imagePath = await createKeyListImage(adminList, groupInfo.name);
+    imagePath = await createKeyListImage(adminList, groupInfo.name || "Nhóm");
     await api.sendMessage({ msg: "", attachments: [imagePath], ttl: 3600000, quote: message }, threadId, MessageType.GroupMessage);
-    await clearImagePath(imagePath);
     return true;
   } catch (error) {
     console.error(`[handleListKeyCommand] Lỗi: ${error.message}`);
     await sendMessageWarning(api, message, "Đã xảy ra lỗi khi lấy danh sách Key.");
     return false;
+  } finally {
+    await clearImagePath(imagePath);
   }
 }

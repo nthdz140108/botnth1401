@@ -88,7 +88,7 @@ export function sendCustomStickerFactory(api) {
       params.pStickerType = 1;
     }
 
-    if (quote) {
+    if (quote?.cliMsgId != null) {
       params.refMessage = quote.cliMsgId.toString();
     }
 

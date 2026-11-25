@@ -3,18 +3,48 @@ import { extendMuteDuration } from "./mute-user.js";
 import { isInWhiteList } from "./white-list.js";
 import { sendMessageStateQuote } from "../chat-zalo/chat-style/chat-style.js";
 import { removeMention } from "../../utils/format-util.js";
+import { getBotId } from "../../utils/env.js";
+import { getGlobalPrefix } from "../service.js";
 import { getAntiState, updateAntiConfig } from "./index.js";
 
-// Hàm kiểm tra từ cấm
-function checkBadWords(content) {
-  let badWords = getAntiState()?.data?.badWords || [];
+function getEffectiveBadWords(groupSettings, threadId) {
+  const defaultBadWords = Array.isArray(getAntiState()?.data?.badWords)
+    ? getAntiState().data.badWords
+    : [];
+  const threadCfg = groupSettings?.[threadId] || {};
+  const customBadWords = Array.isArray(threadCfg.badWords) ? threadCfg.badWords : [];
+  const removedDefaults = new Set(
+    (Array.isArray(threadCfg.removedDefaultBadWords) ? threadCfg.removedDefaultBadWords : [])
+      .map((w) => normalizeText(String(w || "")))
+      .filter(Boolean)
+  );
+
+  const merged = [];
+  const seen = new Set();
+  for (const raw of [...defaultBadWords, ...customBadWords]) {
+    const str = String(raw ?? "").trim();
+    if (!str) continue;
+    const norm = normalizeText(str);
+    if (!norm || seen.has(norm)) continue;
+    if (removedDefaults.has(norm) && !customBadWords.some((cw) => normalizeText(String(cw || "")) === norm)) {
+      continue;
+    }
+    seen.add(norm);
+    merged.push(str);
+  }
+  return merged;
+}
+
+// Hàm kiểm tra từ cấm theo từng nhóm (kết hợp danh sách mặc định chung)
+function checkBadWords(content, groupSettings = null, threadId = "") {
+  const badWords = getEffectiveBadWords(groupSettings, threadId);
   const normalizedContent = normalizeText(content);
   const words = normalizedContent.split(/\s+/);
 
   for (const badWord of badWords) {
     const normalizedBadWord = normalizeText(badWord);
+    if (!normalizedBadWord) continue;
 
-    // Kiểm tra từng từ riêng biệt
     for (const word of words) {
       if (word === normalizedBadWord) {
         return {
@@ -24,14 +54,11 @@ function checkBadWords(content) {
       }
     }
 
-    // Kiểm tra cụm từ trong nội dung
-    if (normalizedBadWord.includes(" ")) {
-      if (normalizedContent.includes(normalizedBadWord)) {
-        return {
-          found: true,
-          word: badWord,
-        };
-      }
+    if (normalizedBadWord.includes(" ") && normalizedContent.includes(normalizedBadWord)) {
+      return {
+        found: true,
+        word: badWord,
+      };
     }
   }
 
@@ -41,8 +68,26 @@ function checkBadWords(content) {
   };
 }
 
-async function handleBadWordModification(api, message, action, word) {
+async function checkBotHasGroupKey(api, threadId) {
+  try {
+    if (typeof api?.getGroupInfo !== "function" || !threadId) return null;
+    const res = await api.getGroupInfo(threadId);
+    const gridInfo = res?.gridInfoMap?.[threadId];
+    if (!gridInfo) return null;
+    const botUid = String(api?.getOwnId?.() || api?.getBotId?.() || api?.appContext?.uid || getBotId() || "");
+    if (!botUid || botUid === "-1") return null;
+    const adminIds = [gridInfo.creatorId, ...(gridInfo.adminIds || gridInfo.admins || [])]
+      .filter(Boolean)
+      .map(String);
+    return adminIds.includes(botUid);
+  } catch {
+    return null;
+  }
+}
+
+async function handleBadWordModification(api, message, groupSettings, action, rawWord) {
   const threadId = message.threadId;
+  const word = String(rawWord ?? "").trim();
 
   if (!word) {
     await api.sendMessage(
@@ -53,78 +98,100 @@ async function handleBadWordModification(api, message, action, word) {
       threadId,
       message.type
     );
-    return;
+    return false;
   }
 
-  const antiState = getAntiState();
-  const currentBadWords = [...antiState.data.badWords]; // Tạo bản sao của mảng hiện tại
+  if (!groupSettings[threadId]) {
+    groupSettings[threadId] = {};
+  }
+  if (!Array.isArray(groupSettings[threadId].badWords)) {
+    groupSettings[threadId].badWords = [];
+  }
+  if (!Array.isArray(groupSettings[threadId].removedDefaultBadWords)) {
+    groupSettings[threadId].removedDefaultBadWords = [];
+  }
+
+  const normalizedTarget = normalizeText(word);
+  const effectiveWords = getEffectiveBadWords(groupSettings, threadId);
+  const existsInEffective = effectiveWords.some((w) => normalizeText(w) === normalizedTarget);
 
   if (action === "add") {
-    if (!currentBadWords.includes(word)) {
-      currentBadWords.push(word);
-      updateAntiConfig({
-        ...antiState.data,
-        badWords: currentBadWords
-      });
+    if (!existsInEffective) {
+      groupSettings[threadId].removedDefaultBadWords = groupSettings[threadId].removedDefaultBadWords.filter(
+        (w) => normalizeText(w) !== normalizedTarget
+      );
+      if (!groupSettings[threadId].badWords.some((w) => normalizeText(w) === normalizedTarget)) {
+        groupSettings[threadId].badWords.push(word);
+      }
 
       await api.sendMessage(
         {
-          msg: `Đã thêm "${word}" vào danh sách từ cấm`,
+          msg: `Đã thêm "${word}" vào danh sách từ cấm của nhóm này`,
           quote: message,
           ttl: 30000,
         },
         threadId,
         message.type
       );
+      return true;
     } else {
       await api.sendMessage(
         {
-          msg: `Từ "${word}" đã có trong danh sách từ cấm`,
+          msg: `Từ "${word}" đã có trong danh sách từ cấm của nhóm`,
           quote: message,
           ttl: 30000,
         },
         threadId,
         message.type
       );
+      return false;
     }
   } else if (action === "remove") {
-    const index = currentBadWords.indexOf(word);
-    if (index !== -1) {
-      currentBadWords.splice(index, 1);
-      updateAntiConfig({
-        ...antiState.data,
-        badWords: currentBadWords
-      });
+    if (existsInEffective) {
+      groupSettings[threadId].badWords = groupSettings[threadId].badWords.filter(
+        (w) => normalizeText(w) !== normalizedTarget
+      );
+      const defaultBadWords = Array.isArray(getAntiState()?.data?.badWords)
+        ? getAntiState().data.badWords
+        : [];
+      if (
+        defaultBadWords.some((w) => normalizeText(w) === normalizedTarget) &&
+        !groupSettings[threadId].removedDefaultBadWords.some((w) => normalizeText(w) === normalizedTarget)
+      ) {
+        groupSettings[threadId].removedDefaultBadWords.push(word);
+      }
 
       await api.sendMessage(
         {
-          msg: `Đã xóa "${word}" khỏi danh sách từ cấm`,
+          msg: `Đã xóa "${word}" khỏi danh sách từ cấm của nhóm này`,
           quote: message,
           ttl: 30000,
         },
         threadId,
         message.type
       );
+      return true;
     } else {
       await api.sendMessage(
         {
-          msg: `Không tìm thấy "${word}" trong danh sách từ cấm`,
+          msg: `Không tìm thấy "${word}" trong danh sách từ cấm của nhóm`,
           quote: message,
           ttl: 30000,
         },
         threadId,
         message.type
       );
+      return false;
     }
   }
+  return false;
 }
 
-// Thêm hàm mới để hiển thị danh sách từ cấm
-async function showBadWordsList(api, message) {
+async function showBadWordsList(api, message, groupSettings) {
   const threadId = message.threadId;
+  const prefix = getGlobalPrefix();
   try {
-    const antiState = getAntiState();
-    const wordsList = antiState.data.badWords.map((pattern) => {
+    const wordsList = getEffectiveBadWords(groupSettings, threadId).map((pattern) => {
       return pattern
         .replace(/\\b/g, "")
         .replace(/\+/g, "")
@@ -135,7 +202,7 @@ async function showBadWordsList(api, message) {
     if (wordsList.length === 0) {
       await api.sendMessage(
         {
-          msg: "Hiện tại chưa có từ ngữ nào bị cấm.",
+          msg: "Hiện tại nhóm chưa có từ ngữ nào bị cấm.",
           quote: message,
         },
         threadId,
@@ -147,7 +214,7 @@ async function showBadWordsList(api, message) {
     const formattedList = wordsList.map((word) => `${word}`).join(", ");
     await api.sendMessage(
       {
-        msg: `📝 Danh sách từ ngữ bị cấm (${wordsList.length} từ):\n[${formattedList}]\n\n💡 Dùng lệnh:\n- !antibadword add [từ] để thêm\n- !antibadword remove [từ] để xóa`,
+        msg: `📝 Danh sách từ ngữ bị cấm của nhóm (${wordsList.length} từ):\n[${formattedList}]\n\n💡 Dùng lệnh:\n- ${prefix}antibadword add [từ] để thêm\n- ${prefix}antibadword remove [từ] để xóa`,
         quote: message,
         ttl: 30000,
       },
@@ -168,32 +235,29 @@ async function showBadWordsList(api, message) {
   }
 }
 
-// Cập nhật hàm handleAntiBadWordCommand để thêm lệnh list
 export async function handleAntiBadWordCommand(api, message, groupSettings) {
   const content = removeMention(message);
   const threadId = message.threadId;
-  const args = content.split(" ");
+  const args = content.trim().split(/\s+/);
   const command = args[1]?.toLowerCase();
 
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};
   }
 
-  // Thêm case xử lý lệnh list
   if (command === "list") {
-    await showBadWordsList(api, message);
-    return true;
+    await showBadWordsList(api, message, groupSettings);
+    return false;
   }
 
   if (command === "show") {
     await showViolationHistory(api, message, threadId);
-    return true;
+    return false;
   }
 
   if (command === "add" || command === "remove") {
     const word = args.slice(2).join(" ");
-    await handleBadWordModification(api, message, command, word);
-    return true;
+    return await handleBadWordModification(api, message, groupSettings, command, word);
   }
 
   if (command === "on") {
@@ -205,13 +269,20 @@ export async function handleAntiBadWordCommand(api, message, groupSettings) {
       !groupSettings[threadId].filterBadWords;
   }
 
-  const newStatus = groupSettings[threadId].filterBadWords ? "bật" : "tắt";
-  const caption = `Chức năng lọc từ khóa thô tục đã được ${newStatus}!`;
+  const isEnabled = Boolean(groupSettings[threadId].filterBadWords);
+  const newStatus = isEnabled ? "bật" : "tắt";
+  let caption = `Chức năng lọc từ khóa thô tục đã được ${newStatus}!`;
+  if (isEnabled) {
+    const botHasKey = await checkBotHasGroupKey(api, threadId);
+    if (botHasKey === false) {
+      caption += "\n⚠️ Lưu ý: Bot hiện chưa có Key Bạc/Vàng trong nhóm nên chưa thể tự động xóa tin nhắn vi phạm.";
+    }
+  }
   await sendMessageStateQuote(
     api,
     message,
     caption,
-    groupSettings[threadId].filterBadWords,
+    isEnabled,
     300000
   );
   return true;
@@ -295,7 +366,7 @@ export async function antiBadWord(
       return false;
 
     const normalizedContent = content.toLowerCase();
-    const checkBadWordsResult = checkBadWords(normalizedContent);
+    const checkBadWordsResult = checkBadWords(normalizedContent, groupSettings, threadId);
 
     if (checkBadWordsResult.found) {
       try {

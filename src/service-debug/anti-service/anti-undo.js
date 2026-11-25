@@ -4,7 +4,7 @@ import { isInWhiteList } from "./white-list.js";
 import { resolveMessageCacheStore, markUndoMessage } from "../../utils/message-cache.js";
 import { findUndoOriginalMessage, extractPhotoUrl } from "./anti-undo-utils.js";
 
-const TIME_SHOW_UNDO_MESSAGE = 6000 * 60 * 24;
+const TIME_SHOW_UNDO_MESSAGE = 60_000 * 60 * 24;
 
 // Cache lưu các mã undo event đã/đang xử lý để chặn báo trùng (duplicate suppression)
 const processedUndoKeys = new Map();
@@ -58,9 +58,11 @@ function markUndoProcessed(key) {
 
 export async function handleAntiUndoCommand(api, message, groupSettings) {
   const content = removeMention(message);
-  const parts = content.split(" ");
+  const parts = content.trim().split(/\s+/);
   const threadId = message.threadId;
   const command = parts[1]?.toLowerCase();
+
+  groupSettings[threadId] ??= {};
 
   let newStatus;
   if (command === "on") {

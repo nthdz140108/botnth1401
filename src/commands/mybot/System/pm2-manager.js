@@ -606,6 +606,12 @@ export function restartBotRuntime(targetOrUid, options = {}) {
   if (existing) return existing;
 
   const operation = (async () => {
+    if (effectiveBotUid && effectiveBotUid !== "admin") {
+      consumeRestartRequest(effectiveBotUid, root, { maxAgeMs: 120_000 });
+    }
+    if (botKey && botKey !== "admin" && botKey !== effectiveBotUid) {
+      consumeRestartRequest(botKey, root, { maxAgeMs: 120_000 });
+    }
     const previousPid = await getSpawnedPid(target, root);
     const pm2Status = await checkPM2Status(botKey);
     if (pm2Status.running) {
@@ -847,6 +853,14 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
     }
 
     ensureBotLogDir(target, root);
+    if (!isBootstrapOnly) {
+      if (effectiveBotUid && effectiveBotUid !== "admin") {
+        consumeRestartRequest(effectiveBotUid, root, { maxAgeMs: 120_000 });
+      }
+      if (botKey && botKey !== "admin" && botKey !== effectiveBotUid) {
+        consumeRestartRequest(botKey, root, { maxAgeMs: 120_000 });
+      }
+    }
     appendStartupLog(target, `Starting bot key=${botKey} uid=${effectiveBotUid} on port ${webPort || "bootstrap"}`, root);
 
     // NOTE: The old flow deleted the PM2 process before every start. That is

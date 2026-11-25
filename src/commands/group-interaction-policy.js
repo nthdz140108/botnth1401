@@ -60,8 +60,15 @@ const ANTI_MANAGEMENT_COMMANDS = new Set([
   "sửa",
   "sủa",
   "whitelist",
+  "wls",
   "wllist",
   "dswhitelist",
+  "prwelcome",
+  "sendtask",
+  "autosend",
+  "sendstk",
+  "sendsticker",
+  "replytag",
 ]);
 
 export function isAntiManagementCommand(commandParts) {

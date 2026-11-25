@@ -1,184 +1,285 @@
-import fs from 'fs';
-import path, { dirname } from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
-import { sendMessageFactory } from '../../../api-zalo/apis/sendMessage.js';
-import fetch from 'node-fetch';
-import { getGlobalPrefix } from '../../../service-debug/service.js';
-import { nameServer } from '../../../utils/server-config.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import fetch from "node-fetch";
+import { getGlobalPrefix } from "../../../service-debug/service.js";
+import { tempDir } from "../../../utils/io-json.js";
+import { removeMention } from "../../../utils/format-util.js";
+import { MessageType } from "../../../api-zalo/models/Message.js";
+import {
+  safeThreadType,
+  extractCleanArgs,
+  getRawMessageText,
+} from "../../shared/command-input-utils.js";
 
 export const des = {
-  name: 'ff',
+  name: "ff",
   type: 1,
-  permission: 'all',
+  permission: "all",
   countdown: 5,
   active: true,
-  aliases: ['freefire', 'thông tin freefire', 'ff info', 'xem ff', 'uid ff']
+  aliases: ["freefire", "thông tin freefire", "ff info", "xem ff", "uid ff"],
 };
 
-const getCleanNameServer = () => {
-  const lines = nameServer
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line);
-
-  const tagLine = lines.find(line => line.startsWith('@'));
-  const boldLine = lines.find(line => /\*\*(.*?)\*\*/.test(line) || /__(.*?)__/.test(line));
-
-  return [tagLine, boldLine].filter(Boolean).join(' ');
-};
-
-async function downloadImage(url, filePath) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Không thể tải ảnh outfit!');
-  const buffer = await res.buffer();
-  fs.writeFileSync(filePath, buffer);
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export async function handleFfCommand(api, message) {
-  const threadId = message.threadId;
-  const uid = message.data.uidFrom;
-  const sendMessage = sendMessageFactory(api);
-  const content = message.data.content.trim();
-  const currentPrefix = getGlobalPrefix();
+function matchesFfCommand(message, prefix, aliasCommand) {
+  const cleaned = removeMention(message) || getRawMessageText(message).trim();
+  if (!cleaned) return false;
+  const aliasTokens = String(aliasCommand || "ff")
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegExp)
+    .join("\\s+");
+  return new RegExp(
+    `^\\s*${escapeRegExp(prefix)}\\s*${aliasTokens}(?:[\\s_]+|$)`,
+    "i"
+  ).test(cleaned);
+}
 
-  let isGroup = threadId !== uid;
-  if (typeof message.isGroup !== 'undefined') isGroup = message.isGroup;
+function normalizeFfPayload(json, ffUid, region) {
+  if (!json || typeof json !== "object") return null;
 
-  if (!content.startsWith(`${currentPrefix}ff`)) return false;
+  const root = json.data && typeof json.data === "object" ? json.data : json;
+  const basic =
+    root.basicInfo ||
+    root.AccountInfo ||
+    root.account_info ||
+    (root.nickname || root.AccountName ? root : null);
 
-  const args = content.slice(currentPrefix.length + 2).trim().split(/\s+/);
+  if (!basic || typeof basic !== "object") return null;
+  const nickname =
+    basic.nickname || basic.AccountName || basic.name || "";
+  if (!nickname && !basic.level && !basic.AccountLevel) return null;
 
-  if (args.length !== 1) {
-    return sendMessage(
-      {
-        msg: `${getCleanNameServer()}❌ Sai cú pháp! Dùng: ${currentPrefix}ff <uid>`,
-        ttl: 60000
-      },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
+  const pet = root.petInfo || root.pet_info || {};
+  const social = root.socialInfo || root.AccountProfileInfo || root.social_info || {};
+  const guild = root.clanBasicInfo || root.GuildInfo || {};
 
-  const ffUid = args[0];
+  let gender = "Không rõ";
+  const rawGender = String(social.gender || "").toUpperCase();
+  if (rawGender.includes("FEMALE")) gender = "Nữ";
+  else if (rawGender.includes("MALE")) gender = "Nam";
 
-  if (!/^\d+$/.test(ffUid)) {
-    return sendMessage(
-      {
-        msg: `${getCleanNameServer()}❌ UID phải là số!`,
-        ttl: 60000
-      },
-      threadId,
-      isGroup ? 1 : 0
-    );
-  }
+  return {
+    name: nickname || "Không rõ",
+    uid: String(basic.accountId || basic.uid || ffUid),
+    region: String(basic.region || basic.AccountRegion || region).toUpperCase(),
+    level: basic.level ?? basic.AccountLevel ?? "N/A",
+    exp: basic.exp ?? basic.AccountEXP ?? 0,
+    likes: basic.liked ?? basic.AccountLikes ?? 0,
+    rankPoints: basic.rankingPoints ?? basic.BrRankPoint ?? "N/A",
+    season: basic.seasonId ?? basic.AccountSeasonId ?? "N/A",
+    badge: basic.badgeCnt ?? basic.badgeId ?? "N/A",
+    version: basic.releaseVersion || "N/A",
+    gender,
+    signature: social.signature || "",
+    guildName: guild.clanName || guild.GuildName || "",
+    petName: pet.name || "Không có",
+    petLevel: pet.level ?? "N/A",
+    petSkin: pet.skinId ?? "N/A",
+  };
+}
 
-  const region = 'vn';
-  const infoUrl = `https://zrojectx-info-free-fire.vercel.app/player-info-zprojectx?uid=${ffUid}&region=${region}`;
-  const imageUrl = `https://jnl-outfit-v4.vercel.app/outfit-image?uid=${ffUid}&region=${region}&key=Dev-JNL`;
-
-  try {
-    const infoRes = await fetch(infoUrl);
-    const infoJson = await infoRes.json();
-
-    if (!infoRes.ok || !infoJson.basicInfo) {
-      return sendMessage(
-        {
-          msg: `${getCleanNameServer()}❌ Không tìm thấy thông tin cho UID ${ffUid} khu vực ${region}.`,
-          ttl: 60000
-        },
-        threadId,
-        isGroup ? 1 : 0
+function buildInfoEndpointUrls(ffUid, region) {
+  const urls = [];
+  const custom = String(process.env.FF_INFO_API_URL || "").trim();
+  if (custom) {
+    if (custom.includes("{uid}")) {
+      urls.push(
+        custom
+          .replace(/\{uid\}/gi, encodeURIComponent(ffUid))
+          .replace(/\{region\}/gi, encodeURIComponent(region))
+      );
+    } else {
+      const sep = custom.includes("?") ? "&" : "?";
+      urls.push(
+        `${custom}${sep}uid=${encodeURIComponent(ffUid)}&region=${encodeURIComponent(region)}`
       );
     }
+  }
 
-    const basicInfo = infoJson.basicInfo || {};
-    const petInfo = infoJson.petInfo || {};
-    const socialInfo = infoJson.socialInfo || {};
+  urls.push(
+    `https://free-ff-api-src-5plp.onrender.com/api/v1/account?region=${encodeURIComponent(region)}&uid=${encodeURIComponent(ffUid)}`,
+    `https://ff-api-info.vercel.app/api/v1/account?region=${encodeURIComponent(region)}&uid=${encodeURIComponent(ffUid)}`,
+    `https://zrojectx-info-free-fire.vercel.app/player-info-zprojectx?uid=${encodeURIComponent(ffUid)}&region=${encodeURIComponent(region)}`
+  );
 
-    const name = basicInfo.nickname || 'Không rõ';
-    const level = basicInfo.level || 'N/A';
-    const exp = basicInfo.exp || 0;
-    const likes = basicInfo.liked || 0;
-    const rankPoints = basicInfo.rankingPoints || 0;
-    const season = basicInfo.seasonId || 'N/A';
-    const badge = basicInfo.badgeId || 'N/A';
+  return urls;
+}
 
-    let gender = 'Không rõ';
-    if (typeof socialInfo.gender === 'string') {
-      if (socialInfo.gender.includes('MALE')) gender = 'Nam';
-      if (socialInfo.gender.includes('FEMALE')) gender = 'Nữ';
+async function fetchFfPlayerInfo(ffUid, region) {
+  const endpoints = buildInfoEndpointUrls(ffUid, region);
+
+  const settled = await Promise.allSettled(
+    endpoints.map(async (url) => {
+      const res = await fetch(url, {
+        headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(6500),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const parsed = normalizeFfPayload(json, ffUid, region);
+      if (!parsed) throw new Error("Empty player payload");
+      return parsed;
+    })
+  );
+
+  for (const item of settled) {
+    if (item.status === "fulfilled" && item.value) {
+      return item.value;
     }
+  }
+  return null;
+}
 
-    const petName = petInfo.name || 'Không có';
-    const petLevel = petInfo.level || 'N/A';
-    const petSkin = petInfo.skinId || 'N/A';
+async function downloadOutfitCard(ffUid, region) {
+  const customOutfit = String(process.env.FF_OUTFIT_API_URL || "").trim();
+  const candidates = [
+    customOutfit
+      ? `${customOutfit}${customOutfit.includes("?") ? "&" : "?"}uid=${encodeURIComponent(ffUid)}&region=${encodeURIComponent(region)}`
+      : "",
+    `https://jnl-outfit-v4.vercel.app/outfit-image?uid=${encodeURIComponent(ffUid)}&region=${encodeURIComponent(region)}&key=Dev-JNL`,
+  ].filter(Boolean);
 
-    const msg =
-`🎮 THÔNG TIN FREE FIRE
-
-👤 Người Chơi:
-➤ Tên: ${name}
-➤ UID: ${ffUid}
-➤ Khu vực: ${basicInfo.region || 'VN'}
-➤ Level: ${level}
-➤ EXP: ${exp}
-➤ Lượt thích: ${likes}
-➤ Điểm Rank: ${rankPoints}
-➤ Season: ${season}
-➤ Badge ID: ${badge}
-➤ Giới tính: ${gender}
-➤ Phiên bản: ${basicInfo.releaseVersion || 'N/A'}
-
-🧸 Thú Cưng:
-➤ Tên: ${petName}
-➤ Level: ${petLevel}
-➤ Skin: ${petSkin}
-
-🛠️ Created by: Thanh Hung`;
-
-    const tmpDir = path.join(os.tmpdir(), 'ff-outfit');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
-
-    const filePath = path.join(tmpDir, `ff_${ffUid}_${Date.now()}.png`);
+  for (const url of candidates) {
     try {
-      await downloadImage(imageUrl, filePath);
+      const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0", Accept: "image/*" },
+        signal: AbortSignal.timeout(6500),
+      });
+      if (!res.ok) continue;
+      const contentType = String(res.headers.get("content-type") || "").toLowerCase();
+      if (!contentType.startsWith("image/")) continue;
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length < 256) continue;
 
-      await sendMessage(
-        {
-          attachments: [filePath],
-          msg: `${getCleanNameServer()}${msg}`,
-          ttl: 3600000
-        },
-        threadId,
-        isGroup ? 1 : 0
-      );
-    } catch (e) {
-      console.error('Lỗi tải ảnh:', e);
-      await sendMessage(
-        {
-          msg: `${getCleanNameServer()}${msg}`,
-          ttl: 3600000
-        },
-        threadId,
-        isGroup ? 1 : 0
-      );
-    } finally {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      const filePath = path.join(tempDir, `ff_${ffUid}_${crypto.randomUUID()}.png`);
+      await fs.promises.writeFile(filePath, buffer);
+      return filePath;
+    } catch {}
+  }
+  return null;
+}
 
-  } catch (e) {
-    console.error('Lỗi API FF:', e);
-    return sendMessage(
+export async function handleFfCommand(api, message, aliasCommand = "ff") {
+  const threadId = message.threadId;
+  const currentPrefix = getGlobalPrefix();
+  const effectiveAlias = aliasCommand || "ff";
+  const threadType = safeThreadType(
+    message,
+    threadId && message?.data?.uidFrom && String(threadId) === String(message.data.uidFrom)
+      ? MessageType.DirectMessage
+      : MessageType.GroupMessage
+  );
+
+  if (!matchesFfCommand(message, currentPrefix, effectiveAlias)) {
+    return false;
+  }
+
+  const args = extractCleanArgs(message, currentPrefix, effectiveAlias);
+  if (args.length < 1 || args.length > 2) {
+    return api.sendMessage(
       {
-        msg: `${getCleanNameServer()}❌ Lỗi khi truy vấn API: ${e.message}`,
-        ttl: 60000
+        msg: `❌ Sai cú pháp! Dùng: ${currentPrefix}${effectiveAlias} <UID> [region]\n👉 Ví dụ: ${currentPrefix}${effectiveAlias} 12345678`,
+        ttl: 60000,
       },
       threadId,
-      isGroup ? 1 : 0
+      threadType
     );
+  }
+
+  const ffUid = args[0].trim();
+  const region = (args[1] || "vn").trim().toLowerCase();
+
+  if (!/^\d{5,16}$/.test(ffUid)) {
+    return api.sendMessage(
+      {
+        msg: `❌ UID Free Fire không hợp lệ (phải gồm 5–16 chữ số)!`,
+        ttl: 60000,
+      },
+      threadId,
+      threadType
+    );
+  }
+
+  let outfitPath = null;
+  try {
+    const [playerInfo, downloadedOutfit] = await Promise.all([
+      fetchFfPlayerInfo(ffUid, region),
+      downloadOutfitCard(ffUid, region),
+    ]);
+    outfitPath = downloadedOutfit;
+
+    if (!playerInfo && !outfitPath) {
+      return api.sendMessage(
+        {
+          msg:
+            `⚠️ Hiện không lấy được dữ liệu cho UID Free Fire ${ffUid} (khu vực ${region.toUpperCase()}).\n` +
+            `Nguyên nhân có thể do UID không tồn tại hoặc máy chủ tra cứu Free Fire công khai đang bảo trì.`,
+          ttl: 60000,
+        },
+        threadId,
+        threadType
+      );
+    }
+
+    if (!playerInfo && outfitPath) {
+      return await api.sendMessage(
+        {
+          attachments: [outfitPath],
+          msg: `🎮 Thẻ trang phục Free Fire — UID: ${ffUid} (${region.toUpperCase()})`,
+          ttl: 3600000,
+        },
+        threadId,
+        threadType
+      );
+    }
+
+    const lines = [
+      `🎮 THÔNG TIN FREE FIRE`,
+      ``,
+      `👤 Người chơi:`,
+      `➤ Tên: ${playerInfo.name}`,
+      `➤ UID: ${playerInfo.uid}`,
+      `➤ Khu vực: ${playerInfo.region}`,
+      `➤ Level: ${playerInfo.level} (EXP: ${Number(playerInfo.exp).toLocaleString("vi-VN")})`,
+      `➤ Lượt thích: ${Number(playerInfo.likes).toLocaleString("vi-VN")}`,
+      `➤ Điểm Rank: ${playerInfo.rankPoints}`,
+      `➤ Season: ${playerInfo.season}`,
+      `➤ Giới tính: ${playerInfo.gender}`,
+      playerInfo.guildName ? `➤ Quân đoàn: ${playerInfo.guildName}` : null,
+      playerInfo.signature ? `➤ Tiểu sử: ${playerInfo.signature}` : null,
+      ``,
+      `🧸 Thú cưng:`,
+      `➤ Tên: ${playerInfo.petName}`,
+      `➤ Level: ${playerInfo.petLevel}`,
+    ].filter(Boolean);
+
+    return await api.sendMessage(
+      {
+        ...(outfitPath ? { attachments: [outfitPath] } : {}),
+        msg: lines.join("\n"),
+        ttl: 3600000,
+      },
+      threadId,
+      threadType
+    );
+  } catch (e) {
+    return api.sendMessage(
+      {
+        msg: `❌ Lỗi tra cứu Free Fire: ${e?.message || "Không xác định"}`,
+        ttl: 60000,
+      },
+      threadId,
+      threadType
+    );
+  } finally {
+    if (outfitPath) {
+      await fs.promises.unlink(outfitPath).catch(() => {});
+    }
   }
 }

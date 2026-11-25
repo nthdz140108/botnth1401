@@ -1,13 +1,54 @@
+import { LRUCache } from "lru-cache";
 import { fetchJsonWithCache } from "../../../utils/public-api-cache.js";
+
+const openMeteoCache = new LRUCache({ max: 200, ttl: 10 * 60 * 1000 });
+
+const CITY_QUERY_ALIASES = Object.freeze({
+  hcm: "Ho Chi Minh City",
+  tphcm: "Ho Chi Minh City",
+  "tp hcm": "Ho Chi Minh City",
+  "tp.hcm": "Ho Chi Minh City",
+  "sai gon": "Ho Chi Minh City",
+  "sài gòn": "Ho Chi Minh City",
+  saigon: "Ho Chi Minh City",
+  hn: "Hà Nội",
+  "ha noi": "Hà Nội",
+  dn: "Đà Nẵng",
+  "da nang": "Đà Nẵng",
+});
+
+function normalizeLocationQuery(location) {
+  const trimmed = String(location || "").trim();
+  if (!trimmed) return "";
+  const key = trimmed.toLowerCase().replace(/\s+/g, " ");
+  return CITY_QUERY_ALIASES[key] || trimmed;
+}
+
+async function fetchOpenMeteoJson(url, cacheKey) {
+  const cached = openMeteoCache.get(cacheKey);
+  if (cached) return cached;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "HHH-MyBot-Weather/3.0" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) {
+    throw new Error(`Open-Meteo HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  openMeteoCache.set(cacheKey, data);
+  return data;
+}
 
 // Khóa API được đọc từ weather.js và truyền vào bên dưới để giữ khớp contract
 // credentials test (weather.js phải tham chiếu process.env.*).
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
 export async function geocodeWeatherLocation(location) {
+  const normalizedQuery = normalizeLocationQuery(location);
+  if (!normalizedQuery) return null;
   const geoData = await fetchJsonWithCache(
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=vi&format=json`,
-    { provider: "weather-geocode", ttlMs: 24 * 60 * 60 * 1000, timeoutMs: 10000, retries: 1 },
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(normalizedQuery)}&count=1&language=vi&format=json`,
+    { provider: "weather-geocode", ttlMs: 24 * 60 * 60 * 1000, timeoutMs: 8000, retries: 1 },
   );
   if (!geoData?.results || geoData.results.length === 0) return null;
   const r = geoData.results[0];
@@ -41,9 +82,27 @@ export async function fetchOpenWeatherData(lat, lon, apiKey) {
 export async function fetchWeatherApiData(lat, lon, apiKey) {
   if (!apiKey) return null;
   return fetchJsonWithCache(
-    `http://api.weatherapi.com/v1/forecast.json?key=${apiKey}&q=${lat},${lon}&days=3&aqi=yes&lang=vi`,
-    { provider: "weather-weatherapi", ttlMs: 10 * 60 * 1000, timeoutMs: 12000, retries: 1 },
+    `https://api.weatherapi.com/v1/forecast.json?key=${apiKey}&q=${lat},${lon}&days=3&aqi=yes&lang=vi`,
+    { provider: "weather-weatherapi", ttlMs: 10 * 60 * 1000, timeoutMs: 8000, retries: 1 },
   );
+}
+
+export async function fetchOpenMeteo(lat, lon, timezone = "Asia/Ho_Chi_Minh") {
+  const tz = timezone || "Asia/Ho_Chi_Minh";
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}` +
+    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m` +
+    `&hourly=temperature_2m,precipitation_probability,weather_code` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset` +
+    `&wind_speed_unit=ms&timezone=${encodeURIComponent(tz)}&forecast_days=7`;
+  return fetchOpenMeteoJson(url, `forecast:${lat}:${lon}:${tz}`);
+}
+
+export async function fetchOpenMeteoAirQuality(lat, lon) {
+  const url =
+    `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}` +
+    `&current=us_aqi,pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone`;
+  return fetchOpenMeteoJson(url, `air:${lat}:${lon}`);
 }
 
 // ── Chuẩn hóa từng provider về model phân loại canonical ─────────────────────
@@ -145,6 +204,120 @@ export function conceptFromWeatherApiCode(code, text = "") {
   if (/cloud/i.test(text)) return "cloudy";
   if (/sun|clear/i.test(text)) return "clear";
   return "unknown";
+}
+
+// Mapping WMO weather code của Open-Meteo → concept canonical
+export function conceptFromWmoCode(code) {
+  const n = Number(code);
+  if (Number.isNaN(n)) return "unknown";
+  if (n === 0) return "clear";
+  if (n === 1) return "partly-cloudy";
+  if (n === 2) return "cloudy";
+  if (n === 3) return "overcast";
+  if (n === 45 || n === 48) return "fog";
+  if (n >= 51 && n <= 57) return "drizzle";
+  if (n === 61 || n === 63 || n === 66) return "rain";
+  if (n === 65 || n === 67 || n === 82) return "heavy-rain";
+  if ((n >= 71 && n <= 77) || n === 85 || n === 86) return "snow";
+  if (n === 80 || n === 81) return "showers";
+  if (n === 95 || n === 96 || n === 99) return "thunderstorm";
+  return "unknown";
+}
+
+function formatClockFromIso(isoStr) {
+  if (!isoStr || typeof isoStr !== "string") return null;
+  const parts = isoStr.split("T");
+  return parts.length > 1 ? parts[1].slice(0, 5) : isoStr;
+}
+
+export function normalizeOpenMeteoCurrent(raw) {
+  const c = raw?.current;
+  if (!c || c.temperature_2m == null) return null;
+  const concept = conceptFromWmoCode(c.weather_code);
+  const isKmh = raw?.current_units?.wind_speed_10m === "km/h";
+  const rawWind = Number(c.wind_speed_10m ?? 0);
+  return {
+    source: "openmeteo",
+    updatedAt: c.time || new Date().toISOString(),
+    temp: c.temperature_2m,
+    feelsLike: c.apparent_temperature ?? c.temperature_2m,
+    tempMin: raw?.daily?.temperature_2m_min?.[0] ?? c.temperature_2m,
+    tempMax: raw?.daily?.temperature_2m_max?.[0] ?? c.temperature_2m,
+    humidity: c.relative_humidity_2m ?? 0,
+    windSpeed: isKmh ? Number((rawWind / 3.6).toFixed(1)) : rawWind,
+    windDeg: c.wind_direction_10m ?? 0,
+    cloud: c.cloud_cover ?? 0,
+    visibilityKm: 10,
+    concept,
+    description: describeConcept(concept),
+  };
+}
+
+export function normalizeOpenMeteoHourly(raw) {
+  const h = raw?.hourly;
+  const times = Array.isArray(h?.time) ? h.time : [];
+  if (times.length === 0) return [];
+  const temps = h.temperature_2m || [];
+  const probs = h.precipitation_probability || [];
+  const codes = h.weather_code || [];
+
+  const currentIso = String(raw?.current?.time || "");
+  let startIdx = 0;
+  if (currentIso) {
+    const idx = times.findIndex((t) => String(t) >= currentIso);
+    if (idx >= 0) startIdx = idx;
+  }
+
+  return times.slice(startIdx, startIdx + 7).map((time, offset) => {
+    const i = startIdx + offset;
+    return {
+      time,
+      temp: temps[i] ?? null,
+      precipProb: probs[i] ?? 0,
+      concept: conceptFromWmoCode(codes[i]),
+    };
+  });
+}
+
+export function normalizeOpenMeteoDaily(raw) {
+  const d = raw?.daily;
+  const dates = Array.isArray(d?.time) ? d.time : [];
+  if (dates.length === 0) return [];
+  const maxTemps = d.temperature_2m_max || [];
+  const minTemps = d.temperature_2m_min || [];
+  const codes = d.weather_code || [];
+  const sunrises = d.sunrise || [];
+  const sunsets = d.sunset || [];
+
+  return dates.slice(0, 6).map((date, i) => ({
+    date,
+    tempMax: maxTemps[i] ?? null,
+    tempMin: minTemps[i] ?? null,
+    concept: conceptFromWmoCode(codes[i]),
+    sunrise: formatClockFromIso(sunrises[i]),
+    sunset: formatClockFromIso(sunsets[i]),
+  }));
+}
+
+export function normalizeOpenMeteoAirQuality(raw) {
+  const c = raw?.current;
+  if (!c) return null;
+  const aqi = c.us_aqi ?? null;
+  if (aqi == null && c.pm2_5 == null && c.pm10 == null) return null;
+  const roundedAqi = aqi != null ? Math.round(Number(aqi)) : null;
+  return {
+    usEpaIndex: roundedAqi,
+    isDefault: roundedAqi == null,
+    pollutants: {
+      pm25: c.pm2_5 != null ? Math.round(Number(c.pm2_5)) : null,
+      pm10: c.pm10 != null ? Math.round(Number(c.pm10)) : null,
+      o3: c.ozone != null ? Math.round(Number(c.ozone)) : null,
+      no2: c.nitrogen_dioxide != null ? Math.round(Number(c.nitrogen_dioxide)) : null,
+      so2: c.sulphur_dioxide != null ? Math.round(Number(c.sulphur_dioxide)) : null,
+      co: c.carbon_monoxide != null ? Number(Number(c.carbon_monoxide).toFixed(1)) : null,
+    },
+    level: describeAqiLevel(roundedAqi),
+  };
 }
 
 // Giữ tương thích contract cũ: đầu ra của normalizeWeatherApiCurrent giữ nguyên.
@@ -285,54 +458,82 @@ export function describeAqiLevel(index) {
 }
 
 // ── Orchestration: lấy song song + hợp nhất về model thống nhất ──────────────
-export async function buildWeatherModel(geo, apiKeys, fetchers = {}) {
+export async function buildWeatherModel(geo, apiKeys, fetchers) {
   const { latitude, longitude } = geo;
-  const fetchTomorrow = fetchers.tomorrow || ((lat, lon, key) => fetchTomorrowWeather(lat, lon, key));
-  const fetchOpen = fetchers.openweather || ((lat, lon, key) => fetchOpenWeatherData(lat, lon, key));
-  const fetchWeatherApi = fetchers.weatherapi || ((lat, lon, key) => fetchWeatherApiData(lat, lon, key));
+  const timezone = geo.timezone || "Asia/Ho_Chi_Minh";
+  const hasCustomFetchers = Boolean(fetchers && typeof fetchers === "object" && Object.keys(fetchers).length > 0);
+
+  const defaultFetchers = {
+    tomorrow: (lat, lon, key) => fetchTomorrowWeather(lat, lon, key),
+    openweather: (lat, lon, key) => fetchOpenWeatherData(lat, lon, key),
+    weatherapi: (lat, lon, key) => fetchWeatherApiData(lat, lon, key),
+    openmeteo: (lat, lon, tz) => fetchOpenMeteo(lat, lon, tz),
+    openmeteoAir: (lat, lon) => fetchOpenMeteoAirQuality(lat, lon),
+  };
+
+  const fetchTomorrow = fetchers?.tomorrow || defaultFetchers.tomorrow;
+  const fetchOpen = fetchers?.openweather || defaultFetchers.openweather;
+  const fetchWeatherApi = fetchers?.weatherapi || defaultFetchers.weatherapi;
+  const fetchOpenMeteoFn = fetchers?.openmeteo || (hasCustomFetchers ? async () => null : defaultFetchers.openmeteo);
+  const fetchOpenMeteoAirFn = fetchers?.openmeteoAir || (hasCustomFetchers ? async () => null : defaultFetchers.openmeteoAir);
 
   const results = await Promise.allSettled([
     fetchTomorrow(latitude, longitude, apiKeys?.tomorrow),
     fetchOpen(latitude, longitude, apiKeys?.openweather),
     fetchWeatherApi(latitude, longitude, apiKeys?.weatherapi),
+    fetchOpenMeteoFn(latitude, longitude, timezone),
+    fetchOpenMeteoAirFn(latitude, longitude),
   ]);
 
-  const [tomorrowResult, openWeatherResult, weatherApiResult] = results;
+  const [tomorrowResult, openWeatherResult, weatherApiResult, openMeteoResult, openMeteoAirResult] = results;
 
   const tomorrowRaw = tomorrowResult?.status === "fulfilled" ? tomorrowResult.value : null;
   const openWeatherRaw = openWeatherResult?.status === "fulfilled" ? openWeatherResult.value : null;
   const weatherApiRaw = weatherApiResult?.status === "fulfilled" ? weatherApiResult.value : null;
+  const openMeteoRaw = openMeteoResult?.status === "fulfilled" ? openMeteoResult.value : null;
+  const openMeteoAirRaw = openMeteoAirResult?.status === "fulfilled" ? openMeteoAirResult.value : null;
 
-  const current = normalizeOpenWeatherCurrent(openWeatherRaw) || normalizeWeatherApiCurrentModel(weatherApiRaw);
+  const current =
+    normalizeOpenWeatherCurrent(openWeatherRaw) ||
+    normalizeWeatherApiCurrentModel(weatherApiRaw) ||
+    normalizeOpenMeteoCurrent(openMeteoRaw);
   if (!current) {
     throw new Error("Không có provider thời tiết khả dụng cho dữ liệu hiện tại.");
   }
 
   const tomorrowHourly = normalizeTomorrowHourly(tomorrowRaw);
+  const openMeteoHourly = normalizeOpenMeteoHourly(openMeteoRaw);
+  const hourly = tomorrowHourly.length > 0 ? tomorrowHourly : openMeteoHourly;
+
   const tomorrowDaily = normalizeTomorrowDaily(tomorrowRaw);
   const weatherApiDaily = normalizeWeatherApiDaily(weatherApiRaw);
+  const openMeteoDaily = normalizeOpenMeteoDaily(openMeteoRaw);
 
-  // Dự báo 6 ngày ưu tiên Tomorrow.io; bổ sung từ WeatherAPI khi còn thiếu.
+  // Dự báo 6 ngày ưu tiên Tomorrow.io -> WeatherAPI -> Open-Meteo (bổ sung đủ 6 ngày).
   let daily = tomorrowDaily;
-  if (daily.length === 0) daily = weatherApiDaily;
-  else if (daily.length < 6) {
-    const merged = [...daily];
-    for (const item of weatherApiDaily) {
-      if (merged.length >= 6) break;
-      if (!merged.some((d) => d.date === item.date)) merged.push(item);
+  for (const fallbackDaily of [weatherApiDaily, openMeteoDaily]) {
+    if (daily.length === 0) {
+      daily = fallbackDaily;
+    } else if (daily.length < 6 && fallbackDaily.length > 0) {
+      const merged = [...daily];
+      for (const item of fallbackDaily) {
+        if (merged.length >= 6) break;
+        if (!merged.some((d) => d.date === item.date)) merged.push(item);
+      }
+      daily = merged.slice(0, 6);
     }
-    daily = merged.slice(0, 6);
   }
 
   let astronomy = { sunrise: null, sunset: null };
-  const tomorrowSunrise = tomorrowDaily[0]?.sunrise;
-  const tomorrowSunset = tomorrowDaily[0]?.sunset;
-  if (tomorrowSunrise || tomorrowSunset) {
-    astronomy = { sunrise: tomorrowSunrise || null, sunset: tomorrowSunset || null };
-  } else {
-    const astro = weatherApiDaily[0];
-    astronomy = { sunrise: astro?.sunrise || null, sunset: astro?.sunset || null };
+  const primaryAstro =
+    (tomorrowDaily[0]?.sunrise || tomorrowDaily[0]?.sunset ? tomorrowDaily[0] : null) ||
+    (weatherApiDaily[0]?.sunrise || weatherApiDaily[0]?.sunset ? weatherApiDaily[0] : null) ||
+    (openMeteoDaily[0]?.sunrise || openMeteoDaily[0]?.sunset ? openMeteoDaily[0] : null);
+  if (primaryAstro) {
+    astronomy = { sunrise: primaryAstro.sunrise || null, sunset: primaryAstro.sunset || null };
   }
+
+  const airQuality = normalizeAirQuality(weatherApiRaw) || normalizeOpenMeteoAirQuality(openMeteoAirRaw);
 
   return {
     location: {
@@ -341,13 +542,13 @@ export async function buildWeatherModel(geo, apiKeys, fetchers = {}) {
       country: geo.country,
       latitude,
       longitude,
-      timezone: geo.timezone || "Asia/Ho_Chi_Minh",
+      timezone,
     },
     updatedAt: current.updatedAt || new Date().toISOString(),
     current,
-    hourly: tomorrowHourly,
+    hourly,
     daily,
-    airQuality: normalizeAirQuality(weatherApiRaw),
+    airQuality,
     astronomy,
   };
 }

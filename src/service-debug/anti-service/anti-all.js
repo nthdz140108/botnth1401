@@ -1,54 +1,79 @@
 import { removeMention } from "../../utils/format-util.js";
 import { sendMessageStateQuote, sendMessageWarning } from "../chat-zalo/chat-style/chat-style.js";
 
+// Bộ cờ bảo vệ không xung đột lẫn nhau (tuyệt đối không bật đồng thời antiText và onlyText)
+const COMBINED_ANTI_MODES = Object.freeze([
+  "antiPhotoVideo",
+  "antiVideo",
+  "antiVoice",
+  "antiFile",
+  "antiGif",
+  "antiSpam",
+  "removeTags",
+  "allowSticker",
+  "allowStickerlag",
+  "antiStickerEffect",
+  "removeLinks",
+  "antiPhoneNumber",
+  "blockForward",
+  "enableAntiBot",
+  "filterBadWords",
+  "antiNude",
+  "enableSetup",
+  "antiMention",
+  "antiJoinLeave",
+  "antiKickBlock",
+  "antiUndo",
+]);
+
+// Các cờ xung đột chỉ tắt sạch khi gõ !antiall off (không tự bật khi !antiall on)
+const EXTRA_DISABLE_ONLY_MODES = Object.freeze([
+  "antiText",
+  "onlyText",
+  "antiLink",
+  "antiTag",
+  "antiForward",
+  "antiSticker",
+]);
+
 export async function handleAntiAll(api, message, groupSettings) {
   const threadId = message.threadId;
-  const content = removeMention(message);
-  const parts = content.split(" ");
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const action = parts[1]?.toLowerCase();
 
-  // Khởi tạo groupSettings[threadId] nếu chưa tồn tại
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {};
   }
 
-  // Danh sách tất cả các chế độ chống
-  const antiModes = [
-    "antiPhotoVideo",
-    "antiVoice",
-    "antiFile",
-    "antiSpam",
-    "removeTags",
-    "allowSticker",
-    "removeLinks",
-    "enableAntiBot",
-    "filterBadWords",
-    "antiNude",       
-    "enableSetup",   
-    "antiMention",
-    "antiJoinLeave"
-  ];
-
   let newStatus;
   if (parts.length === 1) {
-    // Đảo ngược trạng thái của tất cả các chế độ chống
-    newStatus = !groupSettings[threadId].antiPhotoVideo; // Dùng một chế độ để xác định trạng thái chung
-    antiModes.forEach(mode => {
+    newStatus = !groupSettings[threadId].antiPhotoVideo;
+    COMBINED_ANTI_MODES.forEach((mode) => {
       groupSettings[threadId][mode] = newStatus;
     });
-  } else if (parts[1] === "on") {
-    // Bật tất cả các chế độ chống
+    if (!newStatus) {
+      EXTRA_DISABLE_ONLY_MODES.forEach((mode) => {
+        if (mode in groupSettings[threadId]) {
+          groupSettings[threadId][mode] = false;
+        }
+      });
+    }
+  } else if (action === "on") {
     newStatus = true;
-    antiModes.forEach(mode => {
+    COMBINED_ANTI_MODES.forEach((mode) => {
       groupSettings[threadId][mode] = true;
     });
-  } else if (parts[1] === "off") {
-    // Tắt tất cả các chế độ chống
+  } else if (action === "off") {
     newStatus = false;
-    antiModes.forEach(mode => {
+    COMBINED_ANTI_MODES.forEach((mode) => {
+      groupSettings[threadId][mode] = false;
+    });
+    EXTRA_DISABLE_ONLY_MODES.forEach((mode) => {
       groupSettings[threadId][mode] = false;
     });
   } else {
-    const caption = "Cú pháp không hợp lệ. Sử dụng antiall hoặc antiAll on/off";
+    const caption = "Cú pháp không hợp lệ. Sử dụng antiall hoặc antiall on/off";
     await sendMessageWarning(api, message, caption);
     return false;
   }

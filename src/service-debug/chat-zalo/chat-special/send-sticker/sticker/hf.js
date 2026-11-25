@@ -1,17 +1,15 @@
 /**
- * Hugging Face Inference API Adapter for Sticker Command
- *
- * Replaces Gemini Web broker:
- * - Text-to-Image (T2I): black-forest-labs/FLUX.1-schnell
- * - Image-to-Image (I2I): Qwen/Qwen-Image-Edit-2509
+ * Hugging Face Inference API Adapter for Sticker & AI Image Commands
  *
  * Provides resilient calls with:
+ * - Dynamic HF_TOKEN reload without process restart
  * - Max 2 attempts total (1 initial + at most 1 retry)
  * - Retries only on network errors, 429, 503, respecting Retry-After
  * - Output byte validation (ensures valid image bytes, not JSON or HTML errors)
- * - Configurable via .env.local without exposing tokens
+ * - Mode-aware I2I -> T2I fallback ("sticker" vs "photo")
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { InferenceClient } from "@huggingface/inference";
 import { fileTypeFromBuffer } from "file-type";
 
@@ -20,6 +18,17 @@ export const FALLBACK_T2I_MODEL = "black-forest-labs/FLUX.1-schnell";
 export const DEFAULT_I2I_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0";
 export const DEFAULT_PROVIDER = "hf-inference";
 export const DEFAULT_TIMEOUT_MS = 90000;
+
+const hfFallbackStorage = new AsyncLocalStorage();
+
+export function runWithHfFallbackTracker(fn) {
+  const state = { usedT2iFallback: false, reason: null };
+  return hfFallbackStorage.run(state, () => fn(state));
+}
+
+export function getHfFallbackState() {
+  return hfFallbackStorage.getStore() || null;
+}
 
 export class HfInferenceError extends Error {
   constructor(code, message, options = {}) {
@@ -57,29 +66,37 @@ export function hasHuggingFaceConfig() {
 }
 
 let sharedClient = null;
+let sharedClientSignature = "";
+let isMockClient = false;
 
 export function getInferenceClient() {
-  if (sharedClient) return sharedClient;
+  if (isMockClient && sharedClient) {
+    return sharedClient;
+  }
   const cfg = getHuggingFaceConfig();
   if (!cfg.token) {
     throw new HfInferenceError("HF_CONFIG_MISSING", "Thiếu HF_TOKEN trong cấu hình (.env.local)");
   }
-  const clientOptions = {};
-  if (cfg.provider && cfg.provider !== "auto") {
-    clientOptions.defaultProvider = cfg.provider;
-  } else {
-    clientOptions.defaultProvider = "hf-inference";
+  const effectiveProvider = cfg.provider && cfg.provider !== "auto" ? cfg.provider : "hf-inference";
+  const nextSignature = `${cfg.token}::${effectiveProvider}`;
+  if (sharedClient && sharedClientSignature === nextSignature) {
+    return sharedClient;
   }
-  sharedClient = new InferenceClient(cfg.token, clientOptions);
+  sharedClient = new InferenceClient(cfg.token, { defaultProvider: effectiveProvider });
+  sharedClientSignature = nextSignature;
   return sharedClient;
 }
 
 export function setMockClientForTests(client) {
   sharedClient = client;
+  isMockClient = Boolean(client);
+  sharedClientSignature = "";
 }
 
 export function resetSharedClientForTests() {
   sharedClient = null;
+  isMockClient = false;
+  sharedClientSignature = "";
 }
 
 export async function validateImageBuffer(buffer) {
@@ -87,7 +104,6 @@ export async function validateImageBuffer(buffer) {
     throw new HfInferenceError("HF_INVALID_RESPONSE", "Hugging Face không trả về dữ liệu ảnh");
   }
 
-  // Quick check for JSON or HTML error response returned as text bytes
   const firstByte = buffer[0];
   if (firstByte === 0x7B /* { */ || firstByte === 0x3C /* < */) {
     const textPreview = buffer.slice(0, 500).toString("utf8");
@@ -103,14 +119,12 @@ export async function validateImageBuffer(buffer) {
     }
   }
 
-  // Detect image type
   const type = await fileTypeFromBuffer(buffer).catch(() => null);
   const mime = type?.mime || "";
   if (mime.startsWith("image/")) {
     return { buffer, mimeType: mime };
   }
 
-  // Fallback check known magic numbers for PNG, JPEG, WebP, GIF
   if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
     return { buffer, mimeType: "image/png" };
   }
@@ -233,7 +247,12 @@ async function runTextToImageOnce(client, { model, inputs, provider, timeoutMs }
   }
 }
 
-export async function generateStickerImageHF({ prompt, referenceBuffer, referenceMimeType }) {
+export async function generateStickerImageHF({
+  prompt,
+  referenceBuffer,
+  referenceMimeType,
+  mode = "sticker",
+}) {
   const cfg = getHuggingFaceConfig();
   if (!cfg.enabled) {
     throw new HfInferenceError("HF_CONFIG_MISSING", "Chưa cấu hình HF_TOKEN trong runtime (.env.local)");
@@ -246,7 +265,6 @@ export async function generateStickerImageHF({ prompt, referenceBuffer, referenc
 
   let lastError = null;
 
-  // Max 2 attempts total (1 initial + 1 retry)
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(new Error("HF request timeout")), cfg.timeoutMs);
@@ -284,7 +302,6 @@ export async function generateStickerImageHF({ prompt, referenceBuffer, referenc
 
       clearTimeout(timeoutId);
 
-      // Convert result (Blob or ArrayBuffer) to Buffer
       let buffer;
       let mimeType = "image/png";
       if (rawResult && typeof rawResult.arrayBuffer === "function") {
@@ -306,21 +323,19 @@ export async function generateStickerImageHF({ prompt, referenceBuffer, referenc
         mimeType: validated.mimeType || mimeType,
         provider: provider || "hf-inference",
         model: targetModel,
+        usedT2iFallback: false,
       };
     } catch (err) {
       clearTimeout(timeoutId);
       const classified = classifyHfError(err);
       lastError = classified;
 
-      // Check if eligible for retry (only attempt 1, on retryable error)
       if (attempt === 1 && isRetryableError(err)) {
         const waitSec = classified.retryAfter ?? 1.5;
         await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
         continue;
       }
 
-      // If image-to-image failed because model requires paid provider, timed out, or is unsupported on free tier,
-      // fallback to free text-to-image using a fresh AbortController!
       if (
         isImageToImage &&
         (classified.code === "HF_PAID_MODEL_ERROR" ||
@@ -330,28 +345,41 @@ export async function generateStickerImageHF({ prompt, referenceBuffer, referenc
           classified.status === 410 ||
           classified.status === 400)
       ) {
-        const fallbackPrompt = prompt
-          ? `Chibi sticker, cute, white border, ${prompt}`
-          : "Chibi sticker, cute, high quality, white border, transparent background";
+        const trimmedPrompt = String(prompt || "").trim();
+        const fallbackPrompt =
+          mode === "photo"
+            ? trimmedPrompt || "High quality detailed illustration"
+            : trimmedPrompt
+              ? `Chibi sticker, cute, white border, ${trimmedPrompt}`
+              : "Chibi sticker, cute, high quality, white border, transparent background";
+
         const candidateModels = [cfg.t2iModel];
         if (!process.env.HF_STICKER_T2I_MODEL && cfg.t2iModel !== FALLBACK_T2I_MODEL) {
           candidateModels.push(FALLBACK_T2I_MODEL);
         }
         for (const candidateModel of candidateModels) {
           try {
-            return await runTextToImageOnce(client, {
+            const fallbackResult = await runTextToImageOnce(client, {
               model: candidateModel,
               inputs: fallbackPrompt,
               provider,
               timeoutMs: cfg.timeoutMs,
             });
+            const tracker = hfFallbackStorage.getStore();
+            if (tracker) {
+              tracker.usedT2iFallback = true;
+              tracker.reason = classified.code;
+            }
+            return {
+              ...fallbackResult,
+              usedT2iFallback: true,
+            };
           } catch {
             // Try next fallback model or surface original error
           }
         }
       }
 
-      // If default T2I model is 404/410 on free serverless tier and env override is unset, try FLUX.1-schnell
       if (
         !isImageToImage &&
         !process.env.HF_STICKER_T2I_MODEL &&
@@ -359,18 +387,21 @@ export async function generateStickerImageHF({ prompt, referenceBuffer, referenc
         (classified.status === 404 || classified.status === 410)
       ) {
         try {
-          return await runTextToImageOnce(client, {
+          const t2iFallback = await runTextToImageOnce(client, {
             model: FALLBACK_T2I_MODEL,
             inputs: String(prompt || ""),
             provider,
             timeoutMs: cfg.timeoutMs,
           });
+          return {
+            ...t2iFallback,
+            usedT2iFallback: false,
+          };
         } catch {
           // Surface original classified error
         }
       }
 
-      // Non-retryable error or attempt 2 failed
       throw classified;
     }
   }

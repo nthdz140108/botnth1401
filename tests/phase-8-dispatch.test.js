@@ -218,7 +218,7 @@ test("scold command is allowed for adminBox, adminBot and adminLevelHigh but den
 
 test("commands with required arguments fail before invoking their handlers", async () => {
   const registry = createPhase8Registry(overridesFor(EXPECTED_PHASE_8_COMMANDS));
-  const required = ["scold", "unlearn", "todo", "sendp"];
+  const required = ["scold", "learnnow", "todo", "sendp"];
 
   for (const command of required) {
     const result = await dispatchCommand(contextFor([command]), registry);
@@ -227,9 +227,9 @@ test("commands with required arguments fail before invoking their handlers", asy
     assert.equal(result.definition.name, command);
   }
 
-  const learnNow = await dispatchCommand(contextFor(["learnnow", "question"]), registry);
-  assert.equal(learnNow.code, "MISSING_ARGUMENT");
-  assert.equal(learnNow.definition.name, "learnnow");
+  const unlearnEmpty = await dispatchCommand(contextFor(["unlearn"]), registry);
+  assert.equal(unlearnEmpty.code, "HANDLED");
+  assert.equal(unlearnEmpty.definition.name, "unlearn");
 });
 
 test("Phase 8 handler failures become structured errors", async () => {

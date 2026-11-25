@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "fs";
 import path from "path";
 import axios from "axios";
@@ -214,6 +215,28 @@ async function getImageLinks(config) {
   throw new Error("Không tìm thấy nguồn ảnh");
 }
 
+function tokenizeArgumentWords(argsText) {
+  return String(argsText || "")
+    .toLowerCase()
+    .split(/[\s,.;:!?()[\]{}"'`~|/\\+-]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function hasWholeKeywordMatch(tokens, keyword) {
+  const kwTokens = tokenizeArgumentWords(keyword);
+  if (kwTokens.length === 0 || tokens.length < kwTokens.length) return false;
+  if (kwTokens.length === 1) {
+    return tokens.includes(kwTokens[0]);
+  }
+  for (let i = 0; i <= tokens.length - kwTokens.length; i++) {
+    if (kwTokens.every((part, offset) => tokens[i + offset] === part)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getImageConfig(type, content) {
   const typeConfig = IMAGE_TYPES[type];
   if (!typeConfig) return null;
@@ -222,9 +245,11 @@ function getImageConfig(type, content) {
 
   const typeKeywords = KEYWORD_MAPPING[type];
   if (typeKeywords) {
-    const normalizedContent = content.toLowerCase();
+    const rawParts = String(content || "").trim().split(/\s+/).filter(Boolean);
+    const argsText = rawParts.length > 1 ? rawParts.slice(1).join(" ") : "";
+    const tokens = tokenizeArgumentWords(argsText);
     for (const [variantName, keywords] of Object.entries(typeKeywords)) {
-      if (keywords.some((keyword) => normalizedContent.includes(keyword))) {
+      if (keywords.some((keyword) => hasWholeKeywordMatch(tokens, keyword))) {
         variant = variantName;
         break;
       }
@@ -243,13 +268,14 @@ function getImageConfig(type, content) {
 
 async function tryDownloadImage(imageLinks, type, downloadTimeout, isApiSource) {
   let attempts = 0;
+  fs.mkdirSync(CONFIG.saveDir, { recursive: true });
 
   if (isApiSource) {
     let currentLinks = [...imageLinks];
     while (attempts < CONFIG.maxAttempts && currentLinks.length > 0) {
       const randomIndex = Math.floor(Math.random() * currentLinks.length);
       const imageUrl = currentLinks[randomIndex];
-      const imagePath = path.join(CONFIG.saveDir, `${type}_${Date.now()}.jpg`);
+      const imagePath = path.join(CONFIG.saveDir, `${type}_${crypto.randomUUID()}.jpg`);
 
       try {
         await downloadImage(imageUrl, imagePath, downloadTimeout);
@@ -272,7 +298,7 @@ async function tryDownloadImage(imageLinks, type, downloadTimeout, isApiSource) 
     };
   } else {
     while (attempts < CONFIG.maxAttempts) {
-      const imagePath = path.join(CONFIG.saveDir, `${type}_${Date.now()}.jpg`);
+      const imagePath = path.join(CONFIG.saveDir, `${type}_${crypto.randomUUID()}.jpg`);
       try {
         await downloadImage(imageLinks, imagePath, downloadTimeout);
         return {
@@ -313,21 +339,21 @@ function getArgumentList(type) {
 export async function sendImage(api, message, type) {
   const { dName: senderName, uidFrom: senderId } = message.data;
   const content = removeMention(message);
-  const commandParts = content.split(" ");
+  const commandParts = content.trim().split(/\s+/).filter(Boolean);
 
-  if (commandParts.length > 1 && commandParts[1] === "map") {
+  if (commandParts.length > 1 && commandParts[1].toLowerCase() === "map") {
     const argList = getArgumentList(type);
-    if (argList) {
-      await api.sendMessage(
-        {
-          msg: `Các đối số có thể dùng cho lệnh ${type}:\n${argList}`,
-          quote: message,
-          ttl: 30000,
-        },
-        message.threadId,
-        message.type
-      );
-    }
+    await api.sendMessage(
+      {
+        msg: argList
+          ? `Các đối số có thể dùng cho lệnh ${type}:\n${argList}`
+          : `Lệnh ${type} không có danh mục phân nhóm con. Bạn hãy gõ trực tiếp ${commandParts[0]} để nhận ảnh nhé!`,
+        quote: message,
+        ttl: 30000,
+      },
+      message.threadId,
+      message.type
+    );
     return;
   }
 

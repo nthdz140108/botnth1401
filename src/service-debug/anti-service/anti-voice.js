@@ -12,14 +12,15 @@ const kickedUsers = new LRUCache({ max: 2000, ttl: 10000 });
 export async function handleAntiVoice(api, message, groupSettings) {
   const threadId = message.threadId;
   if (!groupSettings[threadId]) groupSettings[threadId] = {};
-  const content = removeMention(message);
-  const parts = content.split(" ");
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const option = parts[1]?.toLowerCase();
 
   if (parts.length === 1) {
     groupSettings[threadId].antiVoice = !groupSettings[threadId].antiVoice;
-  } else if (parts[1] === "on") {
+  } else if (option === "on") {
     groupSettings[threadId].antiVoice = true;
-  } else if (parts[1] === "off") {
+  } else if (option === "off") {
     groupSettings[threadId].antiVoice = false;
   } else {
     const caption = "Cú pháp không hợp lệ. Sử dụng antivoice hoặc antivoice on/off";
@@ -39,8 +40,9 @@ export async function enforceAntiVoice(api, message, isAdminBox, groupSettings, 
   const msgType = message.data.msgType;
   const senderId = message.data.uidFrom;
   const senderName = message.data.dName;
+  const userKey = `${threadId}:${senderId}`;
 
-  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(senderId) || isInWhiteList(groupSettings, threadId, senderId)) return false;
+  if (!botIsAdminBox || isAdminBox || isSelf || kickedUsers.has(userKey) || isInWhiteList(groupSettings, threadId, senderId)) return false;
 
   if (groupSettings[threadId]?.antiVoice && msgType === "chat.voice") {
     try {
@@ -80,14 +82,15 @@ async function handleWarning(
   senderId,
   senderName
 ) {
-  if (!userWarnings.has(senderId)) {
-    userWarnings.set(senderId, {
+  const userKey = `${threadId}:${senderId}`;
+  if (!userWarnings.has(userKey)) {
+    userWarnings.set(userKey, {
       count: 0,
       lastWarningTime: Date.now(),
     });
   }
 
-  const warning = userWarnings.get(senderId);
+  const warning = userWarnings.get(userKey);
   const currentTime = Date.now();
 
   const warningReductions = Math.floor(
@@ -118,7 +121,7 @@ async function handleWarning(
     );
     return { shouldBlock: false };
   } else {
-    userWarnings.delete(senderId);
+    userWarnings.delete(userKey);
     return { shouldBlock: true };
   }
 }
@@ -130,14 +133,15 @@ async function handleViolationDetected(
   senderId,
   senderName
 ) {
-  kickedUsers.set(senderId, true);
+  const userKey = `${threadId}:${senderId}`;
+  kickedUsers.set(userKey, true);
   try {
     await api.blockUsers(threadId, [senderId]);
   } catch (error) {
     console.error("Lỗi khi xử lý kick vi phạm:", error);
   } finally {
     const timer = setTimeout(() => {
-      kickedUsers.delete(senderId);
+      kickedUsers.delete(userKey);
     }, 5000);
     timer.unref?.();
   }

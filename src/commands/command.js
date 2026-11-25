@@ -5,7 +5,7 @@ export { sendReactionConfirmReceive } from "./command-response.js";
 import { readWebConfig, writeGroupSettings, getCommandConfig } from "../utils/io-json.js";
 import { getInstanceKind, getBotId, getProjectRoot } from "../utils/env.js";
 import { managerData } from "./bot-manager/active-bot.js";
-import { isMyBotAdminCooldownBypass, dispatchCommand } from "./command-dispatcher.js";
+import { isMyBotAdminCooldownBypass, dispatchCommand, normalizeDispatchParts } from "./command-dispatcher.js";
 import { isDatabaseReady } from "../utils/server-config.js";
 import { sendMessageInsufficientAuthority } from "../service-debug/chat-zalo/chat-style/chat-style.js";
 import { handlePrefixCommand } from "./bot-manager/prefix.js";
@@ -193,7 +193,7 @@ async function checkPermission(
 
   const registryEntry = findRegistryDefinition(commandName) || findRegistryDefinition(command?.name);
   const runtimePolicy = getRuntimeCommandPolicy(command || { name: commandName });
-  const configuredPermission = registryEntry?.permission || runtimePolicy.permission || command?.permission;
+  const configuredPermission = runtimePolicy.permission || command?.permission || registryEntry?.permission;
   const configuredName = resolveGroupCommandPermission(commandName, configuredPermission);
   const requiredPermissionName = commandName === "setcmd"
     ? "adminLevelHigh"
@@ -318,6 +318,11 @@ export function initGroupSettings(groupSettings, threadId, nameGroup) {
     autoJoin: false,
     antiPhoneNumber: false,
     ifMentioned: false,
+    prWelcome: false,
+    prWelcomeText: "",
+    sendTask: false,
+    sendstk: false,
+    replyTagText: "",
   };
 
   if (isNewGroup) {
@@ -554,9 +559,20 @@ export async function handleCommandPrivate(api, message, authorization = null) {
         return 1;
       }
 
-      const commandConfig = getCommandConfig()?.commands || [];
+      const commandConfigObj = getCommandConfig() || {};
+      const commandConfig = commandConfigObj.commands || [];
+      const disabledAliases = new Set(
+        (Array.isArray(commandConfigObj.disabledAliases) ? commandConfigObj.disabledAliases : [])
+          .map((item) => String(item || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
       let { command, commandParts } = parsedCommand;
-      const inputCommand = command;
+      commandParts = normalizeDispatchParts(commandParts, prefix);
+      const inputCommand = String(commandParts[0] || command || "").trim().toLowerCase();
+      if (disabledAliases.has(inputCommand) && !["alias", "fixcmd", "setcmd"].includes(inputCommand)) {
+        await sendPhase1Result(api, message, { code: "COMMAND_DISABLED", command: inputCommand });
+        return 0;
+      }
       let registryMatch = resolveCommand(commandParts, commandRegistry);
       let runtimeCmd = null;
       if (registryMatch.code === "RESOLVED") {
@@ -741,9 +757,11 @@ export async function handleCommandPrivate(api, message, authorization = null) {
           api,
           message,
           commandParts,
+          prefix,
           aliasCommand,
           scope: "private",
           scopeOverride: commandPolicy.effectiveScope,
+          runtimePermission: commandPolicy.permission || commandInfo?.permission,
           permissionLevel: userPermissionLevel,
           config: process.env,
           dbReady: isDatabaseReady(),
@@ -752,6 +770,7 @@ export async function handleCommandPrivate(api, message, authorization = null) {
           isMainBotAdmin: isMainAdmin,
           instanceKind: authorizationSnapshot.instanceKind,
           authorizationSnapshot,
+          root: getProjectRoot(),
           commandConfig: commandConfigForContext(command, threadId),
           workloadBroker: lifecycle?.workloadBroker || null,
         }, dispatchRegistry)
@@ -815,14 +834,38 @@ export async function handleCommand(
     callerIsBotAdmin = authorizationSnapshot.isBotAdmin;
     callerIsAdminBox = authorizationSnapshot.isGroupAdmin;
 
+    const trimmedLower = content.trim().toLowerCase();
+    if (
+      handleChat &&
+      trimmedLower === `${prefix.toLowerCase()}prefix` &&
+      (groupSettings[threadId]?.activeBot === true || callerIsBotAdmin || callerIsAdminBox || isAdminLevelHighest)
+    ) {
+      await sendReactionConfirmReceive(api, message, 3);
+      const handled = await handlePrefixCommand(api, message, isAdminLevelHighest);
+      if (handled) return 3;
+    }
+
     const parsedCommand = parseCommandContent(content, prefix);
     if (!parsedCommand) {
       return numHandleCommand;
     }
 
     let { command, commandParts } = parsedCommand;
-    const inputCommand = command;
-    const commandConfig = getCommandConfig()?.commands || [];
+    commandParts = normalizeDispatchParts(commandParts, prefix);
+    const inputCommand = String(commandParts[0] || command || "").trim().toLowerCase();
+    const commandConfigObj = getCommandConfig() || {};
+    const commandConfig = commandConfigObj.commands || [];
+    const disabledAliases = new Set(
+      (Array.isArray(commandConfigObj.disabledAliases) ? commandConfigObj.disabledAliases : [])
+        .map((item) => String(item || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (disabledAliases.has(inputCommand) && !["alias", "fixcmd", "setcmd"].includes(inputCommand)) {
+      if (handleChat && (groupSettings[threadId]?.activeBot === true || callerIsBotAdmin)) {
+        await sendPhase1Result(api, message, { code: "COMMAND_DISABLED", command: inputCommand });
+      }
+      return 99;
+    }
     let registryMatch = resolveCommand(commandParts, commandRegistry);
     let runtimeCmd = null;
     if (registryMatch.code === "RESOLVED") {
@@ -1000,9 +1043,11 @@ export async function handleCommand(
         api,
         message,
         commandParts,
+        prefix,
         aliasCommand,
         scope: "group",
         scopeOverride: commandPolicy.effectiveScope,
+        runtimePermission: commandPolicy.permission || commandInfo?.permission,
         permissionLevel: userPermissionLevel,
         config: process.env,
         dbReady: isDatabaseReady(),
@@ -1016,6 +1061,7 @@ export async function handleCommand(
         isMainBotAdmin: isMainAdmin,
         instanceKind: authorizationSnapshot.instanceKind,
         authorizationSnapshot,
+        root: getProjectRoot(),
         commandConfig: commandConfigForContext(command, threadId),
         workloadBroker: lifecycle?.workloadBroker || null,
       }, dispatchRegistry)

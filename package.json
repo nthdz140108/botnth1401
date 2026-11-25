@@ -24,7 +24,9 @@
     "cleanup:dry": "node scripts/disk-cleanup.js --dry-run",
     "cleanup:status": "node scripts/disk-cleanup.js --status",
     "cleanup:media-temp:dry": "node scripts/temp-media-cleanup.js --dry-run",
-    "cleanup:media-temp:run": "node scripts/temp-media-cleanup.js --run"
+    "cleanup:media-temp:run": "node scripts/temp-media-cleanup.js --run",
+    "setup:media": "node scripts/setup-media-tools.mjs",
+    "seed:resources": "node scripts/seed-resources.mjs"
   },
   "author": "NDQ",
   "license": "ISC",

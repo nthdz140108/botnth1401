@@ -35,6 +35,34 @@ let mockGenerateFn = null;
 
 export const MODEL_PRIORITY = getModelPriority();
 
+const IMAGE_REQUEST_START_REGEX =
+  /^(?:hãy\s+|vui lòng\s+|hộ\s+|giúp\s+|em\s+)*(?:tạo ảnh|vẽ ảnh|tạo hình|make image|generate image|create image|tao anh|ve anh|tao hinh)\b/i;
+
+const IMAGE_REQUEST_STRIP_REGEX =
+  /^(?:hãy\s+|vui lòng\s+|hộ\s+|giúp\s+|em\s+)*(?:tạo ảnh|vẽ ảnh|tạo hình|make image|generate image|create image|tao anh|ve anh|tao hinh)\s*(?:cho\s+tôi|giúp\s+tôi|hộ\s+tôi)?\s*:?\s*/i;
+
+function escapeRegExp(value) {
+  return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractGeminiPrompt(message, prefix, aliasCommand) {
+  const cleaned = (removeMention(message) || String(message?.data?.content || "")).trim();
+  if (!cleaned) return "";
+  const normalizedPrefix = String(prefix ?? "");
+  const normalizedAlias = String(aliasCommand ?? "").trim();
+  if (normalizedAlias) {
+    const aliasPattern = normalizedAlias.split(/\s+/).map(escapeRegExp).join("\\s+");
+    const cmdRegex = new RegExp(
+      `^\\s*${escapeRegExp(normalizedPrefix)}\\s*${aliasPattern}(?:\\s+|$)`,
+      "i"
+    );
+    if (cmdRegex.test(cleaned)) {
+      return cleaned.replace(cmdRegex, "").trim();
+    }
+  }
+  return cleaned;
+}
+
 function resolveGeminiKeys() {
   const raw = String(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "");
   if (raw !== cachedKeySignature) {
@@ -86,7 +114,7 @@ export async function callGeminiGenerate(contents) {
   }
   const keys = resolveGeminiKeys();
   if (keys.length === 0 || !ai) {
-    const err = new Error("GEMINI_API_KEYS is not configured");
+    const err = new Error("GEMINI_API_KEYS / GEMINI_API_KEY is not configured");
     err.code = "MISSING_GEMINI_KEY";
     throw err;
   }
@@ -99,7 +127,10 @@ export async function callGeminiGenerate(contents) {
         async (modelName) =>
           ai.models.generateContent({
             model: modelName,
-            generationConfig: geminiModel.generationConfig,
+            config: {
+              ...geminiModel.generationConfig,
+              systemInstruction: geminiModel.systemInstruction,
+            },
             contents,
           })
       );
@@ -213,7 +244,8 @@ export async function analyzeQuotedMediaWithGemini(promptText, message) {
   }
 
   const inlineData = await fetchMediaInlineData(mediaUrl);
-  const effectivePrompt = String(promptText || "").trim() || "Hãy phân tích chi tiết nội dung này bằng tiếng Việt.";
+  const effectivePrompt =
+    String(promptText || "").trim() || "Hãy mô tả và phân tích chi tiết hình ảnh này bằng tiếng Việt.";
   const contents = [
     {
       role: "user",
@@ -247,19 +279,24 @@ async function processQueue() {
       try {
         initGeminiModel();
         const session = getChatSession(userId);
-        session.lastInteraction = Date.now();
-        session.history.push({ role: "user", parts: [{ text: question }] });
-        if (session.history.length > 20) session.history = session.history.slice(-20);
+        const priorHistory = session.history.slice(-20).map((item) => ({
+          role: item.role === "assistant" ? "model" : item.role,
+          parts: item.parts,
+        }));
         const contents = [
-          { role: "user", parts: [{ text: `${geminiModel.systemInstruction}\n\nCâu hỏi: ${question}` }] },
-          ...session.history.map((item) => ({
-            role: item.role === "assistant" ? "model" : item.role,
-            parts: item.parts,
-          })),
+          ...priorHistory,
+          { role: "user", parts: [{ text: question }] },
         ];
         const result = await callGeminiGenerate(contents);
         const response = result?.text || "";
-        session.history.push({ role: "model", parts: [{ text: response }] });
+        session.lastInteraction = Date.now();
+        session.history.push(
+          { role: "user", parts: [{ text: question }] },
+          { role: "model", parts: [{ text: response }] }
+        );
+        if (session.history.length > 20) {
+          session.history = session.history.slice(-20);
+        }
         chatSessions.set(String(userId), session);
         resolve(response);
       } catch (error) {
@@ -296,25 +333,35 @@ export async function callGeminiAPI(api, message, question, userId) {
 
 export async function askGeminiCommand(api, message, aliasCommand, options = {}) {
   initGeminiModel();
-  const content = removeMention(message).trim();
   const userId = message.data.uidFrom;
   const senderName = message.data.dName;
   const prefix = getGlobalPrefix();
 
-  const question = content.replace(`${prefix}${aliasCommand}`, "").trim();
+  const question = extractGeminiPrompt(message, prefix, aliasCommand || "gemini");
   const hasQuotedMedia = Boolean(extractQuotedMediaUrl(message.data?.quote));
+  const isAnalysisAlias = /^(?:analysis-image|analysis)$/i.test(String(aliasCommand || "").trim());
+
+  if (isAnalysisAlias && !hasQuotedMedia) {
+    await sendMessageQuery(
+      api,
+      message,
+      `Vui lòng reply (trả lời) vào hình ảnh hoặc media cần phân tích!\nVí dụ: Reply ảnh + ${prefix}${aliasCommand || "analysis-image"} [câu hỏi tùy chọn]`
+    );
+    return;
+  }
 
   if (question === "" && !hasQuotedMedia) {
     await sendMessageQuery(api, message, "Vui lòng nhập câu hỏi cần giải đáp!");
     return;
   }
+
   if (question.toLowerCase() === "reset") {
     chatSessions.delete(String(userId));
     await sendMessageComplete(api, message, "Đã xóa lịch sử cuộc trò chuyện của bạn!", false);
     return;
   }
 
-  const isImageRequest = /\b(tạo ảnh|vẽ ảnh|tạo hình|vẽ|make|generate image|create image|tao anh|ve anh|tao hinh)\b/i.test(question);
+  const isImageRequest = IMAGE_REQUEST_START_REGEX.test(question);
   if (isImageRequest) {
     const isAdmin = Boolean(options?.isAdminLevelHighest) || checkAdminLevelHigh(message, options, api);
     if (!isAdmin) {
@@ -326,10 +373,7 @@ export async function askGeminiCommand(api, message, aliasCommand, options = {})
       );
       return;
     }
-    const cleanPrompt = question.replace(
-      /^(?:hãy\s+|vui lòng\s+|hộ\s+|giúp\s+)*(?:tạo ảnh|vẽ ảnh|tạo hình|vẽ|make|generate image|create image|tao anh|ve anh|tao hinh)\s*(?:cho\s+tôi|giúp\s+tôi|hộ\s+tôi)?\s*:?\s*/i,
-      ""
-    ).trim() || question;
+    const cleanPrompt = question.replace(IMAGE_REQUEST_STRIP_REGEX, "").trim() || question;
 
     return executeAiImageWorkflow({
       api,
@@ -337,24 +381,29 @@ export async function askGeminiCommand(api, message, aliasCommand, options = {})
       prompt: cleanPrompt,
       aliasCommand,
       isAdminLevelHighest: true,
+      mode: "photo",
       customSuccessCaption: `Ảnh đã được tạo theo yêu cầu: ${cleanPrompt}`,
     });
   }
 
   if (resolveGeminiKeys().length === 0 && typeof mockGenerateFn !== "function") {
-    await sendMessageFailed(api, message, "GEMINI_API_KEYS chưa được cấu hình.", true);
+    await sendMessageFailed(api, message, "Chưa cấu hình GEMINI_API_KEYS hoặc GEMINI_API_KEY.", true);
     return;
   }
 
   if (hasQuotedMedia) {
     try {
-      const r = await analyzeQuotedMediaWithGemini(question || "Hãy mô tả chi tiết hình ảnh này.", message);
+      const r = await analyzeQuotedMediaWithGemini(
+        question || "Hãy mô tả và phân tích chi tiết hình ảnh này bằng tiếng Việt.",
+        message
+      );
       await sendMessageComplete(api, message, (r.text || "").replace(/\*\*/g, "").trim(), false);
       return;
     } catch (err) {
-      const userMsg = err?.code === "MEDIA_INVALID"
-        ? "Media không hợp lệ hoặc vượt quá 15MB."
-        : "Không thể phân tích ảnh qua Gemini API.";
+      const userMsg =
+        err?.code === "MEDIA_INVALID"
+          ? "Media không hợp lệ hoặc vượt quá 15MB."
+          : "Không thể phân tích ảnh qua Gemini API.";
       await sendMessageFailed(api, message, userMsg, true);
       return;
     }

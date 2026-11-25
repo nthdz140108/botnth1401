@@ -1,9 +1,9 @@
 import { LRUCache } from "lru-cache";
 import { MessageMention } from "../../api-zalo/models/index.js";
 import { MessageType } from "../../api-zalo/models/Message.js";
-import { sendMessageStateQuote, sendMessageState } from "../chat-zalo/chat-style/chat-style.js";
+import { sendMessageStateQuote, sendMessageState, sendMessageWarning } from "../chat-zalo/chat-style/chat-style.js";
 import { removeMention } from "../../utils/format-util.js";
-import { appContext } from "../../api-zalo/context.js";
+import { getBotId } from "../../utils/env.js";
 import { isInWhiteList } from "./white-list.js";
 
 const CACHE_DURATION = 10000;
@@ -50,46 +50,60 @@ async function getGroupInfoData(api, threadId) {
 }
 function checkTagBehavior(senderId, mentionsCount, threadId) {
   const now = Date.now();
-  if (!tagBehaviorMap.has(senderId)) {
-    tagBehaviorMap.set(senderId, {
+  const scopedKey = `${threadId}:${senderId}`;
+  if (!tagBehaviorMap.has(scopedKey)) {
+    tagBehaviorMap.set(scopedKey, {
       count: 1,
       timestamps: [now],
       threadId: threadId
     });
     return false;
   }
-  const userData = tagBehaviorMap.get(senderId);
+  const userData = tagBehaviorMap.get(scopedKey);
   const tenSecondsAgo = now - 30000; 
   userData.timestamps = userData.timestamps.filter(time => time > tenSecondsAgo);
   userData.timestamps.push(now);
   userData.count = userData.timestamps.length;
   if (userData.count >= 2 && mentionsCount > 3) {
-    tagBehaviorMap.delete(senderId); 
+    tagBehaviorMap.delete(scopedKey); 
     return true;
   }
   return false;
 }
 export async function handleSetupAntiCommand(api, message, groupSettings) {
   const threadId = message.threadId;
-  let isChangeSetting = false;
   if (!groupSettings[threadId]) {
     groupSettings[threadId] = {
       enableSetup: false,
       antiMention: false
     };
   }
-  const newStatus = !groupSettings[threadId].enableSetup;
+  const content = removeMention(message).trim();
+  const parts = content.split(/\s+/).filter(Boolean);
+  const action = parts[1]?.toLowerCase();
+
+  let newStatus;
+  if (!action) {
+    newStatus = !groupSettings[threadId].enableSetup;
+  } else if (action === "on") {
+    newStatus = true;
+  } else if (action === "off") {
+    newStatus = false;
+  } else {
+    await sendMessageWarning(api, message, "Cú pháp không hợp lệ. Sử dụng antisetup hoặc antisetup [on/off]");
+    return false;
+  }
+
   groupSettings[threadId].enableSetup = newStatus;
   groupSettings[threadId].antiMention = newStatus;
-  isChangeSetting = true;
   const statusText = newStatus ? "bật" : "tắt";
   const caption = `Chức năng bảo vệ đã được ${statusText}!`;
   await sendMessageStateQuote(api, message, caption, newStatus, 300000);
-  return isChangeSetting;
+  return true;
 }
 export async function superCheckBox(api, message, isSelf, botIsAdminBox, isAdminBox, groupSettings) {
   const threadId = message.threadId;
-  const senderName = message.data.dName;
+  const senderName = message.data.dName || "Thành viên";
   const senderId = String(message.data.uidFrom); 
   const mentionsCount = message.data?.mentions?.length || 0;
   const ttl = message.data?.ttl;
@@ -107,7 +121,8 @@ export async function superCheckBox(api, message, isSelf, botIsAdminBox, isAdmin
       await sendMessageState(api, threadId, "Lỗi: Không thể lấy danh sách quản trị viên nhóm!", "warning", 60000);
       return false;
     }
-    const uid = String(appContext.uid); 
+    const resolvedBotUid = api?.getOwnId?.() || api?.getBotId?.() || getBotId();
+    const uid = resolvedBotUid && resolvedBotUid !== -1 ? String(resolvedBotUid) : "";
     if (!uid) {
       await sendMessageState(api, threadId, "Lỗi: Không thể lấy UID của bot!", "warning", 60000);
       return false;
@@ -126,7 +141,7 @@ export async function superCheckBox(api, message, isSelf, botIsAdminBox, isAdmin
     if (getShortUid(senderId) === getShortUid(targetId)) {
       return false;
     }
-    const spammerKey = `${senderId}:${threadId}`;
+    const spammerKey = `${threadId}:${senderId}`;
     if (checkDelete.has(spammerKey)) {
       return false;
     }
@@ -135,9 +150,9 @@ export async function superCheckBox(api, message, isSelf, botIsAdminBox, isAdmin
     const isTargetAdmin = shortAdminIds.includes(getShortUid(targetId));
     if (isSenderAdmin && isTargetAdmin) {
       checkDelete.set(spammerKey, true);
-      const caption = `${senderName}\nAnh nhắc em!!!`;
+      const caption = `[ ${senderName} ]\nAnh nhắc em!!!`;
       const messagePayload = {
-        mentions: [MessageMention(senderId, 2, senderName.length)],
+        mentions: [MessageMention(senderId, senderName.length, 2)],
         ttl: 8600000
       };
       if (!isWebchat) {

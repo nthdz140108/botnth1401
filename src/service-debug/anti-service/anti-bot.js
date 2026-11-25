@@ -5,11 +5,23 @@ import {
   sendMessageStateQuote,
 } from "../chat-zalo/chat-style/chat-style.js";
 import { removeMention } from "../../utils/format-util.js";
+import { getBotId } from "../../utils/env.js";
 import { isInWhiteList } from "./white-list.js";
 
 const CACHE_DURATION = 10000;
-const MAX_BOT_TTL_MS = 3600000;
+const ULTRA_SHORT_BOT_TTL_MS = 15000;
+const SUSPICIOUS_BOT_TTL_MAX_MS = 600000;
+const BOT_FREQUENCY_WINDOW_MS = 25000;
+// Standard Zalo human disappearing message presets (15m, 30m, 1h, 24h, 7d)
+const HUMAN_ZALO_TTL_PRESETS = new Set([
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000,
+]);
 const groupInfoCache = new LRUCache({ max: 1000, ttl: CACHE_DURATION });
+const botTtlTracker = new LRUCache({ max: 5000, ttl: BOT_FREQUENCY_WINDOW_MS * 2 });
 
 async function getGroupInfoData(api, threadId) {
   if (!threadId) {
@@ -66,7 +78,8 @@ export async function antiBotCheck(
   message,
   groupSettings,
   isAdminBox = false,
-  isSelf = false
+  isSelf = false,
+  botIsAdminBox = undefined
 ) {
   if (!message?.data || !message.threadId || !groupSettings || typeof groupSettings !== "object") {
     return false;
@@ -85,18 +98,31 @@ export async function antiBotCheck(
     return false;
   }
 
-  const botUid = String(api.appContext?.uid || "");
+  const rawBotUid = api?.getOwnId?.() || api?.getBotId?.() || api?.appContext?.uid || getBotId();
+  const botUid = rawBotUid && rawBotUid !== -1 ? String(rawBotUid) : "";
   if (
     !senderId
     || senderId === botUid
     || isSelf
     || isAdminBox
+    || botIsAdminBox === false
     || isInWhiteList(groupSettings, threadId, senderId)
   ) {
     return false;
   }
 
-  if (typeof ttl !== "number" || ttl <= 1000 || ttl >= MAX_BOT_TTL_MS) {
+  if (typeof ttl !== "number" || ttl <= 0 || HUMAN_ZALO_TTL_PRESETS.has(ttl) || ttl >= SUSPICIOUS_BOT_TTL_MAX_MS) {
+    return false;
+  }
+
+  // Ultra-short TTL (<= 15s) is a direct bot signature; longer custom TTL (15s..10m) requires repeated frequency
+  const scopedKey = `${threadId}:${senderId}`;
+  const now = Date.now();
+  const prevHits = (botTtlTracker.get(scopedKey) || []).filter((t) => now - t <= BOT_FREQUENCY_WINDOW_MS);
+  prevHits.push(now);
+  botTtlTracker.set(scopedKey, prevHits);
+
+  if (ttl > ULTRA_SHORT_BOT_TTL_MS && prevHits.length < 2) {
     return false;
   }
 
@@ -104,6 +130,17 @@ export async function antiBotCheck(
   if (!groupInfo || groupInfo.adminIds.includes(senderId)) {
     return false;
   }
+
+  const effectiveBotIsAdmin =
+    typeof botIsAdminBox === "boolean"
+      ? botIsAdminBox
+      : Boolean(botUid && groupInfo.adminIds.includes(botUid));
+
+  if (!effectiveBotIsAdmin) {
+    return false;
+  }
+
+  botTtlTracker.delete(scopedKey);
 
   const messagePayload = {
     mentions: [MessageMention(senderId, senderName.length, 0)],
