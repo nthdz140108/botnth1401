@@ -37,6 +37,7 @@ import {
   loadCanonicalGroupSettings,
 } from "../utils/io-json.js";
 import { createWebAdminRecoveryCoordinator } from "./v4-control-routes.js";
+import { registerV5DashboardRoutes } from "./v5/v5-routes.js";
 import { createQrSessionManager } from "./qr-service.js";
 import { createRuntimeMetrics } from "../observability/runtime-metrics.js";
 import { createWorkloadBroker } from "../core/workload-broker.js";
@@ -153,6 +154,32 @@ export class NodeBridgeService {
     });
 
     this.portalService = createPortalService({ root: this.root, runtime: createPortalRuntimeAdapter({ root: this.root, registry: this.registry, actions: this.actions, qrManager: this.botQrManager, secret: this.secret, prefixService: this.prefixService }) });
+    this.v5ProxyApp = express();
+    this.v5ProxyApp.disable("x-powered-by");
+    this.v5ProxyApp.use((req, _res, next) => {
+      const bridgedUser = String(req.headers["x-v5-actor-username"] || "").trim();
+      const bridgedRole = String(req.headers["x-v5-actor-role"] || "").trim();
+      if (bridgedUser && (bridgedRole === "super_admin" || bridgedRole === "system_admin")) {
+        req.dashboardSession = {
+          username: bridgedUser,
+          role: "super_admin",
+          isAdmin: true,
+        };
+      }
+      next();
+    });
+    this.v5Subsystem = registerV5DashboardRoutes(this.v5ProxyApp, {
+      root: this.root,
+      registry: this.registry,
+      configStore: this.configStore,
+      auditStore: this.auditStore,
+      prefixService: this.prefixService,
+      qrSessionManager: this.botQrManager,
+      actions: this.actions,
+      getIo: () => ({
+        emit: (event, payload) => this._broadcastSse(event, payload),
+      }),
+    });
     this._setupMiddleware();
     this._setupRoutes();
   }
@@ -420,7 +447,7 @@ export class NodeBridgeService {
       const requestId = req.headers["x-request-id"] || req.headers["x-requestid"];
       if (requestId) {
         const cached = this.idempotencyMap.get(requestId);
-        if (cached && req.method !== "GET" && !req.path.startsWith("/bridge/portal/")) {
+        if (cached && req.method !== "GET" && !req.path.startsWith("/bridge/portal/") && !req.path.startsWith("/bridge/v5-proxy/")) {
           return res.status(200).json(cached.response);
         }
         req.requestId = requestId;
@@ -441,7 +468,7 @@ export class NodeBridgeService {
             requestId: req.requestId || null,
             timestamp: new Date().toISOString(),
           };
-          if (req.requestId && req.method !== "GET" && !req.path.startsWith("/bridge/portal/")) {
+          if (req.requestId && req.method !== "GET" && !req.path.startsWith("/bridge/portal/") && !req.path.startsWith("/bridge/v5-proxy/")) {
             this.idempotencyMap.set(req.requestId, {
               timestamp: Date.now(),
               response: responsePayload,
@@ -466,6 +493,7 @@ export class NodeBridgeService {
     };
 
     // Health
+    this.app.use("/bridge/v5-proxy", (req, res, next) => this.v5ProxyApp(req, res, next));
     this.app.post("/bridge/portal/operations", wrap(async req => this.portalService.execute(req.body)));
     this.app.get("/bridge/portal/operations/:operationId", wrap(async req => this.portalService.get(req.params.operationId, req.query.tenant_id, req.query.slot_id)));
 
@@ -1276,6 +1304,9 @@ export class NodeBridgeService {
 
   async stop() {
     clearInterval(this.portalExpiryTimer);
+    try { this.v5Subsystem?.sreService?.stop?.(); } catch {}
+    try { this.v5Subsystem?.campaignService?.stop?.(); } catch {}
+    try { this.v5Subsystem?.store?.close?.(); } catch {}
     this._stopEventLoops();
     if (this.runtimeMetrics) {
       this.runtimeMetrics.stop();

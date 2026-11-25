@@ -404,7 +404,13 @@ pub fn build_api_and_spa_router(state: DashboardState) -> Router {
             "/api/commands/{commandName}/config/rollback",
             post(api_studio_rollback),
         )
-        // 8. Loopback HMAC-SHA256 Internal Control Plane
+        // 8. Loopback HMAC-SHA256 Internal Control Plane & V5 Enterprise Proxy
+        .route("/manifest.webmanifest", get(api_v5_bridge_proxy_any))
+        .route("/sw.js", get(api_v5_bridge_proxy_any))
+        .route("/api/studio/commands", get(api_v5_bridge_proxy_any))
+        .route("/v5-auth/{*path}", axum::routing::any(api_v5_bridge_proxy_any))
+        .route("/v5-portal/{*path}", axum::routing::any(api_v5_bridge_proxy_any))
+        .route("/api/v5/{*path}", axum::routing::any(api_v5_bridge_proxy_any))
         .route("/internal/command/execute", post(internal_command_execute))
         .route("/internal/runtime/identity", get(internal_runtime_identity))
         .route("/internal/runtime/health", get(internal_runtime_health))
@@ -426,6 +432,69 @@ fn resolve_spa_asset_dir(project_root: &std::path::Path, test_mode: bool) -> Pat
         public
     } else {
         dist
+    }
+}
+
+async fn api_v5_bridge_proxy_any(
+    State(st): State<DashboardState>,
+    Extension(ctx): Extension<RequestContext>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| uri.path());
+
+    let mut fwd = Vec::new();
+    for key in [
+        "cookie",
+        "x-csrf-token",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "user-agent",
+        "content-type",
+    ] {
+        if let Some(val) = headers.get(key).and_then(|v| v.to_str().ok()) {
+            fwd.push((key.to_string(), val.to_string()));
+        }
+    }
+    if let Some(sess) = &ctx.session {
+        fwd.push(("x-v5-actor-username".to_string(), sess.username.clone()));
+        fwd.push(("x-v5-actor-role".to_string(), "super_admin".to_string()));
+    }
+
+    match st
+        .bridge
+        .proxy_v5_http(method.as_str(), path_and_query, &fwd, &body)
+        .await
+    {
+        Ok((status_u16, resp_headers, resp_bytes)) => {
+            let status = StatusCode::from_u16(status_u16).unwrap_or(StatusCode::OK);
+            let mut resp = (status, resp_bytes).into_response();
+            for (k, v) in resp_headers {
+                if let (Ok(hname), Ok(hval)) = (
+                    axum::http::HeaderName::from_bytes(k.as_bytes()),
+                    HeaderValue::from_str(&v),
+                ) {
+                    if k == "set-cookie" {
+                        resp.headers_mut().append(hname, hval);
+                    } else {
+                        resp.headers_mut().insert(hname, hval);
+                    }
+                }
+            }
+            resp
+        }
+        Err(err_msg) => err_json(
+            StatusCode::BAD_GATEWAY,
+            &ctx,
+            "V5_BRIDGE_UNAVAILABLE",
+            err_msg,
+            None,
+        ),
     }
 }
 

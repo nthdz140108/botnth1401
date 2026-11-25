@@ -415,6 +415,69 @@ impl NodeBridgeClient {
         }
         Ok(json_val.get("data").cloned().unwrap_or(json_val))
     }
+
+    pub async fn proxy_v5_http(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        forward_headers: &[(String, String)],
+        body_bytes: &[u8],
+    ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+        let clean_path = if path_and_query.starts_with('/') {
+            path_and_query.to_string()
+        } else {
+            format!("/{path_and_query}")
+        };
+        let url = format!("{}/bridge/v5-proxy{}", self.base_url, clean_path);
+        let mut headers = self.build_signed_headers(body_bytes);
+
+        for (k, v) in forward_headers {
+            if let (Ok(hname), Ok(hval)) = (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                headers.insert(hname, hval);
+            }
+        }
+
+        let req_method = reqwest::Method::from_bytes(method.as_bytes())
+            .unwrap_or(reqwest::Method::GET);
+
+        let mut builder = self.client.request(req_method, &url).headers(headers);
+        if !matches!(method, "GET" | "HEAD") && !body_bytes.is_empty() {
+            builder = builder.body(body_bytes.to_vec());
+        }
+
+        let res = builder
+            .send()
+            .await
+            .map_err(|e| format!("Node V5 bridge connection failed: {e}"))?;
+
+        let status = res.status().as_u16();
+        let mut resp_headers = Vec::new();
+        for (name, val) in res.headers() {
+            let key = name.as_str().to_ascii_lowercase();
+            if matches!(
+                key.as_str(),
+                "content-type"
+                    | "content-disposition"
+                    | "cache-control"
+                    | "set-cookie"
+                    | "x-request-id"
+            ) && let Ok(v_str) = val.to_str()
+            {
+                resp_headers.push((key, v_str.to_string()));
+            }
+        }
+
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed reading V5 bridge body: {e}"))?
+            .to_vec();
+
+        Ok((status, resp_headers, bytes))
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
