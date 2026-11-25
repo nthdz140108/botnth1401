@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 const allowed = /^(src\/|scripts\/|dashboard\/(?:src\/|index\.html$|package(?:-lock)?\.json$)|rust\/|deploy\/|\.github\/workflows\/|package(?:-lock)?\.json$|index\.js$|bot\.js$)/;
+const portalMigration = /^rust\/portal\/crates\/server\/migrations\/\d{4}_[a-z0-9_]+\.sql$/;
+const migration = /(?:^|\/)migrations?\/.*\.sql$/i;
 function git(repo, ...args) {
   return execFileSync('git', args, { cwd: repo, maxBuffer: 128 * 1024 * 1024 });
 }
@@ -14,10 +16,10 @@ function commit(repo, ref) {
 }
 export function safePath(name) {
   const parts = name.split('/');
-  return allowed.test(name) && !runtimeData(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
+  return allowed.test(name) && !runtimeData(name) && (!migration.test(name) || portalMigration.test(name)) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
-  return name === 'DAY_LEN_VPS.bat' || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
+  return ['DAY_LEN_VPS.bat', 'CAI_DAT_PORTAL.bat', '.gitignore'].includes(name) || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
 }
 
 function releaseBackedCatalog(repo, base, target, name) {
@@ -81,7 +83,9 @@ export function buildPreview({ repo, base, target }) {
     if (ignored(name)) continue;
     if (['assets/json-data/command.json', 'mybot/defaultCommand.json'].includes(name) && code === 'M'
       && releaseBackedCatalog(repo, base, target, name)) continue;
-    if (/(?:^|\/)migrations?\/.*\.sql$/i.test(name)) throw new Error(`Migration requires separate maintenance: ${name}`);
+    if (portalMigration.test(name)) {
+      if (code !== 'A') throw new Error(`Released portal migration is immutable: ${name}`);
+    } else if (migration.test(name)) throw new Error(`Migration requires separate maintenance: ${name}`);
     if (!safePath(name)) throw new Error(`Path requires manual review: ${name}`);
     if (!['A', 'M', 'D'].includes(code)) throw new Error(`Unsupported change ${code}: ${name}`);
     if (code === 'D') { files.push({ status: 'delete', path: name }); continue; }

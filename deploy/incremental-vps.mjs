@@ -40,6 +40,16 @@ export async function main(args = process.argv.slice(2)) {
       } finally { fs.rmSync(temp, { recursive: true, force: true }); }
     };
     const remote = createRemoteAdapter({ run, archive });
+    remote.preparePortalRuntime = async target => {
+      if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(target)) throw new Error('Invalid portal release');
+      // The old deployment worker rejects SQL and cannot build the new workspace.
+      // Run a commit-addressed copy of the new control code for this upgrade.
+      const control = spawnSync('git', ['archive', '--format=tar', target, 'deploy'], {cwd:repo,maxBuffer:16*1024*1024,windowsHide:true});
+      if (control.error || control.status!==0) throw control.error || new Error('Cannot export portal deployment control');
+      const root=`/opt/mybot/deploy-control/portal/${target}`;
+      console.log(await run(`set -eu; umask 077; mkdir -p '${root}'; tar -x --no-same-owner -C '${root}'; bash '${root}/deploy/ubuntu/install-portal.sh'`,control.stdout));
+      remote.setControlRunner(`${root}/deploy/ubuntu/locked-runner.sh`);
+    };
     remote.prepareDownloadRuntime = async () => {
       console.log('Checking Deno, FFmpeg and ffprobe before deployment...');
       console.log(await run('bash -s', fs.readFileSync(path.join(repo, 'deploy', 'ubuntu', 'ensure-download-runtime.sh'), 'utf8').replace(/\r\n/g, '\n')));

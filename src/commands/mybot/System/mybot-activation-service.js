@@ -1,3 +1,4 @@
+import { assertNotPortalManaged } from "../../../dashboard/portal-policy.js";
 import fs from "node:fs";
 import path from "node:path";
 import { getProfile, updateProfile } from "./mybot-profile-service.js";
@@ -50,6 +51,7 @@ export async function activateBot({
 
   const bId = String(botId).trim();
   const projectRoot = root || getProjectRoot();
+  try { assertNotPortalManaged(projectRoot, bId); } catch (error) { return {success:false,code:error.code,error:"Suất MYBOT Cloud phải được quản lý tại cổng thuê."}; }
 
   // Resolve inventory and bot record first
   const inventoryPath = path.join(projectRoot, "mybot", "mybots.json");

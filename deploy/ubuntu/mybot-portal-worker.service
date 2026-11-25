@@ -1,0 +1,23 @@
+[Unit]
+Description=MYBOT Cloud durable worker
+After=network.target postgresql.service mybot-portal.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=mybot-portal
+Group=mybot-portal
+WorkingDirectory=/opt/mybot/current
+EnvironmentFile=/etc/mybot/portal.env
+ExecStart=/opt/mybot/current/bin/mybot-portal-worker
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mybot-portal
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

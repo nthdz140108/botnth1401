@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = ["crates/domain", "crates/server", "crates/web", "crates/worker"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "ISC"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+uuid = { version = "1", features = ["v4", "serde", "js"] }
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["multipart"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+leptos = "0.8"
+leptos_axum = "0.8"
+leptos_meta = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+mybot-portal-domain = { path = "crates/domain" }
+mybot-portal-web = { path = "crates/web", default-features = false }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[[workspace.metadata.leptos]]
+name = "mybot-portal"
+bin-package = "mybot-portal-server"
+bin-target = "mybot-portal"
+bin-exe-name = "mybot-portal"
+lib-package = "mybot-portal-web"
+output-name = "mybot-portal"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+assets-dir = "public"
+site-addr = "127.0.0.1:4180"
+bin-features = []
+lib-features = ["hydrate"]
+lib-default-features = false

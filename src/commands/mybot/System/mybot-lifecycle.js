@@ -1,3 +1,4 @@
+import { assertNotPortalManaged } from "../../../dashboard/portal-policy.js";
 import fs from "fs";
 import fsPromises from "fs/promises";
 import path from "path";
@@ -73,6 +74,7 @@ export async function extendBotExpiryLogic({
   now = Date.now(),
   startBotFn = null,
 } = {}) {
+  assertNotPortalManaged(path.dirname(path.dirname(path.resolve(registryPath))), botKey);
   if (!fs.existsSync(registryPath)) {
     throw new Error(`File registry không tồn tại: ${registryPath}`);
   }
@@ -104,6 +106,7 @@ export async function reduceBotExpiryLogic({
   durationMs,
   now = Date.now(),
 } = {}) {
+  assertNotPortalManaged(path.dirname(path.dirname(path.resolve(registryPath))), botKey);
   if (!fs.existsSync(registryPath)) {
     throw new Error(`File registry không tồn tại: ${registryPath}`);
   }
@@ -141,6 +144,7 @@ export async function deleteChildBotLogic({
 } = {}) {
   const root = path.resolve(projectRoot || process.cwd());
   const resolvedRegistryPath = registryPath ? path.resolve(registryPath) : path.join(root, "mybot", "mybots.json");
+  if (typeof botKey !== "undefined") assertNotPortalManaged(root, botKey);
 
   if (!fs.existsSync(resolvedRegistryPath)) {
     throw new Error(`File registry không tồn tại: ${resolvedRegistryPath}`);
@@ -363,6 +367,7 @@ export async function cleanExpiredBotsLogic({
 } = {}) {
   const root = path.resolve(projectRoot || process.cwd());
   const resolvedRegistryPath = registryPath ? path.resolve(registryPath) : path.join(root, "mybot", "mybots.json");
+  if (typeof botKey !== "undefined") assertNotPortalManaged(root, botKey);
 
   if (!fs.existsSync(resolvedRegistryPath)) {
     return { cleaned: [], failed: [] };
@@ -373,7 +378,7 @@ export async function cleanExpiredBotsLogic({
 
   const expiredList = [];
   for (const [key, record] of Object.entries(myBots)) {
-    if (isMainBot(record, key)) continue;
+    if (isMainBot(record, key) || record.portalManaged || key.startsWith("portal_")) continue;
     if (record.expiryAt === "-1") continue;
 
     const expiryTime = Date.parse(record.expiryAt);

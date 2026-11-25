@@ -271,6 +271,7 @@ async function removeBotFromMyBots(uid) {
 }
 
 async function cleanupDeadChildBot(uid, botInfo, reason) {
+  if (String(uid).startsWith("portal_") || botInfo?.portalManaged) return;
   if (!uid || uid === 'admin') return;
   const displayName = botInfo?.displayName || uid;
   try {

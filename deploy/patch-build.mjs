@@ -40,11 +40,21 @@ export function prepareRelease({ stageDir, run = runCommand, cargoTargetDir = pr
     }
     run('npm', ['run', 'build'], dashboard);
   }
-  if (files.some(p => p.startsWith('rust/'))) {
+  if (planRuntimeActions(files).buildPortal) {
+    run('bash', [path.join(stageDir, 'deploy', 'ubuntu', 'build-portal.sh'), stageDir], stageDir);
+    for (const artifact of ['bin/mybot-portal', 'bin/mybot-portal-worker']) {
+      if (!fs.statSync(path.join(stageDir, artifact)).isFile()) throw new Error(`Missing portal build artifact: ${artifact}`);
+    }
+    const wasmFound = ['portal-site/pkg/mybot-portal_bg.wasm', 'portal-site/pkg/mybot-portal.wasm'].some(rel => {
+      try { return fs.statSync(path.join(stageDir, rel)).isFile(); } catch { return false; }
+    });
+    if (!wasmFound) throw new Error('Missing portal build artifact: portal-site/pkg/mybot-portal(.wasm|_bg.wasm)');
+  }
+  if (files.some(p => p.startsWith('rust/') && !p.startsWith('rust/portal/'))) {
     const rust = path.join(stageDir, 'rust');
     assertDirectoryNotLink(rust);
     assertDirectoryNotLink(path.join(stageDir, 'bin'), true);
-    const rustPaths = files.filter(p => p.startsWith('rust/'));
+    const rustPaths = files.filter(p => p.startsWith('rust/') && !p.startsWith('rust/portal/'));
     const actions = planRuntimeActions(rustPaths);
     const ctlOnly = rustPaths.every(p => p.startsWith('rust/bins/mybot-ctl/'));
     const daemonOnly = rustPaths.every(p => p.startsWith('rust/bins/mybotd/'));

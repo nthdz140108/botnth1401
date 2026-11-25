@@ -1,3 +1,5 @@
+import { tenantPermissionVerdict } from "../dashboard/portal-command-permissions.js";
+import { assertPortalRuntimeAllowed } from "../dashboard/portal-policy.js";
 import { LRUCache } from "lru-cache";
 import { executeCommand, resolveCommand } from "./command-router.js";
 import { commandRegistry, phase1Registry } from "./command-registry.js";
@@ -57,10 +59,16 @@ export function checkDispatcherCooldown({
 }
 
 export async function dispatchCommand(context = {}, registry = commandRegistry) {
+  const portalKey = process.env.BOT_KEY || process.env.BOT_NAME || "";
+  if (portalKey.startsWith("portal_")) assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || process.cwd(), portalKey, { uid: context.api?.getOwnId?.() });
   const resolved = resolveCommand(context.commandParts, registry);
   if (resolved.code === "UNKNOWN_COMMAND") return null;
   if (resolved.code !== "RESOLVED") return { ...resolved, definition: null };
 
+  if (portalKey.startsWith("portal_")) {
+    const verdict = tenantPermissionVerdict(process.env.PROJECT_ROOT || process.cwd(), portalKey, resolved.definition.name, context.permissionLevel, resolved.definition);
+    if (!verdict.allowed) return {code:"PERMISSION_DENIED",command:resolved.definition.name,requiredRole:verdict.requiredRole,definition:resolved.definition,resolved};
+  }
   const result = await executeCommand({
     ...context,
     args: resolved.args,

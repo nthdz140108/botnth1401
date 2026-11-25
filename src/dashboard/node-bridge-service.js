@@ -15,6 +15,8 @@
  */
 
 import crypto from "node:crypto";
+import { createPortalService } from "./portal-service.js";
+import { createPortalRuntimeAdapter } from "./portal-runtime-adapter.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import http from "node:http";
@@ -150,6 +152,7 @@ export class NodeBridgeService {
       maxBroadcastQueueSize: 50,
     });
 
+    this.portalService = createPortalService({ root: this.root, runtime: createPortalRuntimeAdapter({ root: this.root, registry: this.registry, actions: this.actions, qrManager: this.botQrManager, secret: this.secret, prefixService: this.prefixService }) });
     this._setupMiddleware();
     this._setupRoutes();
   }
@@ -389,6 +392,7 @@ export class NodeBridgeService {
     // 2. Capture raw body for HMAC check
     this.app.use(
       express.json({
+        limit: "72mb",
         verify: (req, _res, buf) => {
           req.rawBody = buf ? buf.toString("utf8") : "";
         },
@@ -416,7 +420,7 @@ export class NodeBridgeService {
       const requestId = req.headers["x-request-id"] || req.headers["x-requestid"];
       if (requestId) {
         const cached = this.idempotencyMap.get(requestId);
-        if (cached && req.method !== "GET") {
+        if (cached && req.method !== "GET" && !req.path.startsWith("/bridge/portal/")) {
           return res.status(200).json(cached.response);
         }
         req.requestId = requestId;
@@ -437,7 +441,7 @@ export class NodeBridgeService {
             requestId: req.requestId || null,
             timestamp: new Date().toISOString(),
           };
-          if (req.requestId && req.method !== "GET") {
+          if (req.requestId && req.method !== "GET" && !req.path.startsWith("/bridge/portal/")) {
             this.idempotencyMap.set(req.requestId, {
               timestamp: Date.now(),
               response: responsePayload,
@@ -462,6 +466,9 @@ export class NodeBridgeService {
     };
 
     // Health
+    this.app.post("/bridge/portal/operations", wrap(async req => this.portalService.execute(req.body)));
+    this.app.get("/bridge/portal/operations/:operationId", wrap(async req => this.portalService.get(req.params.operationId, req.query.tenant_id, req.query.slot_id)));
+
     this.app.get("/bridge/health", (_req, res) => {
       res.json({
         status: "ok",
@@ -1259,6 +1266,8 @@ export class NodeBridgeService {
         const boundPort = typeof addr === "object" ? addr.port : this.port;
         console.log(`[NODE-BRIDGE] Online on http://${this.host}:${boundPort} (Loopback only)`);
         this._startEventLoops();
+        this.portalExpiryTimer = setInterval(() => { if (this.portalSweepRunning) return; this.portalSweepRunning = true; this.portalService.sweep().catch(error => console.error("[PORTAL] expiry sweep failed:", error.code || error.message)).finally(() => { this.portalSweepRunning = false; }); }, 1000);
+        this.portalExpiryTimer.unref?.();
         resolve(boundPort);
       });
       this.server.on("error", reject);
@@ -1266,6 +1275,7 @@ export class NodeBridgeService {
   }
 
   async stop() {
+    clearInterval(this.portalExpiryTimer);
     this._stopEventLoops();
     if (this.runtimeMetrics) {
       this.runtimeMetrics.stop();

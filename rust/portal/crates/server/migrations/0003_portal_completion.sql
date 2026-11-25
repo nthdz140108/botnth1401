@@ -1,0 +1,15 @@
+ALTER TABLE settings ADD COLUMN bank_name text NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN bank_account text NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN bank_holder text NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN bank_qr_url text NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN support_contact text NOT NULL DEFAULT '';
+ALTER TABLE topups ADD COLUMN proof_upload_id uuid REFERENCES uploads;
+ALTER TABLE topups ADD COLUMN transfer_note text;
+ALTER TABLE topups ADD COLUMN submitted_at timestamptz;
+ALTER TABLE topups ADD COLUMN rejection_reason text;
+ALTER TABLE slots ADD COLUMN zalo_name text;
+ALTER TABLE slots ADD COLUMN zalo_avatar text;
+ALTER TABLE slots ADD COLUMN expiring_notified_for timestamptz;
+ALTER TABLE campaigns ADD COLUMN name text NOT NULL DEFAULT 'Chiến dịch mới';
+CREATE FUNCTION immutable_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit is immutable'; END $$;
+CREATE TRIGGER audit_immutable BEFORE UPDATE OR DELETE ON audit FOR EACH ROW EXECUTE FUNCTION immutable_audit();

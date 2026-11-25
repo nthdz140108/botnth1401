@@ -1,3 +1,4 @@
+import { assertPortalRuntimeAllowed, assertPortalAccountOwnership } from "./dashboard/portal-policy.js";
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
                    _ooOoo_
                   o8888888o
@@ -128,6 +129,14 @@ const adminRecoveryLockPath = path.join(stateDir, "admin-recovery.lock");
 terminalLogger.writeBanner({ name: "BOT LISTENER", botName, status: "STARTING" });
 
 let _shutdownInProgress = false;
+if (botName.startsWith("portal_")) {
+  const portalLeaseTimer = setInterval(() => {
+    try { assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: api?.getOwnId?.() }); }
+    catch (error) { try { api?.listener?.stop?.(); } catch {} controlledShutdown(error.code || "PORTAL_POLICY_DENIED"); }
+  }, 1000);
+  portalLeaseTimer.unref?.();
+}
+
 function controlledShutdown(reason) {
   if (_shutdownInProgress) return;
   _shutdownInProgress = true;
@@ -807,6 +816,7 @@ function getAdminStartupCoordinator() {
 }
 
 async function attemptStart(retryCount = 0, hasRecoveredWithQr = false) {
+  assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName);
   const _listenerState = getListenerRuntimeState();
   if (botName === "admin") {
     _listenerState.setStartupPhase("login");
@@ -833,6 +843,8 @@ async function attemptStart(retryCount = 0, hasRecoveredWithQr = false) {
     // online while the bot can never become ready.
     api = await withDeadline(zalo.login(), LOGIN_DEADLINE_MS, "Child bot login deadline");
     api.assertReady();
+    assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: zalo.userId });
+    assertPortalAccountOwnership(process.env.PROJECT_ROOT || projectRoot, botName, zalo.userId);
     setBotId(zalo.userId);
     markAdminCookieAlive();
     api.getBotId = () => getBotId();
@@ -1198,6 +1210,8 @@ async function refreshZaloSessionForReconnect(currApi, meta = {}) {
           LOGIN_DEADLINE_MS,
           "Reconnect session refresh deadline"
         );
+        assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: session.uid });
+        assertPortalAccountOwnership(process.env.PROJECT_ROOT || projectRoot, botName, session.uid);
         targetApi.applyRefreshedSession(session);
         if (candidate.label === "disk-updated") {
           config = {
@@ -1217,6 +1231,8 @@ async function refreshZaloSessionForReconnect(currApi, meta = {}) {
         "Reconnect session login deadline"
       );
       nextApi.assertReady();
+      assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: zalo.userId });
+      assertPortalAccountOwnership(process.env.PROJECT_ROOT || projectRoot, botName, zalo.userId);
       nextApi.getBotId = () => getBotId();
       try { targetApi?.listener?.stop?.(); } catch {}
       api = nextApi;
@@ -1466,6 +1482,7 @@ async function bindBotEventHandlers(apiInstance) {
 const listenerAbortController = new AbortController();
 
 async function startListenerWithRetry(apiInstance) {
+  assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: apiInstance.getOwnId?.() });
   const listenerState = getListenerRuntimeState();
   let startupAttempts = 0;
   _startupConnectInProgress = true;
@@ -1482,6 +1499,7 @@ async function startListenerWithRetry(apiInstance) {
           }
         }
         const rotateEndpoint = startupAttempts > 1;
+        assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: apiInstance.getOwnId?.() });
         if (typeof apiInstance.listener?.startAsync === "function") {
           await apiInstance.listener.startAsync({ rotateEndpoint });
         } else {
@@ -1591,6 +1609,8 @@ async function performCredentialReload(request) {
     const zalo = buildZaloClient(nextCredentials);
     const nextApi = await withDeadline(zalo.login(), LOGIN_DEADLINE_MS, "Credential reload login deadline");
     nextApi.assertReady();
+    assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || projectRoot, botName, { uid: zalo.userId });
+    assertPortalAccountOwnership(process.env.PROJECT_ROOT || projectRoot, botName, zalo.userId);
     nextApi.getBotId = () => getBotId();
     const previousApi = api;
     try {

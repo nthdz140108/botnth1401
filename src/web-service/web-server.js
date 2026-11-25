@@ -1,4 +1,5 @@
 import express from "express";
+import { registerPortalRuntimeRoute } from "../dashboard/portal-runtime.js";
 import fs from "node:fs";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -114,13 +115,15 @@ export async function startWebServer(api, options = {}) {
   });
 
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "72mb", verify: (req, _res, buf) => { req.portalRawBody = buf.toString("utf8"); } }));
   app.use((req, res, next) => {
     const id = requestId(req);
     req.requestId = id;
     res.setHeader("X-Request-ID", id);
     next();
   });
+
+  registerPortalRuntimeRoute(app, { root: process.env.PROJECT_ROOT || process.cwd(), getApi: () => activeWebApi, getDescriptor: getRuntimeInstanceDescriptor, getListener: getListenerStateFields, getReloadHandler: () => runtimeReloadHandler, secret: getInternalSecret({ projectRoot: process.env.PROJECT_ROOT || process.cwd() }) });
 
   // 1. Internal command execution bridge
   registerInternalCommandRoutes(app, { api, getApi: () => activeWebApi, projectRoot: process.cwd() });

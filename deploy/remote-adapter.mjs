@@ -2,7 +2,12 @@ const launcher = 'p=/opt/mybot/current/deploy/ubuntu/locked-runner.sh; if [ ! -f
 const uploadPath = /^\/opt\/mybot\/\.runtime\/deploy-upload\.[A-Za-z0-9]+$/;
 export function createRemoteAdapter({ run, archive, delay = ms => new Promise(resolve => setTimeout(resolve, ms)), maxPolls = 7200 }) {
   if (typeof run !== 'function' || typeof archive !== 'function') throw new Error('Invalid remote transport');
+  let activeLauncher = launcher;
   const adapter = {
+    setControlRunner(runner) {
+      if (!/^\/opt\/mybot\/deploy-control\/portal\/[a-f0-9]{40}(?:[a-f0-9]{24})?\/deploy\/ubuntu\/locked-runner\.sh$/.test(runner)) throw new Error('Invalid portal control runner');
+      activeLauncher = `p='${runner}';`;
+    },
     async status() { return JSON.parse(await run(`${launcher} exec bash "$p" /opt/mybot status`)); },
     async upload(dir) {
       const payload = await archive(dir);
@@ -17,7 +22,7 @@ export function createRemoteAdapter({ run, archive, delay = ms => new Promise(re
       if (operation === 'bootstrap' && !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(arg || '')) throw new Error('Invalid bootstrap commit');
       if (!['apply', 'bootstrap'].includes(operation) && arg !== null) throw new Error('Unexpected operation argument');
       const extra = arg === null ? '' : ` '${arg}'`;
-      await run(`${launcher} exec systemd-run --unit=mybot-update-${id} --property=Type=exec -- /bin/bash "$p" /opt/mybot ${operation}${extra} '${id}'`);
+      await run(`${activeLauncher} exec systemd-run --unit=mybot-update-${id} --property=Type=exec -- /bin/bash "$p" /opt/mybot ${operation}${extra} '${id}'`);
     },
     async wait(id) {
       if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('Invalid request ID');
