@@ -26,11 +26,39 @@ export function createRemoteAdapter({ run, archive, delay = ms => new Promise(re
     },
     async wait(id) {
       if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('Invalid request ID');
+      let lastLogLine = '';
       for (let i = 0; i < maxPolls; i++) {
         const status = await adapter.status();
         if (status.state?.requestId === id) {
           if (['confirmed', 'already_applied', 'no_changes', 'recovered'].includes(status.state.status)) return status.state;
           if (status.state.status === 'failed') throw new Error(`Deployment failed: ${status.state.error || 'unknown error'}`);
+          if (i >= 4 && i % 5 === 4) {
+            const unit = (await run(`systemctl show mybot-update-${id}.service -p ActiveState --value`)).trim();
+            if (['inactive', 'failed'].includes(unit)) {
+              const recheck = await adapter.status();
+              if (recheck.state?.requestId === id && ['confirmed', 'already_applied', 'no_changes', 'recovered'].includes(recheck.state.status)) {
+                return recheck.state;
+              }
+              if (recheck.state?.requestId === id && recheck.state.status === 'failed') {
+                throw new Error(`Deployment failed: ${recheck.state.error || 'unknown error'}`);
+              }
+              let detail = unit;
+              try {
+                const resStr = (await run(`systemctl show mybot-update-${id}.service -p Result --value`)).trim();
+                if (resStr) detail = `${unit}/${resStr}`;
+              } catch {}
+              throw new Error(`Deployment worker terminated unexpectedly (${detail})`);
+            }
+            if (maxPolls >= 100) {
+              try {
+                const line = (await run(`journalctl -u mybot-update-${id}.service -n 1 -o cat --no-pager 2>/dev/null || true`)).trim();
+                if (line && line !== lastLogLine) {
+                  lastLogLine = line;
+                  console.log(`[VPS Build] ${line}`);
+                }
+              } catch {}
+            }
+          }
         } else if (i >= 3) {
           const unit = (await run(`systemctl show mybot-update-${id}.service -p ActiveState --value`)).trim();
           if (['inactive', 'failed'].includes(unit)) throw new Error('Deployment worker stopped before recording status');

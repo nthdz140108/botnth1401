@@ -4,7 +4,41 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo 'Portal setup requires root' >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y postgresql postgresql-client pkg-config libssl-dev build-essential ca-certificates curl
+apt-get install -y postgresql postgresql-client pkg-config libssl-dev build-essential clang lld xz-utils ca-certificates curl
+
+# Ensure at least 4GB swap headroom on <=6GB RAM VPS so Rust/WASM linking never triggers OOM-killer
+mem_mb="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+swap_mb="$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo)"
+if [[ $((mem_mb + swap_mb)) -lt 7500 ]] && [[ ! -f /opt/mybot/.runtime/deploy-extra.swap ]]; then
+  mkdir -p /opt/mybot/.runtime
+  echo '[Portal Setup] Expanding VPS swap by 4GB to prevent Rust/WASM OOM-kill...'
+  (fallocate -l 4G /opt/mybot/.runtime/deploy-extra.swap || dd if=/dev/zero of=/opt/mybot/.runtime/deploy-extra.swap bs=1M count=4096 status=none)
+  chmod 600 /opt/mybot/.runtime/deploy-extra.swap
+  mkswap /opt/mybot/.runtime/deploy-extra.swap >/dev/null
+  swapon /opt/mybot/.runtime/deploy-extra.swap || true
+elif [[ -f /opt/mybot/.runtime/deploy-extra.swap ]] && ! swapon --show | grep -q 'deploy-extra.swap'; then
+  swapon /opt/mybot/.runtime/deploy-extra.swap || true
+fi
+
+# Install prebuilt cargo-leptos binary in ~2s (avoids 40-min source build & 3.5GB OOM-kill)
+export PATH="/root/.cargo/bin:$PATH"
+mkdir -p /root/.cargo/bin
+if ! cargo leptos --version >/dev/null 2>&1; then
+  echo '[Portal Setup] Downloading prebuilt cargo-leptos v0.3.11 binary...'
+  tmp_cl="$(mktemp -d)"
+  arch_uname="$(uname -m)"
+  if [[ "$arch_uname" == "aarch64" ]]; then
+    cl_url="https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.11/cargo-leptos-aarch64-unknown-linux-gnu.tar.gz"
+  else
+    cl_url="https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.11/cargo-leptos-x86_64-unknown-linux-musl.tar.gz"
+  fi
+  curl -fsSL "$cl_url" -o "$tmp_cl/cargo-leptos.tar.gz"
+  tar -xzf "$tmp_cl/cargo-leptos.tar.gz" -C "$tmp_cl"
+  cl_bin="$(find "$tmp_cl" -type f -name 'cargo-leptos' | head -n 1)"
+  install -m755 "$cl_bin" /root/.cargo/bin/cargo-leptos
+  rm -rf "$tmp_cl"
+fi
+
 systemctl enable --now postgresql
 if ! id mybot-portal >/dev/null 2>&1; then useradd --system --home-dir /var/lib/mybot-portal --shell /usr/sbin/nologin mybot-portal; fi
 install -d -m750 -o mybot-portal -g mybot-portal /var/lib/mybot-portal
