@@ -29,7 +29,8 @@ export async function orchestrateIncremental({ args, repo, remote, onPreview = (
   if (preview.files.some(f => /^src\/service-debug\/api-crawl\/(?:youtube|download|tiktok)\//.test(f.path))) {
     await remote.prepareDownloadRuntime?.();
   }
-  if (result.actions.buildPortal) await remote.preparePortalRuntime?.(preview.target);
+  // Use the target worker when its deployment protocol changes.
+  if (preview.files.some(f => f.path.startsWith('deploy/'))) await remote.prepareDeploymentControl?.(preview.target);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-patch-'));
   try {
     const dir = path.join(tmp, 'package'); createPatchPackage({ repo, base: preview.base, target: preview.target, output: dir });

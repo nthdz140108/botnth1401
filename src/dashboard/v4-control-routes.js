@@ -16,7 +16,6 @@ import { writeReloadRequest } from "../commands/mybot/System/reload-request.js";
 import { updateProfile } from "../commands/mybot/System/mybot-profile-service.js";
 import { selectLoginIdentity } from "../commands/mybot/System/login-identity.js";
 import { getZaloCookiePayload, getZaloRuntimeConfig } from "../api-zalo/zalo-config.js";
-import { normalizeUnifiedGroupSettings } from "./v5/shield-intelligence-service.js";
 
 const SHIELD_KEYS = [
   "activeBot",
@@ -73,10 +72,9 @@ async function resolveReachableBotPort(bot, botId) {
 }
 
 function normalizeGroupSettingsEntry(raw = {}) {
-  const unified = normalizeUnifiedGroupSettings(raw);
-  const out = { ...unified };
+  const out = {};
   for (const key of SHIELD_KEYS) {
-    if (out[key] === undefined) out[key] = Boolean(raw?.[key]);
+    out[key] = Boolean(raw?.[key]);
   }
   if (raw && typeof raw === "object") {
     for (const [k, v] of Object.entries(raw)) {
@@ -1397,7 +1395,7 @@ export function registerV4ControlRoutes(app, {
         botId: req.body?.botId,
         threadId: req.body?.threadId,
         values: req.body?.values || req.body?.patch || {},
-        expectedRevision: req.body?.expectedRevision ?? req.body?.expectedVersion,
+        expectedRevision: req.body?.expectedRevision,
         requestId: req.requestId,
         actor: "dashboard",
         fromDraft: Boolean(req.body?.fromDraft),

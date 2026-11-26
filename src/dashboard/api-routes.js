@@ -21,7 +21,6 @@ import { requestIdMiddleware, sendError, sendSuccess } from "./api-response.js";
 import { CommandStudioService } from "./command-studio-service.js";
 import { writeReloadRequest } from "../commands/mybot/System/reload-request.js";
 import { parseFlexibleCookieInput, registerV4ControlRoutes } from "./v4-control-routes.js";
-import { registerV5DashboardRoutes } from "./v5/v5-routes.js";
 import {
   getProfile,
   updateProfile,
@@ -892,20 +891,6 @@ export function registerDashboardApi(app, options = {}) {
     commandRegistry: options.commandRegistry || commandRegistry,
     qrSessionManager,
     adminRecoveryService,
-    actions,
-    getIo: options.getIo || (() => null),
-  });
-
-  registerV5DashboardRoutes(app, {
-    root,
-    registry,
-    configStore,
-    auditStore,
-    prefixService,
-    providerConfigService,
-    studioService,
-    commandRegistry: options.commandRegistry || commandRegistry,
-    qrSessionManager,
     actions,
     getIo: options.getIo || (() => null),
   });

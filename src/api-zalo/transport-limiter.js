@@ -1,5 +1,4 @@
 import PQueue from "p-queue";
-import { assertPortalRuntimeAllowed } from "../dashboard/portal-policy.js";
 import Bottleneck from "bottleneck";
 
 export const LANE_CONFIGS = Object.freeze({
@@ -201,8 +200,6 @@ export function wrapWithLimiter(api, options = {}) {
     const limited = function (...args) {
       return lane.schedule(async () => {
         try {
-          const portalKey = process.env.BOT_KEY || process.env.BOT_NAME || "";
-          if (portalKey.startsWith("portal_")) assertPortalRuntimeAllowed(process.env.PROJECT_ROOT || process.cwd(), portalKey, { uid: api.getOwnId?.() });
           return await original.apply(api, args);
         } catch (error) {
           const status = Number(error?.status ?? error?.statusCode ?? NaN);

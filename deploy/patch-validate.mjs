@@ -19,7 +19,7 @@ export function validatePatchPackage(root) {
   if (manifest.schema !== 1 || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(manifest.base) || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(manifest.target) || !Array.isArray(manifest.files)) throw new Error('Invalid manifest');
   const seen = new Set();
   for (const file of manifest.files) {
-    if (!file || typeof file.path !== 'string' || !safePath(file.path) || file.path.includes('\ufffd')) throw new Error('Invalid patch path');
+    if (!file || typeof file.path !== 'string' || !safePath(file.path, file.status) || file.path.includes('\ufffd')) throw new Error('Invalid patch path');
     const key = file.path.toLowerCase();
     if (seen.has(key)) throw new Error(`Duplicate patch path: ${file.path}`);
     seen.add(key);

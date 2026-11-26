@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 const allowed = /^(src\/|scripts\/|dashboard\/(?:src\/|index\.html$|package(?:-lock)?\.json$)|rust\/|deploy\/|\.github\/workflows\/|package(?:-lock)?\.json$|index\.js$|bot\.js$)/;
-const portalMigration = /^rust\/portal\/crates\/server\/migrations\/\d{4}_[a-z0-9_]+\.sql$/;
+const retiredPortalMigration = /^rust\/portal\/crates\/server\/migrations\/(?:0001_portal|0002_worker|0003_portal_completion)\.sql$/;
 const migration = /(?:^|\/)migrations?\/.*\.sql$/i;
 function git(repo, ...args) {
   return execFileSync('git', args, { cwd: repo, maxBuffer: 128 * 1024 * 1024 });
@@ -14,9 +14,9 @@ function runtimeData(name) {
 function commit(repo, ref) {
   return git(repo, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`).toString().trim();
 }
-export function safePath(name) {
+export function safePath(name, status) {
   const parts = name.split('/');
-  return allowed.test(name) && !runtimeData(name) && (!migration.test(name) || portalMigration.test(name)) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
+  return allowed.test(name) && !runtimeData(name) && (!migration.test(name) || status === 'delete' && retiredPortalMigration.test(name)) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
   return ['DAY_LEN_VPS.bat', 'CAI_DAT_PORTAL.bat', '.gitignore'].includes(name) || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
@@ -65,6 +65,7 @@ function releaseBackedCatalog(repo, base, target, name) {
 export function buildPreview({ repo, base, target }) {
   base = commit(repo, base); target = commit(repo, target);
   const targetPaths = git(repo, 'ls-tree', '-r', '-z', '--name-only', target).toString('utf8').split('\0').filter(Boolean);
+  const retiringPortal = !targetPaths.some(name => name.startsWith('rust/portal/'));
   const names = new Map();
   for (const name of targetPaths.filter(name => allowed.test(name) && !ignored(name) && !runtimeData(name) && !/(?:^|\/)migrations?\/.*\.sql$/i.test(name))) {
     if (!safePath(name) || name.includes('\ufffd')) throw new Error(`Path requires manual review: ${name}`);
@@ -83,10 +84,9 @@ export function buildPreview({ repo, base, target }) {
     if (ignored(name)) continue;
     if (['assets/json-data/command.json', 'mybot/defaultCommand.json'].includes(name) && code === 'M'
       && releaseBackedCatalog(repo, base, target, name)) continue;
-    if (portalMigration.test(name)) {
-      if (code !== 'A') throw new Error(`Released portal migration is immutable: ${name}`);
-    } else if (migration.test(name)) throw new Error(`Migration requires separate maintenance: ${name}`);
-    if (!safePath(name)) throw new Error(`Path requires manual review: ${name}`);
+    // Retire source files without executing SQL or dropping the existing database.
+    if (migration.test(name) && !(retiringPortal && code === 'D' && retiredPortalMigration.test(name))) throw new Error(`Migration requires separate maintenance: ${name}`);
+    if (!safePath(name, code === 'D' ? 'delete' : undefined)) throw new Error(`Path requires manual review: ${name}`);
     if (!['A', 'M', 'D'].includes(code)) throw new Error(`Unsupported change ${code}: ${name}`);
     if (code === 'D') { files.push({ status: 'delete', path: name }); continue; }
     const tree = git(repo, 'ls-tree', '-z', target, '--', name).toString('utf8');

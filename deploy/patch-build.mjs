@@ -24,8 +24,15 @@ export function prepareRelease({ stageDir, run = runCommand, cargoTargetDir = pr
   const markerPath = path.join(stageDir, '.mybot-release.json');
   if (!fs.lstatSync(markerPath).isFile()) throw new Error('Invalid stage marker');
   const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-  if (marker.status !== 'staged' || !Array.isArray(marker.files) || marker.files.some(f => !f || typeof f.path !== 'string' || !safePath(f.path))) throw new Error('Invalid staged release');
+  if (marker.status !== 'staged' || !Array.isArray(marker.files) || marker.files.some(f => !f || typeof f.path !== 'string' || !safePath(f.path, f.status))) throw new Error('Invalid staged release');
   const files = marker.files.map(f => f.path);
+  if (planRuntimeActions(files).retirePortal) {
+    if (marker.files.some(f => f.path.startsWith('rust/portal/') && f.status !== 'delete')) throw new Error('Rental portal has been retired');
+    assertDirectoryNotLink(path.join(stageDir, 'bin'), true);
+    for (const name of ['mybot-portal', 'mybot-portal-worker']) fs.rmSync(path.join(stageDir, 'bin', name), { force: true });
+    assertDirectoryNotLink(path.join(stageDir, 'portal-site'), true);
+    fs.rmSync(path.join(stageDir, 'portal-site'), { recursive: true, force: true });
+  }
   if (files.some(p => /^package(?:-lock)?\.json$/.test(p))) {
     unlinkDependencyLink(path.join(stageDir, 'node_modules'));
     run('npm', ['ci', '--omit=dev'], stageDir);
@@ -39,16 +46,6 @@ export function prepareRelease({ stageDir, run = runCommand, cargoTargetDir = pr
       run('npm', ['ci'], dashboard);
     }
     run('npm', ['run', 'build'], dashboard);
-  }
-  if (planRuntimeActions(files).buildPortal) {
-    run('bash', [path.join(stageDir, 'deploy', 'ubuntu', 'build-portal.sh'), stageDir], stageDir);
-    for (const artifact of ['bin/mybot-portal', 'bin/mybot-portal-worker']) {
-      if (!fs.statSync(path.join(stageDir, artifact)).isFile()) throw new Error(`Missing portal build artifact: ${artifact}`);
-    }
-    const wasmFound = ['portal-site/pkg/mybot-portal_bg.wasm', 'portal-site/pkg/mybot-portal.wasm'].some(rel => {
-      try { return fs.statSync(path.join(stageDir, rel)).isFile(); } catch { return false; }
-    });
-    if (!wasmFound) throw new Error('Missing portal build artifact: portal-site/pkg/mybot-portal(.wasm|_bg.wasm)');
   }
   if (files.some(p => p.startsWith('rust/') && !p.startsWith('rust/portal/'))) {
     const rust = path.join(stageDir, 'rust');

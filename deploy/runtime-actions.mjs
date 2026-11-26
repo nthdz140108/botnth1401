@@ -1,6 +1,5 @@
 export function planRuntimeActions(paths) {
   if (!Array.isArray(paths) || paths.some(p => typeof p !== 'string')) throw new Error('Invalid patch paths');
-  const portal = paths.some(p => p.startsWith('rust/portal/') || /^deploy\/ubuntu\/(?:(?:build|install|grant)-portal\.sh|mybot-portal(?:-worker)?\.service)$/.test(p));
   const rust = paths.filter(p => p.startsWith('rust/') && !p.startsWith('rust/portal/'));
   const serviceAffected = rust.some(p => !p.startsWith('rust/bins/ws-decode-worker/') && !p.startsWith('rust/bins/mybot-ctl/'));
   return {
@@ -9,6 +8,6 @@ export function planRuntimeActions(paths) {
     buildDashboard: paths.some(p => p.startsWith('dashboard/')),
     buildRust: rust.length > 0,
     installNodeDependencies: paths.some(p => /^(?:dashboard\/)?package(?:-lock)?\.json$/.test(p)),
-    ...(portal ? {restartPortal: true, buildPortal: true} : {}),
+    ...(paths.some(p => p.startsWith('rust/portal/')) ? { retirePortal: true } : {}),
   };
 }

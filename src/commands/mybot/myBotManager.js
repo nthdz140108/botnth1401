@@ -1,4 +1,3 @@
-import { assertNotPortalManaged } from "../../dashboard/portal-policy.js";
 import fs from "fs/promises";
 import path from "path";
 import { createBot } from "./Manager/createBot.js";
@@ -378,7 +377,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để xem chi tiết!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (!isSystemAdmin && !callerRole.canManageBot(targetBot)) {
           return await sendMessageWarning(api, message, "Bạn chỉ có thể xem thông tin bot của chính mình!", true, false);
         }
@@ -409,7 +407,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để thực thi lệnh!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (isMainBot(targetBot, targetBot.key)) {
           return await sendMessageWarning(api, message, "Lệnh cmd từ xa chỉ áp dụng cho bot con!", true, false);
         }
@@ -499,7 +496,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await handleBatchAction(api, message, isAdminLevelHighest, "start", targets);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (!isSystemAdmin && !callerRole.canManageBot(targetBot)) {
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu hoặc không có quyền!", true, false);
         }
@@ -515,7 +511,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await handleBatchAction(api, message, isAdminLevelHighest, "restart", targets);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (!isSystemAdmin && !callerRole.canManageBot(targetBot)) {
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu hoặc không có quyền!", true, false);
         }
@@ -531,7 +526,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await handleBatchAction(api, message, isAdminLevelHighest, "stop", targets);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (!isSystemAdmin && !callerRole.canManageBot(targetBot)) {
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu hoặc không có quyền!", true, false);
         }
@@ -550,7 +544,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await handleBatchAction(api, message, isAdminLevelHighest, "delete", targets);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (isMainBot(targetBot, targetBot.key)) {
           return await sendMessageWarning(api, message, "Không thể xóa hoặc vô hiệu hóa Main Bot!", true, false);
         }
@@ -575,7 +568,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để gia hạn!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         return await extendBotExpiry(api, message, isAdminLevelHighest, parsed.rawDuration, parsed.selector.value || 1, targetBot.key);
       }
 
@@ -597,7 +589,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để rút ngắn thời hạn!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         return await reduceBotExpiry(api, message, isAdminLevelHighest, parsed.rawDuration, parsed.selector.value || 1, targetBot.key);
       }
 
@@ -610,7 +601,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để vô hiệu hóa!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         if (isMainBot(targetBot, targetBot.key)) {
           return await sendMessageWarning(api, message, "Không thể vô hiệu hóa Main Bot!", true, false);
         }
@@ -626,7 +616,6 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
           return await sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu để phê duyệt!", true, false);
         }
         const targetBot = targets[0];
-        assertNotPortalManaged(projectRoot, targetBot.key);
         return await approveBot(api, message, isAdminLevelHighest, targetBot.key);
       }
 
@@ -1104,7 +1093,6 @@ async function handleShowInfoCommand(api, message, selector, myBots, uidFrom, is
 export async function startBot(api, message, isAdminLevelHighest, args, suppressMessages = false, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1246,7 +1234,6 @@ export async function startBot(api, message, isAdminLevelHighest, args, suppress
 export async function restartManagedBot(api, message, isAdminLevelHighest, args = [], suppressMessages = false, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
 
   // Single-flight deduplication
   if (inProgressRestarts.has(uidFrom)) {
@@ -1325,7 +1312,6 @@ export async function restartManagedBot(api, message, isAdminLevelHighest, args 
 export async function stopBot(api, message, isAdminLevelHighest, args, suppressMessages = false, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1370,7 +1356,6 @@ export async function stopBot(api, message, isAdminLevelHighest, args, suppressM
 export async function deleteBot(api, message, isAdminLevelHighest, args, suppressMessages = false, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1423,7 +1408,6 @@ export async function deleteBot(api, message, isAdminLevelHighest, args, suppres
 export async function extendBotExpiry(api, message, isAdminLevelHighest, timeStr, index, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1469,7 +1453,6 @@ export async function extendBotExpiry(api, message, isAdminLevelHighest, timeStr
 export async function reduceBotExpiry(api, message, isAdminLevelHighest, timeStr, index, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1562,7 +1545,6 @@ export async function cleanExpiredBots(api, message, isAdminLevelHighest) {
 export async function rejectBot(api, message, isAdminLevelHighest, isPermanent, rejecter, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -1609,7 +1591,6 @@ export async function rejectBot(api, message, isAdminLevelHighest, isPermanent, 
 export async function approveBot(api, message, isAdminLevelHighest, targetBotUid = null) {
   const { threadId, data: { uidFrom: requesterUid, dName }, type } = message;
   const uidFrom = targetBotUid || requesterUid;
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const checkResult = await checkBotExists(uidFrom);
     if (!checkResult.exists) {
@@ -2027,7 +2008,6 @@ async function handleChangeNameServer(api, uidFrom, dName, newNameServer, thread
 }
 
 export async function updateBotField(uidFrom, field, value) {
-  assertNotPortalManaged(projectRoot, uidFrom);
   try {
     const myBots = loadMyBotsRegistry(myBotsPath);
     if (!myBots[uidFrom]) {

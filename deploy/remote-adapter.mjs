@@ -5,7 +5,7 @@ export function createRemoteAdapter({ run, archive, delay = ms => new Promise(re
   let activeLauncher = launcher;
   const adapter = {
     setControlRunner(runner) {
-      if (!/^\/opt\/mybot\/deploy-control\/portal\/[a-f0-9]{40}(?:[a-f0-9]{24})?\/deploy\/ubuntu\/locked-runner\.sh$/.test(runner)) throw new Error('Invalid portal control runner');
+      if (!/^\/opt\/mybot\/deploy-control\/releases\/[a-f0-9]{40}(?:[a-f0-9]{24})?\/deploy\/ubuntu\/locked-runner\.sh$/.test(runner)) throw new Error('Invalid deployment control runner');
       activeLauncher = `p='${runner}';`;
     },
     async status() { return JSON.parse(await run(`${launcher} exec bash "$p" /opt/mybot status`)); },
