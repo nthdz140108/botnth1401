@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { appContext } from "../context.js";
+import { rememberOutboundMessage, rememberOutboundReceipt } from "../outbound-message-registry.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { encodeAES, getVideoMetadata, handleZaloResponse, makeURL, request } from "../utils.js";
 import { getFfmpegExecutableSync } from "../../utils/runtime-dependencies.js";
@@ -258,6 +259,8 @@ export function sendVideoFactory(api) {
       const encryptedParams = encodeAES(appContext.secretKey, JSON.stringify(payload.params));
       if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
 
+      const botId = appContext.uid;
+      rememberOutboundMessage(botId, threadId, { clientId: payload.params.clientId });
       const response = await request(url, {
         method: "POST",
         body: new URLSearchParams({
@@ -267,6 +270,7 @@ export function sendVideoFactory(api) {
 
       const result = await handleZaloResponse(response);
       if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
+      rememberOutboundReceipt(botId, threadId, result.data);
       return result.data;
     } finally {
       const cleanupErrors = [];

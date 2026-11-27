@@ -1,4 +1,5 @@
 import { appContext } from "../context.js";
+import { rememberOutboundMessage, rememberOutboundReceipt } from "../outbound-message-registry.js";
 import { Zalo } from "../zalo.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { MessageType } from "../models/Message.js";
@@ -44,6 +45,8 @@ export function sendStickerFactory(api) {
     if (!encryptedParams) throw new ZaloApiError("Failed to encrypt message");
     const finalServiceUrl = new URL(isGroupMessage ? groupMessageServiceURL : directMessageServiceURL);
     finalServiceUrl.searchParams.append("nretry", "0");
+    const botId = appContext.uid;
+    rememberOutboundMessage(botId, threadId, { clientId: params.clientId });
     const response = await request(finalServiceUrl.toString(), {
       method: "POST",
       body: new URLSearchParams({
@@ -60,6 +63,7 @@ export function sendStickerFactory(api) {
     responseData.clientId ??= outboundClientId;
     responseData.cliMsgId ??= outboundClientId;
 
+    rememberOutboundReceipt(botId, threadId, responseData);
     return responseData;
   };
 }

@@ -1,5 +1,6 @@
 import { QcCheckpoint, qcReport, runQcCampaign } from './campaign.js';
 import { parseCommandContent } from '../../commands/command-parser.js';
+import { isOutboundMessage, rememberOutboundReceipt } from '../../api-zalo/outbound-message-registry.js';
 
 const STEP_MS = 5 * 60_000;
 const waitDefault = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,19 +37,24 @@ export class QcSession {
   async notify(chat, msg) {
     // Bound reports and names as well as the initial list to Zalo's text budget.
     const receipts = [];
+    const sendPage = async (text) => {
+      const receipt = await this.api.sendMessage({ msg: text, strict: true, linkOn: false }, chat.threadId, chat.type);
+      rememberOutboundReceipt(this.api.getOwnId(), chat.threadId, receipt);
+      return receipt;
+    };
     const lines = String(msg).split('\n');
     let page = '';
     for (const line of lines) {
       for (let i = 0; i < Math.max(1, line.length); i += 2800) {
         const part = line.slice(i, i + 2800);
         if (page && page.length + part.length + 1 > 2900) {
-          receipts.push(await this.api.sendMessage({ msg: page, strict: true, linkOn: false }, chat.threadId, chat.type));
+          receipts.push(await sendPage(page));
           await this.wait(1000); page = '';
         }
         page += `${page ? '\n' : ''}${part}`;
       }
     }
-    if (page) receipts.push(await this.api.sendMessage({ msg: page, strict: true, linkOn: false }, chat.threadId, chat.type));
+    if (page) receipts.push(await sendPage(page));
     return receipts;
   }
 
@@ -139,7 +145,10 @@ export class QcSession {
 
   async input(context) {
     const s = this.session, m = context.message;
-    if (!s || !qcIsHigh(context) || !this.owns(context) || m.isSelf || String(m.data.uidFrom) === String(this.api.getOwnId())) return false;
+    if (!s || !qcIsHigh(context) || !this.owns(context)) return false;
+    // SDK isSelf identifies every message from the logged-in account, including
+    // manual messages typed on Zalo PC. Only program-generated IDs are echoes.
+    if (isOutboundMessage(this.api.getOwnId(), m)) return false;
     const text = typeof m.data.content === 'string' ? m.data.content : '';
     const parsed = parseCommandContent(text, context.prefix || '!');
     if (await this.expire()) return !parsed;

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { QcSession } from '../src/service-debug/qc/session.js';
 import { QcCheckpoint } from '../src/service-debug/qc/campaign.js';
+import { rememberOutboundMessage } from '../src/api-zalo/outbound-message-registry.js';
 
 function fixture(t, count = 2) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qc-session-'));
@@ -64,6 +65,23 @@ test('QC does not need reply IDs in group list receipts for free-chat selection'
   const f=fixture(t);f.manager.api.sendMessage=async()=>({});
   await f.manager.command(f.ctx());assert.equal(f.manager.session?.phase,'selecting');
   await f.manager.input(f.ctx('all'));assert.equal(f.manager.session?.phase,'content');
+});
+
+test('QC accepts manual self-account selections and content but rejects actual program-generated echoes',async(t)=>{
+  for(const type of [0,1])for(const content of ['manual advertisement',{href:'https://example.com/manual.jpg',title:'manual caption'}]){
+    const f=fixture(t);
+    const self=(text)=>{const c=f.ctx(text,{type,isSelf:true});c.message.data.uidFrom='99';return c;};
+    await f.manager.command(self('!qc'));
+    assert.equal(await f.manager.input(self('1 2')),true,'manual messages from the bot account are legitimate input');
+    assert.equal(f.manager.session.phase,'content');
+    const reminder=f.replies.at(-1);const reminderEcho=self(reminder.msg);reminderEcho.message.data.msgId=reminder.msgId;
+    assert.equal(await f.manager.input(reminderEcho),false,'QC notification receipts must be recognized as bot-generated');
+    const echo=self('bot-generated reminder');echo.message.data.msgId=`sdk-${type}`;echo.message.data.cliMsgId=`sdk-client-${type}`;
+    rememberOutboundMessage('99','origin',{msgId:`sdk-${type}`,clientId:`sdk-client-${type}`});
+    assert.equal(await f.manager.input(echo),false);assert.equal(f.jobs.length,0);
+    assert.equal(await f.manager.input(self(content)),true);assert.equal(f.jobs.length,1);
+    await f.jobs[0]();assert.deepEqual(f.sent,[{uid:'11',content}]);
+  }
 });
 
 test('QC auto-captures next content, lets commands through, and permits command text replying to prompt', async (t) => {

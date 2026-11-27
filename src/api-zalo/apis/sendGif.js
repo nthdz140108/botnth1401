@@ -1,5 +1,6 @@
 import { MessageType } from "../models/Message.js";
 import { appContext } from "../context.js";
+import { rememberOutboundMessage, rememberOutboundReceipt } from "../outbound-message-registry.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { API_TYPE, API_VERSION } from "../constants.js";
 import { encodeAES, handleZaloResponse, request, makeURL, removeUndefinedKeys, getGifDimensions } from "../utils.js";
@@ -96,6 +97,8 @@ export function sendGifFactory(api) {
         const encryptedParams = encodeAES(appContext.secretKey, JSON.stringify(params));
         if (!encryptedParams) throw new ZaloApiError("Failed to encrypt params");
 
+        const botId = appContext.uid;
+        rememberOutboundMessage(botId, threadId, { clientId: params.clientId });
         const response = await request(url, {
             method: "POST",
             body: new URLSearchParams({
@@ -106,6 +109,7 @@ export function sendGifFactory(api) {
         const result = await handleZaloResponse(response);
         if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 
+        rememberOutboundReceipt(botId, threadId, result.data);
         return result.data;
     }
     sendGif.prepare = gifUrl => processGif(gifUrl, api);

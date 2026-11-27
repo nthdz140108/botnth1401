@@ -9,6 +9,8 @@ Dành cho `adminLevelHigh`, dùng trong nhóm hoặc chat riêng. Prefix ví d�
 
 Mỗi bot có tối đa một phiên/lượt gửi. Mỗi bước chọn nhóm và nhập nội dung có thời hạn 5 phút. Tin khác người, khác cuộc chat, tin vọng lại từ bot, lệnh bình thường và tin ngoài bước chờ nội dung không được nhận làm quảng cáo.
 
+Có thể mở QC và gõ lựa chọn/nội dung thủ công bằng chính tài khoản Zalo đang chạy bot. Cờ `isSelf` của SDK chỉ cho biết tin thuộc tài khoản đang đăng nhập; QC dùng ID tin gửi ra đã ghi nhận để bỏ qua thông báo do chương trình bot tạo, thay vì chặn toàn bộ tin từ tài khoản đó.
+
 ## Nội dung
 
 Hỗ trợ văn bản và link, ảnh có caption, video có caption, tệp, ghi âm, GIF có caption, sticker và danh thiếp khi tin gốc chứa đủ thông tin SDK cần. Một người nhận được một tin; không thêm lời dẫn hoặc tách caption khỏi media. Album/nhiều tệp trong một tin, tin thoại/sticker/danh thiếp có caption, hoặc dữ liệu media thiếu thông tin bắt buộc sẽ bị từ chối rõ ràng; phiên tiếp tục chờ nội dung khác trong thời hạn còn lại.

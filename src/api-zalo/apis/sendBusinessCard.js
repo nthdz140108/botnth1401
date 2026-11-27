@@ -1,6 +1,7 @@
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { MessageType } from "../models/Message.js";
 import { appContext } from "../context.js";
+import { rememberOutboundMessage, rememberOutboundReceipt } from "../outbound-message-registry.js";
 import { API_TYPE, API_VERSION } from "../constants.js";
 import { encodeAES, handleZaloResponse, request, makeURL } from "../utils.js";
 
@@ -70,6 +71,8 @@ export function sendBusinessCardFactory(api) {
 
     const serviceURL = type === MessageType.DirectMessage ? directMessageServiceURL : groupMessageServiceURL;
 
+    const botId = appContext.uid;
+    rememberOutboundMessage(botId, threadId, { clientId: params.clientId });
     const response = await request(serviceURL, {
       method: "POST",
       body: new URLSearchParams({
@@ -80,6 +83,7 @@ export function sendBusinessCardFactory(api) {
     const result = await handleZaloResponse(response);
     if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 
+    rememberOutboundReceipt(botId, threadId, result.data);
     return result.data;
   }
   sendBusinessCard.prepare = prepareQrCode;

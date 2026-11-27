@@ -1,4 +1,5 @@
 import { appContext } from "../context.js";
+import { rememberOutboundMessage, rememberOutboundReceipt } from "../outbound-message-registry.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
 import { MessageType } from "../models/Message.js";
 import { encodeAES, handleZaloResponse, makeURL, request } from "../utils.js";
@@ -119,6 +120,9 @@ export function sendMessageForwardFactory(api) {
 		const encryptedParams = encodeAES(appContext.secretKey, JSON.stringify(params));
 		if (!encryptedParams) throw new ZaloApiError("Failed to encrypt params");
 
+		const botId = appContext.uid;
+		const destination = (params.toIds ?? params.grids)[0];
+		rememberOutboundMessage(botId, threadId, { clientId: destination.clientId });
 		const response = await request(url, {
 			method: "POST",
 			body: new URLSearchParams({
@@ -129,6 +133,7 @@ export function sendMessageForwardFactory(api) {
 		const result = await handleZaloResponse(response);
 		if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 
+		rememberOutboundReceipt(botId, threadId, result.data);
 		return result.data;
 	};
 }
