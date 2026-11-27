@@ -91,7 +91,7 @@ export class QcSession {
     }
     if (action) { await this.notify(chat, 'Dùng qc, qc status hoặc qc stop.'); return 'usage'; }
     if (this.session) { await this.notify(chat, 'Bot đang có phiên QC hoạt động. Người khởi tạo dùng qc status hoặc qc stop.'); return 'busy'; }
-    const current = { actor, chat, phase: 'loading', listIds: [], promptIds: [], groups: [], selected: [], seen: new Set() };
+    const current = { actor, chat, phase: 'loading', promptIds: [], groups: [], selected: [], seen: new Set() };
     this.session = current;
     try {
       this.store.begin({ actor, chat, status: 'selecting' });
@@ -112,8 +112,8 @@ export class QcSession {
       let page = [];
       const flush = async () => {
         if (this.session !== current) return;
-        const receipts = await this.notify(chat, `📣 QC — reply tin danh sách với 1, 1 2 3 hoặc all (5 phút).\n${page.join('\n')}`);
-        current.listIds.push(...receipts.flatMap(qcMessageIds)); page = [];
+        await this.notify(chat, `📣 QC — gửi 1, 1 2 3 hoặc all tại cuộc chat này để chọn nhóm, không cần reply (5 phút).\n${page.join('\n')}`);
+        page = [];
       };
       for (const [i, group] of current.groups.entries()) {
         const line = `${i + 1}. ${group.name} (${group.total} thành viên)`;
@@ -125,7 +125,6 @@ export class QcSession {
       }
       if (page.length) await flush();
       if (this.session !== current) return 'stopped';
-      if (!current.listIds.length) throw new Error('Missing reply identifiers');
       current.phase = 'selecting'; current.expiresAt = this.now() + STEP_MS;
       this.store.state.groups = current.groups; this.store.save();
       return 'selecting';
@@ -152,12 +151,11 @@ export class QcSession {
     const messageId = usableId(m.data.msgId) ? `global:${m.data.msgId}` : usableId(m.data.cliMsgId) ? `client:${m.data.cliMsgId}` : '';
     if (messageId && s.seen.has(messageId)) return true;
     if (s.phase === 'selecting') {
-      if (!quoted.some((id) => s.listIds.includes(id))) return false;
       if (messageId) s.seen.add(messageId);
       const tokens = text.trim().split(/\s+/);
       const indices = text.trim().toLowerCase() === 'all' ? s.groups.map((_, i) => i + 1) : tokens.map((token) => /^\d+$/.test(token) ? Number(token) : NaN);
       if (!indices.length || indices.some((n) => !Number.isSafeInteger(n) || n < 1 || n > s.groups.length)) {
-        await this.notify(s.chat, 'Số nhóm không hợp lệ. Reply lại danh sách: 1, 1 2 3 hoặc all.'); return true;
+        await this.notify(s.chat, 'Số nhóm không hợp lệ. Gửi 1, 1 2 3 hoặc all tại cuộc chat này, không cần reply.'); return true;
       }
       s.phase = 'choosing';
       s.selected = [...new Set(indices)].map((i) => s.groups[i - 1]);

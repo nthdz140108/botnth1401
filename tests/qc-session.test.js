@@ -39,16 +39,31 @@ test('QC requires high admin and reserves one bot before group fetch completes',
   assert.ok(f.replies.some(r=>/đang.*QC|QC.*đang/i.test(r.msg)));
 });
 
-test('QC accepts only owner/origin and reply to a stable list page; validates every index', async (t) => {
+test('QC accepts group selection without reply only from owner/origin and validates every index', async (t) => {
   const f=fixture(t,45); await f.manager.command(f.ctx());
   assert.ok(f.replies.length>=3); assert.match(f.replies[1].msg,/21\. Nhóm g21/);
-  assert.equal(await f.manager.input(f.ctx('all')),false);
-  const wrong=f.select(); wrong.message.data.uidFrom='2'; assert.equal(await f.manager.input(wrong),false);
-  const elsewhere=f.select(); elsewhere.message.threadId='other'; assert.equal(await f.manager.input(elsewhere),false);
-  await f.manager.input(f.select('1 46')); assert.equal(f.manager.session.phase,'selecting');
-  await f.manager.input(f.select('1 1 21',1));
+  const wrong=f.ctx('all'); wrong.message.data.uidFrom='2'; assert.equal(await f.manager.input(wrong),false);
+  const elsewhere=f.ctx('all'); elsewhere.message.threadId='other'; assert.equal(await f.manager.input(elsewhere),false);
+  assert.equal(await f.manager.input(f.ctx('!help')),false);
+  await f.manager.input(f.ctx('1 46')); assert.equal(f.manager.session.phase,'selecting');
+  await f.manager.input(f.ctx('1 1 21'));
   assert.equal(f.manager.session.phase,'content');
   assert.deepEqual(f.manager.session.selected.map(g=>g.id),['g1','g21']);
+});
+
+test('QC accepts single, multiple and all group numbers as direct chat in both DM and group',async(t)=>{
+  for(const type of [0,1])for(const [text,want] of [['1',['g1']],['1 2',['g1','g2']],['all',['g1','g2']]]){
+    const f=fixture(t);const context=(text)=>f.ctx(text,{type});await f.manager.command(context('!qc'));
+    assert.equal(await f.manager.input(context(text)),true);
+    assert.equal(f.manager.session.phase,'content');assert.deepEqual(f.manager.session.selected.map(g=>g.id),want);
+    assert.equal(f.jobs.length,0,'selection must not become advertisement');
+  }
+});
+
+test('QC does not need reply IDs in group list receipts for free-chat selection',async(t)=>{
+  const f=fixture(t);f.manager.api.sendMessage=async()=>({});
+  await f.manager.command(f.ctx());assert.equal(f.manager.session?.phase,'selecting');
+  await f.manager.input(f.ctx('all'));assert.equal(f.manager.session?.phase,'content');
 });
 
 test('QC auto-captures next content, lets commands through, and permits command text replying to prompt', async (t) => {

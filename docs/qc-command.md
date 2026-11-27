@@ -2,7 +2,7 @@
 
 Dành cho `adminLevelHigh`, dùng trong nhóm hoặc chat riêng. Prefix ví dụ `!` được thay bằng prefix đang cấu hình.
 
-1. Gọi `!qc`, reply một trang danh sách bằng `1`, `1 2 3` hoặc `all`.
+1. Gọi `!qc`, gửi trực tiếp `1`, `1 2 3` hoặc `all` tại cuộc chat mở phiên để chọn nhóm, không cần reply. Reply một trang danh sách vẫn dùng được.
 2. Gửi một tin gốc tại chính cuộc chat đó để làm quảng cáo; không cần reply. Nếu nội dung bắt đầu bằng cú pháp lệnh, reply lời nhắc nhập nội dung.
 3. Bot quét các nhóm được chọn, gộp UID và gửi riêng tuần tự, cách nhau ít nhất một giây. Không có bước xác nhận thêm.
 4. `!qc status` xem số liệu; `!qc stop` ngăn các lượt tiếp theo. Chỉ người mở phiên tại cuộc chat gốc được xem/dừng phiên đó.
