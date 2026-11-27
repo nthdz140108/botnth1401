@@ -47,7 +47,7 @@ export function readRoster(response, threadId) {
   };
 }
 
-export async function completeRoster(api, threadId, roster) {
+export async function completeRoster(api, threadId, roster, { onError } = {}) {
   if (typeof api.getGroupInfoV2 !== "function" || (!roster.hasMore && roster.total !== null && roster.members.length === roster.total)) return roster;
   const members = new Map(roster.members.map((member) => [member.uid, member]));
   const seenPages = new Set();
@@ -67,7 +67,8 @@ export async function completeRoster(api, threadId, roster) {
       roster.total = page.total ?? roster.total;
       roster.hasMore = page.hasMore;
       if (!page.hasMore || page.members.length === 0) break;
-    } catch {
+    } catch (error) {
+      onError?.(error);
       // Preserve known members and show an explicit partial count on failure.
       break;
     }

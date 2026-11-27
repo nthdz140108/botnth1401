@@ -32,9 +32,9 @@ export function sendMessageForwardFactory(api) {
 
 		let params;
 		if (message.link) {
-			const linkData = typeof api.parseLink === "function" ? await api.parseLink(message.link) : null;
+			const linkData = message.strict === true ? null : typeof api.parseLink === "function" ? await api.parseLink(message.link) : null;
 			const linkInfo = linkData?.data || (linkData && typeof linkData === "object" && !("data" in linkData) ? linkData : {});
-			const mediaInfo = linkInfo.media || {};
+			const mediaInfo = (message.strict === true ? message.media : linkInfo.media) || {};
 			const resolvedHref = linkInfo.href || message.link;
 			let src = "";
 			try {
@@ -131,4 +131,4 @@ export function sendMessageForwardFactory(api) {
 
 		return result.data;
 	};
-} 
+}

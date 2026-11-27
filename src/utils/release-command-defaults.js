@@ -11,5 +11,18 @@ export default [
     "author": "HHH",
     "active": true,
     "instanceScope": "any"
+  },
+  {
+    "name": "qc",
+    "description": "Gửi một tin quảng cáo riêng tới thành viên các nhóm đã chọn",
+    "syntax": "{p}qc [status|stop]",
+    "permission": "adminLevelHigh",
+    "scope": "both",
+    "countdown": 0,
+    "icon": "📣",
+    "type": 1,
+    "author": "HHH",
+    "active": true,
+    "instanceScope": "any"
   }
 ];

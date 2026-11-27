@@ -15,6 +15,13 @@ export function sendBusinessCardFactory(api) {
     zpw_type: API_TYPE,
   });
 
+  async function prepareQrCode(userId) {
+    const qrCodeUrls = await api.getQRLink(userId);
+    const qrCodeUrl = qrCodeUrls?.[String(userId)];
+    if (typeof qrCodeUrl !== "string" || !qrCodeUrl) throw new ZaloApiError("QR Code URL not found");
+    return qrCodeUrl;
+  }
+
   /**
    * Gửi danh thiếp (business card) đến một cuộc trò chuyện
    *
@@ -24,7 +31,7 @@ export function sendBusinessCardFactory(api) {
    * @param {number} [ttl=0] Thời gian tồn tại của tin nhắn (tùy chọn)
    * @throws {ZaloApiError}
    */
-  return async function sendBusinessCard(message, userId, phone, type, threadId, ttl = 0) {
+  async function sendBusinessCard(message, userId, phone, type, threadId, ttl = 0, preparedQrCodeUrl = null) {
     if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent)
 			throw new ZaloApiError("Missing required app context fields");
     if (!userId) throw new ZaloApiError("Missing userId");
@@ -32,8 +39,7 @@ export function sendBusinessCardFactory(api) {
     type = message ? message.type : type;
     threadId = message ? message.threadId : threadId;
 
-    const qrCodeUrl = await api.getQRLink(userId);
-    if (!qrCodeUrl || !qrCodeUrl[userId.toString()]) throw new ZaloApiError("QR Code URL not found");
+    const qrCodeUrl = preparedQrCodeUrl ?? await prepareQrCode(userId);
 
     const params = {
       ttl: ttl,
@@ -41,7 +47,7 @@ export function sendBusinessCardFactory(api) {
       clientId: Date.now().toString()*600,
       msgInfo: {
         contactUid: userId.toString(),
-        qrCodeUrl: qrCodeUrl[userId.toString()],
+        qrCodeUrl,
       }
     };
 
@@ -75,5 +81,7 @@ export function sendBusinessCardFactory(api) {
     if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 
     return result.data;
-  };
+  }
+  sendBusinessCard.prepare = prepareQrCode;
+  return sendBusinessCard;
 }

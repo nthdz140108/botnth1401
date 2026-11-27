@@ -245,7 +245,7 @@ test("Phase 5 aliases resolve case-insensitively to canonical commands", async (
   }
 });
 
-test("Phase 5 definitions and aggregate lookup keys are unique and aggregate to 219 definitions", () => {
+test("Phase 5 definitions and aggregate lookup keys are unique and aggregate to 220 definitions", () => {
   const phase5 = createPhase5Registry(overridesFor(PHASE_5_COMMANDS));
   const names = phase5.definitions.map(({ name }) => name);
   const keys = [...phase5.lookup.keys()];
@@ -266,8 +266,8 @@ test("Phase 5 definitions and aggregate lookup keys are unique and aggregate to 
     ...PHASE_10_COMMANDS,
     ...PHASE_11_COMMANDS,
   ]));
-  assert.equal(aggregate.definitions.length, 219);
-  assert.equal(new Set(aggregate.definitions.map(({ name }) => name)).size, 219);
+  assert.equal(aggregate.definitions.length, 220);
+  assert.equal(new Set(aggregate.definitions.map(({ name }) => name)).size, 220);
   assert.equal(new Set(aggregate.lookup.keys()).size, aggregate.lookup.size);
 });
 

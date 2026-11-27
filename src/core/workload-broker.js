@@ -175,11 +175,12 @@ export function createWorkloadBroker(options = {}) {
     const jobId = `bcast-${botId}-${Date.now()}-${nextJobSeq}`;
     statsCounters.broadcastSubmitted++;
 
-    const timeoutMs = customOptions.timeoutMs || broadcastTimeoutMs;
+    const timeoutMs = customOptions.timeoutMs ?? broadcastTimeoutMs;
 
     const promise = broadcastQueue.add(async () => {
       let timer = null;
       const timeoutPromise = new Promise((_, reject) => {
+        if (timeoutMs === 0) return;
         timer = setTimeout(
           () => reject(new Error(`Broadcast task ${jobId} timed out after ${timeoutMs}ms`)),
           timeoutMs

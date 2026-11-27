@@ -1,5 +1,6 @@
 import PQueue from "p-queue";
 import Bottleneck from "bottleneck";
+import { bindRequestPolicy } from "./request-policy.js";
 
 export const LANE_CONFIGS = Object.freeze({
   "fast-text": {
@@ -80,7 +81,7 @@ export function createLaneLimiter(laneName, config = {}) {
   }
 
   async function schedule(task) {
-    return queue.add(async () => {
+    return queue.add(bindRequestPolicy(async () => {
       // 1. Check adaptive backoff
       const now = Date.now();
       if (now < backoffUntil) {
@@ -98,7 +99,7 @@ export function createLaneLimiter(laneName, config = {}) {
 
       lastDispatchedAt = Date.now();
       return task();
-    });
+    }));
   }
 
   function counts() {
@@ -220,6 +221,7 @@ export function wrapWithLimiter(api, options = {}) {
     Object.defineProperty(limited, "__transportLimited", { value: true });
     Object.defineProperty(limited, "__original", { value: original });
     Object.defineProperty(limited, "__lane", { value: laneName });
+    if (typeof original.prepare === "function") limited.prepare = original.prepare.bind(api);
     api[method] = limited;
     wrappedMethods.push(method);
   }

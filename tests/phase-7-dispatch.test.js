@@ -71,7 +71,7 @@ test("the aggregate registry appends Phases 7 through 9 after Phases 1 through 6
   const registry = registryModule.createCommandRegistryForPhases(overridesFor(expected));
 
   assert.deepEqual(registry.definitions.map(({ name }) => name), expected);
-  assert.equal(registry.definitions.length, 219);
+  assert.equal(registry.definitions.length, 220);
   assert.equal(registry.lookup.size, new Set(registry.lookup.keys()).size);
 });
 

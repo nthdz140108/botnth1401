@@ -19,6 +19,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import { GroupEventType } from "./models/GroupEvent.js";
 import { ZaloApiError } from "./Errors/ZaloApiError.js";
 import { getZaloRuntimeConfig } from "./zalo-config.js";
+import { isSingleAttemptRequestScope } from "./request-policy.js";
 import { getFfprobeExecutableSync } from "../utils/runtime-dependencies.js";
 
 export function getSignKey(type, params) {
@@ -532,6 +533,7 @@ export async function handleZaloResponse(response) {
     error: null,
   };
   const contentType = response.headers?.get?.("content-type") || "";
+  const singleAttemptScope = isSingleAttemptRequestScope();
   if (!response.ok) {
     result.error = {
       message: "Request failed with status code " + response.status,
@@ -555,6 +557,9 @@ export async function handleZaloResponse(response) {
       return result;
     }
     const jsonData = JSON.parse(bodyText);
+    if (singleAttemptScope && jsonData?.error_code && jsonData.error_code != 0) {
+      throw new ZaloApiError(jsonData.error_message || "Zalo rejected the request", jsonData.error_code, response.status);
+    }
     if (!jsonData.data && jsonData.data !== "") {
       return { data: null, error: null };
     }
@@ -580,6 +585,7 @@ export async function handleZaloResponse(response) {
     }
     result.data = parsedData.data;
   } catch (error) {
+    if (singleAttemptScope && error instanceof ZaloApiError) throw error;
     console.error("Failed to parse Zalo response", {
       status: response?.status,
       error: error?.message,
@@ -642,12 +648,14 @@ async function requestWithBodyKind(url, options, kind) {
   }
 
   const timeout = Number.isFinite(options.timeout) ? options.timeout : 6000;
-  const retryLimit = Number.isFinite(options.retry) ? options.retry : 2;
   const method = (options.method || "GET").toUpperCase();
+  const singleAttempt = isSingleAttemptRequestScope() && !["GET", "HEAD", "OPTIONS"].includes(method);
+  const retryLimit = singleAttempt ? 0 : (Number.isFinite(options.retry) ? options.retry : 2);
   const baseHeaders = options.headers ? mergeHeaders(options.headers, getDefaultHeaders()) : getDefaultHeaders();
   const fetchOptions = { ...options, method, headers: baseHeaders };
   delete fetchOptions.retry;
   delete fetchOptions.rawResponse;
+  if (singleAttempt) fetchOptions.redirect = "error";
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
     const controller = new AbortController();

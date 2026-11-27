@@ -16,12 +16,12 @@ import { commandRegistry } from "../src/commands/command-registry.js";
 
 const root = path.resolve(process.cwd());
 
-test("phase 0 baseline keeps command.json and defaultCommand.json aligned at 219 commands", async () => {
+test("phase 0 baseline keeps command.json and defaultCommand.json aligned at 220 commands", async () => {
   const baseline = await readCommandBaselineFiles(root);
 
-  assert.equal(baseline.summary.canonicalCount, 219);
-  assert.equal(baseline.summary.defaultCount, 219);
-  assert.equal(baseline.summary.registryCount, 219);
+  assert.equal(baseline.summary.canonicalCount, 220);
+  assert.equal(baseline.summary.defaultCount, 220);
+  assert.equal(baseline.summary.registryCount, 220);
   assert.equal(baseline.summary.activeMismatchCount, 0);
   assert.equal(baseline.collisions.length, 0);
   assert.equal(baseline.missingInDefault.length, 0);

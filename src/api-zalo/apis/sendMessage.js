@@ -51,13 +51,13 @@ function prepareQMSG(quote) {
   }
   return "";
 }
-   async function send(data) {
+   async function send(data, strict = false) {
      if (!Array.isArray(data)) data = [data];
      const requests = [];
      for (const each of data) {
        requests.push(
          (async () => {
-           const maxRetries = 3;
+           const maxRetries = strict ? 1 : 3;
            let lastError = null;
            const hostname = (() => { try { return new URL(each.url).hostname; } catch { return each.url; } })();
             const operation = each.operation || "request";
@@ -468,6 +468,10 @@ export function sendMessageFactory(api) {
     return responses;
   }
   async function sendWithQuoteFallback(message, threadId, type, ttl) {
+    if (message.strict === true) {
+      const handledData = await handleMessage(message, threadId, type, ttl);
+      return send(handledData, true);
+    }
     const attempts = [
       { label: "original", quote: message.quote, mentions: message.mentions, style: message.style },
       { label: "no-quote", quote: undefined, mentions: message.mentions, style: message.style },
@@ -524,6 +528,12 @@ export function sendMessageFactory(api) {
       attachment: [],
       link: null,
     };
+    if (message.strict === true && attachments?.length) {
+      const singleCaption = attachments.length === 1 && ["jpg", "jpeg", "png", "webp"].includes(getFileExtension(attachments[0]));
+      if (attachments.length !== 1 || (msg && (!singleCaption || quote))) {
+        throw new ZaloApiError("Strict send cannot split the original message");
+      }
+    }
     if (attachments && attachments.length > 0) {
       const firstExtFile = getFileExtension(attachments[0]);
       const isSingleFile = attachments.length == 1;
@@ -537,8 +547,9 @@ export function sendMessageFactory(api) {
       }
       try {
         const handledData = await handleAttachment({ msg, mentions, attachments, quote, isUseProphylactic }, threadId, type, ttl);
-        responses.attachment = await send(handledData);
+        responses.attachment = await send(handledData, message.strict === true);
       } catch (attachmentError) {
+        if (message.strict === true) throw attachmentError;
         console.warn(`[sendMessage] Attachment send failed threadId=${threadId} type=${type}: ${attachmentError.message}. Falling back to plain text.`);
         if (msg.length > 0) {
           const plainMessage = Object.assign({}, message, { attachments: undefined, quote: undefined });
@@ -556,6 +567,7 @@ export function sendMessageFactory(api) {
         try {
           responses.link = await api.sendLink(message.msg, linkData.links[0], threadId, type, ttl);
         } catch (error) {
+          if (message.strict === true) throw error;
           responses.message = (await sendWithQuoteFallback(message, threadId, type, ttl))[0];
         }
       } else {

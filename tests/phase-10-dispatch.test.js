@@ -90,7 +90,7 @@ test("Phase 10 high-risk commands deny insufficient permission before execution"
   }
 });
 
-test("the aggregate registry contains all 219 canonical commands", () => {
+test("the aggregate registry contains all 220 canonical commands", () => {
   const allCommands = [
     ...PHASE_1_COMMANDS, ...PHASE_2_COMMANDS, ...PHASE_3_COMMANDS,
     ...PHASE_4_COMMANDS, ...PHASE_5_COMMANDS, ...PHASE_6_COMMANDS,
@@ -99,7 +99,7 @@ test("the aggregate registry contains all 219 canonical commands", () => {
   ];
   const registry = createCommandRegistryForPhases(overridesFor(allCommands));
   assert.deepEqual(registry.definitions.map(({ name }) => name), allCommands);
-  assert.equal(registry.definitions.length, 219);
+  assert.equal(registry.definitions.length, 220);
   assert.equal(registry.lookup.size, new Set(registry.lookup.keys()).size);
 });
 

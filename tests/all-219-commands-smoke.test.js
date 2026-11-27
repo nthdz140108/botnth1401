@@ -131,10 +131,10 @@ function createMockApi(recorder = []) {
   });
 }
 
-test("1. All 219 canonical command modules import cleanly and export concrete handler functions", async () => {
-  assert.equal(commandRegistry.definitions.length, 219);
+test("1. All 220 canonical command modules import cleanly and export concrete handler functions", async () => {
+  assert.equal(commandRegistry.definitions.length, 220);
   const catalog = getStudioContractCatalog();
-  assert.equal(catalog.contracts.length, 219);
+  assert.equal(catalog.contracts.length, 220);
 
   const uniqueModules = new Map();
   for (const contract of catalog.contracts) {
@@ -153,8 +153,8 @@ test("1. All 219 canonical command modules import cleanly and export concrete ha
   }
 });
 
-test("2. All 400 entrypoints (219 commands + 181 aliases) dispatch cleanly in both Group and DirectMessage scopes", async () => {
-  assert.equal(commandRegistry.keys.length, 400);
+test("2. All 401 entrypoints (220 commands + 181 aliases) dispatch cleanly in both Group and DirectMessage scopes", async () => {
+  assert.equal(commandRegistry.keys.length, 401);
 
   const safeOverrides = Object.fromEntries(
     commandRegistry.definitions.map((def) => [

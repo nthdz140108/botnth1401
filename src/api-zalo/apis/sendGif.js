@@ -14,6 +14,9 @@ async function processGif(gifUrl, api) {
 
         const dimensions = await getGifDimensions(tempGifPath);
         const thumbData = await api.uploadThumbnail(tempGifPath);
+        if (!thumbData?.url || !dimensions.width || !dimensions.height) {
+            throw new ZaloApiError("Missing GIF thumbnail or dimensions");
+        }
 
         return {
             thumbUrl: thumbData.url,
@@ -49,13 +52,13 @@ export function sendGifFactory(api) {
      * @param {number} [ttl=0] Thời gian tồn tại của tin nhắn
      * @throws {ZaloApiError}
      */
-    return async function sendGif(gifUrl, message, caption = "", ttl = 0) {
+    async function sendGif(gifUrl, message, caption = "", ttl = 0, preparedGif = null) {
 		if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent)
 			throw new ZaloApiError("Missing required app context fields");
         if (!gifUrl) throw new ZaloApiError("Missing GIF URL");
         if (!message) throw new ZaloApiError("Missing message");
 
-        const { thumbUrl, width, height } = await processGif(gifUrl, api);
+        const { thumbUrl, width, height } = preparedGif ?? await processGif(gifUrl, api);
 
         const threadId = message.threadId;
         const threadType = message.type;
@@ -104,5 +107,7 @@ export function sendGifFactory(api) {
         if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 
         return result.data;
-    };
-} 
+    }
+    sendGif.prepare = gifUrl => processGif(gifUrl, api);
+    return sendGif;
+}

@@ -1,10 +1,27 @@
+import { mkdtemp, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { appContext } from "../context.js";
 import { ZaloApiError } from "../Errors/ZaloApiError.js";
-import { encodeAES, handleZaloResponse, makeURL, request } from "../utils.js";
+import { encodeAES, getImageMetaData, handleZaloResponse, makeURL, request } from "../utils.js";
 import { Zalo } from "../zalo.js";
 import { MessageType } from "../models/Message.js";
-import { getImageInfo } from "../../utils/util.js";
+import { deleteFile, downloadFile, getImageInfo } from "../../utils/util.js";
 import { API_TYPE, API_VERSION } from "../constants.js";
+
+async function prepareImage(imageUrl) {
+	const directory = await mkdtemp(join(tmpdir(), "mybot-qc-image-"));
+	const target = join(directory, "image");
+	try {
+		await downloadFile(imageUrl, target);
+		const { width, height, totalSize } = await getImageMetaData(target);
+		if (!width || !height || !(totalSize >= 1024)) throw new ZaloApiError("Ảnh không hợp lệ hoặc quá nhỏ");
+		return { width, height, totalSize };
+	} finally {
+		await deleteFile(target);
+		await rmdir(directory);
+	}
+}
 
 export function sendImageFactory(api) {
 	if (!api?.zpwServiceMap?.file?.[0]) throw new ZaloApiError("Missing file endpoint (zpwServiceMap.file[0])");
@@ -29,13 +46,13 @@ export function sendImageFactory(api) {
 	 * @param {number} [ttl=0] Ttl của tin nhắn
 	 * @throws {ZaloApiError}
 	 */
-	return async function sendImage(imageUrl, message, caption = "", ttl = 0) {
+	async function sendImage(imageUrl, message, caption = "", ttl = 0, preparedImage = null) {
 		if (!appContext.secretKey || !appContext.imei || !appContext.cookie || !appContext.userAgent)
 			throw new ZaloApiError("Missing required app context fields");
 		if (!imageUrl) throw new ZaloApiError("Missing image URL");
 		if (!message) throw new ZaloApiError("Missing message object");
 
-		const dataImage = await getImageInfo(imageUrl);
+		const dataImage = preparedImage ?? await getImageInfo(imageUrl);
 		if (!dataImage) throw new ZaloApiError("Failed to get image info");
 		if (dataImage.totalSize && dataImage.totalSize < 1024) throw new ZaloApiError("Ảnh quá nhỏ");
 
@@ -85,5 +102,7 @@ export function sendImageFactory(api) {
 		const result = await handleZaloResponse(response);
 		if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
 		return result.data;
-	};
-} 
+	}
+	sendImage.prepare = prepareImage;
+	return sendImage;
+}

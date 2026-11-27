@@ -21,7 +21,8 @@ import { antiVideo } from "../service-debug/anti-service/anti-video.js";
 import { antiAllEffectGif } from "../service-debug/anti-service/anti-gif.js";
 import { superCheckBox } from "../service-debug/anti-service/setup-anti.js";
 import { Reactions } from "../api-zalo/index.js";
-import { handleOnChatUser, handleOnReplyFromUser } from "../service-debug/service.js";
+import { handleOnChatUser, handleOnReplyFromUser, getGlobalPrefix } from "../service-debug/service.js";
+import { handleQcInput } from "../service-debug/qc/index.js";
 import { enforceAntiFile } from "../service-debug/anti-service/anti-file.js";
 import { enforceAntiPhotoVideo } from "../service-debug/anti-service/anti-photo.js";
 import { enforceAntiText } from "../service-debug/anti-service/anti-text.js";
@@ -172,6 +173,7 @@ async function handleQrLoginPrefixReply(api, message) {
 }
 
 export const eventSendMsgHooks = {
+  handleQcInput: (context) => handleQcInput(context),
   handleOnChatUser: (...args) => handleOnChatUser(...args),
   handleOnReplyFromUser: (...args) => handleOnReplyFromUser(...args),
   handleCommand: (...args) => handleCommand(...args),
@@ -275,9 +277,6 @@ export async function messagesUser(api, message) {
 
   switch (message.type) {
     case MessageType.DirectMessage: {
-      if (contentText && contentText.toLowerCase().startsWith("uid")) 
-        api.sendMessage({msg: senderId, ttl: 60000, quote: message}, threadId, message.type);
-      
       if (getConnectedClientsCount() > 0) {
         let userAvatar = '';
         try {
@@ -302,6 +301,11 @@ export async function messagesUser(api, message) {
           countAsMessage: true,
         });
       }
+      if (!isUserBlocked(senderId) && await eventSendMsgHooks.handleQcInput({
+        api, message, prefix: getGlobalPrefix(), authorizationSnapshot: privateAuthorization,
+      })) break;
+      if (contentText && contentText.toLowerCase().startsWith("uid"))
+        api.sendMessage({msg: senderId, ttl: 60000, quote: message}, threadId, message.type);
       const scoldStopped = await eventSendMsgHooks.handleScoldFreeChat(api, message);
       if (scoldStopped) break;
 
@@ -431,21 +435,7 @@ export async function messagesUser(api, message) {
         updateUserRank(threadId, senderId, message.data?.dName || senderName, nameGroup);
       }
 
-      // Check if admin is sending free chat "tha" to stop scolding immediately
-      const scoldStopped = await eventSendMsgHooks.handleScoldFreeChat(api, message, groupAdmins);
-      if (scoldStopped) break;
-
       let handleChat = true;
-      if (isPlainText) {
-        const handledPrefixReply = await handleQrLoginPrefixReply(api, message);
-        if (handledPrefixReply) break;
-
-        const barePrefixMatch = typeof contentText === "string" && contentText.trim().toLowerCase() === "prefix";
-        if (barePrefixMatch) {
-          await handlePrefixCommand(api, message, effectiveAuthorization.isAdminLevelHigh);
-          break;
-        }
-      }
       // Key vàng (trưởng nhóm) hoặc key bạc (phó nhóm) quyết định bot có
       // thể thu hồi tin nhắn của thành viên trong nhóm này hay không. Đây là
       // năng lực riêng của bot, tách biệt khỏi `isAdminBox` (quyền gọi lệnh).
@@ -603,6 +593,22 @@ export async function messagesUser(api, message) {
       handleChat = handleChat && !userBlocked;
       isAdminLevelHighest = effectiveAuthorization.isAdminLevelHigh;
       callerIsBotAdmin = effectiveAuthorization.isBotAdmin;
+      if (handleChat && await eventSendMsgHooks.handleQcInput({
+        api, message, prefix: getGlobalPrefix(), authorizationSnapshot: effectiveAuthorization,
+      })) break;
+      // QC content gets first claim after protection; free-chat helpers must
+      // not consume advertisements such as "prefix", "uid..." or "tha".
+      if (handleChat) {
+        const scoldStopped = await eventSendMsgHooks.handleScoldFreeChat(api, message, groupAdmins);
+        if (scoldStopped) break;
+        if (isPlainText) {
+          if (await handleQrLoginPrefixReply(api, message)) break;
+          if (typeof contentText === 'string' && contentText.trim().toLowerCase() === 'prefix') {
+            await handlePrefixCommand(api, message, effectiveAuthorization.isAdminLevelHigh);
+            break;
+          }
+        }
+      }
       const canProcessReply = handleChat && (
         groupSettings[threadId]?.activeBot === true || callerIsBotAdmin
       );
