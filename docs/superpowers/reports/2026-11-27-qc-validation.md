@@ -37,4 +37,16 @@ Original commit: 3f7a46967dd92daad9fd6591a7faed232b3837aa. Exported tracked sour
 
 ## Live acceptance and deployment
 
-The user reported no test bot/group/recipient account. Live Zalo acceptance has not been performed. VPS apply is held until that acceptance; only BAT status/dry-run is authorized by the agreed follow-up. BAT status confirms current VPS code at the original commit above with transaction confirmed.
+The user reported no test bot/group/recipient account. Live Zalo acceptance has not been performed. VPS apply is held until that acceptance; only BAT status/dry-run has been executed. BAT status confirms current VPS code at the original commit above with transaction confirmed.
+
+## Final complete project run
+
+`npm test`: 2,371 tests; 2,324 passed, 24 failed, 23 skipped, 0 cancelled. Duration: 858 seconds. The project suite is **not green**.
+
+23 failures match the original-HEAD failures listed above. One additional timing-sensitive test failed: `tests/fast-vs-heavy-isolation.test.js` — `heavy tasks do not block or increase latency of fast-text and control tasks`. It requires fast/control p95 below 20 ms. Running that unchanged test alone against the final code passed (1/1). Its full-suite failure remains recorded rather than being hidden by the successful isolated rerun.
+
+All QC tests passed in the complete run, including HTTP 503/disconnect/redirect no-retry, queued policy propagation, actual SDK media preflight, origin pipeline, stop/restart, checkpoint errors, sentinel message IDs and a 65-recipient campaign beyond 60 seconds.
+
+## BAT preview
+
+`DAY_LEN_VPS.bat --target HEAD --dry-run` succeeded against code commit `013fd26e187b5a57b21def0a13b55ec74715882a`: base `3f7a46967dd92daad9fd6591a7faed232b3837aa`, 18 runtime files, 241410 bytes. Actions: restart Node only; no Rust/Dashboard build and no dependency installation. Shared runtime catalog changes are supplied through additive release defaults. No apply was run.
