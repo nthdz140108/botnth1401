@@ -35,7 +35,7 @@ Original commit: 3f7a46967dd92daad9fd6591a7faed232b3837aa. Exported tracked sour
 - tests\terminal-log.test.js:103:1 — allows managed listener pipes to color when the supervising terminal opted in
 - tests\terminal-log.test.js:120:1 — colors event branches and labels by field tone for easier scanning
 
-## Live acceptance and deployment
+## Initial live acceptance and deployment
 
 The user reported no test bot/group/recipient account. Live Zalo acceptance has not been performed. VPS apply is held until that acceptance; only BAT status/dry-run has been executed. BAT status confirms current VPS code at the original commit above with transaction confirmed.
 
@@ -47,6 +47,16 @@ The user reported no test bot/group/recipient account. Live Zalo acceptance has 
 
 All QC tests passed in the complete run, including HTTP 503/disconnect/redirect no-retry, queued policy propagation, actual SDK media preflight, origin pipeline, stop/restart, checkpoint errors, sentinel message IDs and a 65-recipient campaign beyond 60 seconds.
 
-## BAT preview
+## Initial BAT preview
 
 `DAY_LEN_VPS.bat --target HEAD --dry-run` succeeded against code commit `013fd26e187b5a57b21def0a13b55ec74715882a`: base `3f7a46967dd92daad9fd6591a7faed232b3837aa`, 18 runtime files, 241410 bytes. Actions: restart Node only; no Rust/Dashboard build and no dependency installation. Shared runtime catalog changes are supplied through additive release defaults. No apply was run.
+
+## Follow-up: silent selections from the bot's own account
+
+The user provided a live Zalo screenshot showing the updated free-chat prompt but no response to `28 32`. Read-only VPS inspection confirmed release `92a4b6f`, an active selection checkpoint with 58 groups, and `actor_is_bot=true`. The blanket `isSelf`/own-UID rejection in QC discarded manually typed messages from the logged-in account.
+
+The fix accepts the authorized initiator's manual self-account input and excludes program-generated echoes using outbound client/server IDs. QC notification receipts and eight native SDK send methods now record provenance; native IDs are claimed before HTTP so an early echo cannot become campaign content. Regression tests cover real GroupMessage normalization, the actual group pipeline, manual text/media in both chat scopes, and a native sticker echo arriving before its HTTP receipt.
+
+Validation: 111 targeted QC/native SDK/outbound tests passed; 17 core session/native-echo tests also passed after sharing the receipt helper. ESLint and diff whitespace checks passed. The prior complete-suite results above remain recorded; no new complete-suite run is claimed for this narrow fix.
+
+`DAY_LEN_VPS.bat --target HEAD --apply` deployed `3327e71c03e087556f5de2041dd910584d04fd65` from `92a4b6f` and reported `confirmed`. BAT status and the current release symlink independently matched the target; PM2 bridge/admin processes were online. A temporary isolated replay on the deployed VPS source passed selection `[28,32]` into the content stage and ignored a QC echo. It used fake APIs and sent zero advertisements. The existing conversation must be reopened with `!qc` after restart. Real recipient/media campaign acceptance remains unperformed.
