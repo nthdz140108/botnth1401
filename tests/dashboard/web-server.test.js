@@ -86,7 +86,7 @@ test("runtime web bridge exposes the live route contract", async () => {
       getAllFriends: async () => ([{ userId: "friend-1", name: "Friend 1" }]),
       sendMessage: async () => true,
     };
-    await module.startWebServer(api);
+    await module.startWebServer(api, { projectRoot: root });
 
     const base = `http://127.0.0.1:${port}`;
     try {
