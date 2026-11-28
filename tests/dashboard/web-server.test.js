@@ -80,7 +80,7 @@ async function withTempDashboardRoot(fn) {
 }
 
 test("runtime web bridge exposes the live route contract", async () => {
-  await withTempDashboardRoot(async ({ port }) => {
+  await withTempDashboardRoot(async ({ root, port }) => {
     const module = await import(`../../src/web-service/web-server.js?test=${Date.now()}`);
     const api = {
       getAllFriends: async () => ([{ userId: "friend-1", name: "Friend 1" }]),
@@ -93,6 +93,14 @@ test("runtime web bridge exposes the live route contract", async () => {
       const identity = await fetch(`${base}/internal/runtime/identity`).then((res) => res.json());
       assert.equal(identity.success, true);
       assert.equal(identity.botKey, "admin");
+      const { getInternalSecret } = await import("../../src/commands/mybot/System/mybot-command-relay.js");
+      const friends = await fetch(`${base}/internal/runtime/friends`, { headers: { "x-internal-secret": getInternalSecret({ projectRoot: root }) } }).then((res) => res.json());
+      assert.equal(friends.online, true);
+      assert.deepEqual(friends.friends.map((friend) => friend.uid), ["friend-1"]);
+      assert.equal(friends.identity.botKey, identity.botKey);
+      assert.equal(friends.identity.pid, identity.pid);
+      assert.equal(friends.identity.liveZaloUid, identity.liveZaloUid);
+      assert.equal(typeof friends.identity.listenerConnected, "boolean");
 
       const health = await fetch(`${base}/internal/runtime/health`).then((res) => res.json());
       assert.equal(health.status, "healthy");

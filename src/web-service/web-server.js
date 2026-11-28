@@ -477,7 +477,9 @@ export async function startWebServer(api, options = {}) {
       return res.json({ success: true, online: false, friends: [] });
     }
     try {
-      const rawFriends = await activeWebApi.getAllFriends();
+      const sourceApi = activeWebApi;
+      const sourceIdentity = getRuntimeInstanceDescriptor();
+      const rawFriends = await sourceApi.getAllFriends();
       const list = Array.isArray(rawFriends) ? rawFriends : Array.isArray(rawFriends?.friends) ? rawFriends.friends : [];
       const friends = list.map((f) => ({
         uid: String(f?.userId || f?.uid || f?.id || ""),
@@ -485,7 +487,14 @@ export async function startWebServer(api, options = {}) {
         zaloName: f?.zaloName || "",
         avatar: f?.avatar || f?.avt || "",
       })).filter((f) => f.uid);
-      return res.json({ success: true, online: true, friends });
+      const identity = getRuntimeInstanceDescriptor();
+      if (activeWebApi !== sourceApi || identity.liveZaloUid !== sourceIdentity.liveZaloUid) {
+        return res.status(409).json({ success: false, code: "RUNTIME_IDENTITY_CHANGED", error: "Runtime identity changed while loading friends" });
+      }
+      return res.json({ success: true, online: true, friends, identity: {
+        kind: identity.kind, botKey: identity.botKey, liveZaloUid: identity.liveZaloUid,
+        pid: identity.pid, ...getListenerStateFields(),
+      } });
     } catch (error) {
       return res.status(502).json({ success: false, code: "ZALO_FRIENDS_FAILED", error: error?.message || "Failed to list friends" });
     }

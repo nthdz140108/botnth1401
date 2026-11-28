@@ -45,6 +45,7 @@ import { persistVerifiedBot } from "../commands/mybot/System/verified-provisioni
 import { initializeVerifiedBotFiles } from "../commands/mybot/Manager/qr-login-command.js";
 import { writeJsonAtomic } from "../commands/mybot/System/json-state.js";
 import { CredentialService } from "./credential-service.js";
+import { createChildAdminVerifier } from "./child-admin-verifier.js";
 import { createBotManagementService } from "./bot-management-service.js";
 
 function assertSafeId(id, label = "id") {
@@ -89,6 +90,8 @@ export class NodeBridgeService {
     secret = null,
     verifyCredential = verifyLoginCredential,
     verifyChildAdminUid = null,
+    adminReadiness = undefined,
+    fetchChildFriends = undefined,
     qrModuleLoader = undefined,
   } = {}) {
     this.root = path.resolve(root);
@@ -108,17 +111,10 @@ export class NodeBridgeService {
       auditStore: this.auditStore,
     });
 
-    this.management = createBotManagementService({ root: this.root, registry: this.registry, prefixService: this.prefixService, auditStore: this.auditStore, verifyAdminUid: verifyChildAdminUid || (async (botId, uid) => {
-      const bot = await this.registry.describe(botId);
-      const stateFile = path.join(this.root, "mybot", "state", `${botId}.json`);
-      const state = JSON.parse(await fs.readFile(stateFile, "utf8").catch(() => "{}"));
-      if (state.connected && String(state.uid || "") === uid) return true;
-      if (!bot?.connected || !bot.port) return false;
-      const response = await fetch(`http://127.0.0.1:${bot.port}/internal/runtime/friends`, { headers: { "x-internal-secret": this.secret }, signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) return false;
-      const data = await response.json();
-      return data.online === true && Array.isArray(data.friends) && data.friends.some((friend) => String(friend.uid) === uid);
-    }) });
+    this.management = createBotManagementService({
+      root: this.root, registry: this.registry, prefixService: this.prefixService, auditStore: this.auditStore,
+      verifyAdminUid: verifyChildAdminUid || createChildAdminVerifier({ root: this.root, secret: this.secret, readiness: adminReadiness, fetchFriends: fetchChildFriends }),
+    });
 
     this.credentials = new CredentialService({ root: this.root, registry: this.registry, configStore: this.configStore, verifyCredential });
 
