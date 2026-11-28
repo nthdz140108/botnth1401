@@ -14,7 +14,7 @@ export class QcCheckpoint {
     try {
       this.state = JSON.parse(fs.readFileSync(file, 'utf8'));
       const state = this.state;
-      const statuses = new Set([...ACTIVE, 'interrupted', 'expired', 'completed', 'stopped', 'session_lost', 'send_timeout']);
+      const statuses = new Set([...ACTIVE, 'interrupted', 'expired', 'completed', 'stopped', 'session_lost', 'send_timeout', 'delivery_blocked', 'rate_limited']);
       if (state.version !== 1 || !Array.isArray(state.recipients) || typeof state.actor !== 'string'
         || !state.chat || typeof state.chat.threadId !== 'string' || ![0, 1].includes(state.chat.type)
         || !Array.isArray(state.groups) || !Array.isArray(state.scans) || !statuses.has(state.status)
@@ -83,9 +83,30 @@ export function qcSummary(state) {
 
 export function qcReport(state) {
   const s = qcSummary(state);
+  const errors = new Map();
+  for (const r of s.recipients || []) {
+    if (r.errorCode) errors.set(r.errorCode, (errors.get(r.errorCode) || 0) + 1);
+  }
+  const reasons = [...errors].sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([code, count]) => `Mã ${code}: ${count} người`);
+  const explanation = s.status === 'delivery_blocked'
+    ? '\nĐã dừng: Zalo liên tiếp từ chối nhận tin riêng (123/126/127). Quét được UID nhóm không đồng nghĩa được phép nhắn riêng; cần kiểm tra quyền nhận tin hoặc hạn chế tài khoản trên Zalo.'
+    : s.status === 'rate_limited' ? '\nĐã dừng: Zalo giới hạn gửi tin (429). Chờ tài khoản hết giới hạn trước khi tạo lượt mới.' : '';
   const scans = (s.scans || []).filter((scan) => scan.completeness !== 'full').map((scan) =>
     `${scan.name}: ${scan.completeness === 'error' ? 'quét lỗi' : `${scan.count}/${scan.total ?? '?'} UID, ${scan.paginationError ? 'lỗi phân trang; ' : ''}${scan.completeness === 'unknown' ? 'chưa xác định đầy đủ' : 'chưa đầy đủ'}`}`);
-  return `📣 QC: ${s.status}\nNgười nhận duy nhất: ${s.total}\nThành công: ${s.success}\nThất bại: ${s.failed}\nChưa xác nhận: ${s.unconfirmed}\nChưa gửi: ${s.unsent}\nThời gian: ${s.elapsedSeconds} giây${scans.length ? `\nQuét nhóm:\n${scans.join('\n')}` : ''}`;
+  return `📣 QC: ${s.status}\nNgười nhận duy nhất: ${s.total}\nThành công: ${s.success}\nThất bại: ${s.failed}\nChưa xác nhận: ${s.unconfirmed}\nChưa gửi: ${s.unsent}\nThời gian: ${s.elapsedSeconds} giây${reasons.length ? `\nLỗi gửi:\n${reasons.join('\n')}` : ''}${explanation}${scans.length ? `\nQuét nhóm:\n${scans.join('\n')}` : ''}`;
+}
+
+function receiptError(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (value.error && typeof value.error === 'object') return value.error;
+  if ((value.error_code != null && Number(value.error_code) !== 0)
+    || (value.errorCode != null && Number(value.errorCode) !== 0)) return value;
+  for (const child of Object.values(value)) {
+    const error = receiptError(child);
+    if (error) return error;
+  }
+  return null;
 }
 
 export function isQcSessionLost(error) {
@@ -138,6 +159,7 @@ export async function runQcCampaign({ api, store, groups, actor, chat, content, 
       await notify(`📣 Bắt đầu gửi quảng cáo tới ${uids.size} thành viên duy nhất thuộc ${groups.length} nhóm: ${groups.map((g) => g.name).join(', ')}.`);
       state.status = 'sending'; store.save();
       let lastFinished = null;
+      let consecutiveRefusals = 0;
       for (const recipient of state.recipients) {
         if (state.stopRequested) break;
         if (lastFinished !== null) await sleep(Math.max(0, 1000 - (Date.now() - lastFinished)));
@@ -149,6 +171,13 @@ export async function runQcCampaign({ api, store, groups, actor, chat, content, 
         const settled = pending.then((receipt) => ({ receipt }), (error) => ({ error }));
         const result = await Promise.race([settled, new Promise((resolve) => { timer = setTimeout(() => resolve({ timedOut: true }), sendTimeoutMs); })]);
         clearTimeout(timer);
+        const error = result.error || receiptError(result.receipt);
+        if (error) {
+          const code = error.code ?? error.error_code ?? error.errorCode;
+          // Store bounded diagnostics only, never payloads, URLs or credentials.
+          if (code != null) recipient.errorCode = String(code).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+          if (error.status != null) recipient.httpStatus = Number(error.status) || null;
+        }
         if (result.timedOut) {
           recipient.status = 'unconfirmed'; state.status = 'send_timeout'; state.stopRequested = true;
           lateSend = settled;
@@ -157,12 +186,19 @@ export async function runQcCampaign({ api, store, groups, actor, chat, content, 
           if (isQcSessionLost(result.error)) { state.status = 'session_lost'; state.stopRequested = true; }
         } else {
           recipient.status = classifyQcReceipt(result.receipt);
-          if (isQcSessionLost(result.receipt?.error)) { state.status = 'session_lost'; state.stopRequested = true; }
+          if (isQcSessionLost(error)) { state.status = 'session_lost'; state.stopRequested = true; }
+        }
+        consecutiveRefusals = recipient.status === 'failed' && ['123', '126', '127'].includes(recipient.errorCode)
+          ? consecutiveRefusals + 1 : 0;
+        if (!state.stopRequested && (Number(error?.status) === 429 || recipient.errorCode === '429')) {
+          state.status = 'rate_limited'; state.stopRequested = true;
+        } else if (!state.stopRequested && consecutiveRefusals >= 5) {
+          state.status = 'delivery_blocked'; state.stopRequested = true;
         }
         lastFinished = Date.now(); store.save();
       }
     }
-    if (!['session_lost', 'send_timeout'].includes(state.status)) state.status = state.stopRequested ? 'stopped' : 'completed';
+    if (!['session_lost', 'send_timeout', 'delivery_blocked', 'rate_limited'].includes(state.status)) state.status = state.stopRequested ? 'stopped' : 'completed';
     state.endedAt = Date.now(); store.save();
     // Reporting is separate from the settled transport outcome.
     reportSent = true;

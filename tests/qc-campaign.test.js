@@ -147,3 +147,69 @@ test('QC timeout reports unconfirmed, forbids subsequent sends and holds task un
   release({msgId:'late'});const result=await pending;
   assert.equal(result.unconfirmed,1);assert.equal(result.unsent,2);assert.equal(sends,1);
 });
+
+test('QC stops a refusal storm after two ACKs and preserves the remaining roster', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1700000000000 });
+  const f = fixture(t);
+  f.api.getGroupInfo = async () => ({ totalMember: 251, memberIds: Array.from({ length: 251 }, (_, i) => String(1000 + i)) });
+  let sends = 0;
+  const result = await finish(t, f.run({ groups: [{ id: 'a', name: 'A' }], content: {
+    async send() {
+      if (++sends <= 2) return { msgId: String(sends) };
+      throw Object.assign(new Error('Không thể nhận tin nhắn từ bạn.'), { name: 'ZaloApiError', code: 123, status: 200 });
+    }, cleanup() {},
+  } }));
+  assert.equal(result.status, 'delivery_blocked');
+  assert.equal(result.success, 2);
+  assert.equal(result.failed, 5);
+  assert.equal(result.unsent, 244);
+  assert.equal(f.store.state.recipients[2].errorCode, '123');
+  assert.match(f.reports.at(-1), /123.*5/);
+  assert.match(f.reports.at(-1), /Zalo.*từ chối/);
+  assert.equal(new QcCheckpoint(f.store.file).state.status, 'delivery_blocked');
+});
+
+test('QC stops on explicit rate limiting without replaying the refused send', async t => {
+  const f = fixture(t);
+  let sends = 0;
+  const result = await f.run({ content: { async send() {
+    sends++;
+    throw Object.assign(new Error('Too many requests'), { status: 429, code: 429 });
+  }, cleanup() {} } });
+  assert.equal(result.status, 'rate_limited');
+  assert.equal(result.failed, 1);
+  assert.equal(result.unsent, 2);
+  assert.equal(sends, 1);
+  assert.equal(new QcCheckpoint(f.store.file).state.status, 'rate_limited');
+});
+
+test('QC keeps refusal streaks consecutive and reports nested API error codes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1700000000000 });
+  const f = fixture(t);
+  const result = await finish(t, f.run({ content: { async send(uid) {
+    if (uid === '12') return { msgId: 'ok' };
+    return { error: { code: 127, message: 'Không thể nhận tin nhắn từ bạn.' } };
+  }, cleanup() {} } }));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.failed, 2);
+  assert.equal(result.success, 1);
+  assert.equal(f.store.state.recipients[0].errorCode, '127');
+  assert.match(f.reports.at(-1), /127.*2/);
+});
+
+test('QC does not stop on isolated refusals separated by successful recipients', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1700000000000 });
+  const f = fixture(t);
+  f.api.getGroupInfo = async () => ({ totalMember: 11, memberIds: Array.from({ length: 11 }, (_, i) => String(1000 + i)) });
+  let sends = 0;
+  const result = await finish(t, f.run({ groups: [{ id: 'a', name: 'A' }], content: {
+    async send() {
+      if (++sends === 5 || sends === 10) return { msgId: String(sends) };
+      throw Object.assign(new Error('Không thể nhận tin nhắn từ bạn.'), { name: 'ZaloApiError', code: [123, 126, 127][sends % 3], status: 200 });
+    }, cleanup() {},
+  } }));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.success, 2);
+  assert.equal(result.failed, 9);
+  assert.equal(result.unsent, 0);
+});
