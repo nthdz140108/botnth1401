@@ -27,3 +27,18 @@ test('migration dry-run keeps keys, owners, trial ledger and files untouched; ap
   const repeated = await migrateBotManagementV4({ root, apply: true });
   assert.equal(repeated.changed.length, 0);
 });
+
+test('Main account normalization is repeatable after the first application and requires identity evidence', async t => {
+  const { migrateBotManagementV4 } = await import('../src/commands/mybot/System/bot-management-migration.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-migration-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'mybot', 'state'), { recursive: true });
+  const file = path.join(root, 'mybot', 'mybots.json');
+  fs.writeFileSync(file, JSON.stringify({ admin: { uid: '1234567890123', isMain: true, status: 'running' } }));
+  fs.writeFileSync(path.join(root, 'mybot', 'state', 'admin.json'), JSON.stringify({ uid: '1234567890123', lastRepairedAt: '2026-11-28T00:00:00.000Z' }));
+  await migrateBotManagementV4({ root, apply: true });
+  const record = JSON.parse(fs.readFileSync(file)).admin;
+  assert.equal(record.accountUid, '1234567890123');
+  assert.equal(record.accountIdentityStatus, 'verified');
+  assert.deepEqual((await migrateBotManagementV4({ root, apply: true })).changed, []);
+});

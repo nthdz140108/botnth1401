@@ -6,12 +6,15 @@ import { loadMyBotsRegistry } from './mybots-registry.js';
 // Evidence is an actual identity handshake/state, never a display name, port or PID.
 function accountEvidence(root, key, record) {
   const expected = String(record.accountUid || record.uid || '').trim();
-  if (record.accountIdentityStatus === 'verified' && expected && expected !== key) return expected;
+  if (record.accountIdentityStatus === 'verified' && expected && expected !== 'admin'
+    && (record.accountUid || expected !== key || /^\d+$/.test(expected))) return expected;
   const file = path.join(root, 'mybot', 'state', `${key}.json`);
   if (!fs.existsSync(file)) return null;
   const state = JSON.parse(fs.readFileSync(file, 'utf8'));
   const actual = String(state.liveZaloUid || state.accountUid || state.uid || '').trim();
-  return state.botKey === key && actual && actual === expected && (state.loggedIn === true || state.listenerConnected === true) ? actual : null;
+  const mainLoginProof = (key === 'admin' || record.isMain) && Number.isFinite(Date.parse(state.lastRepairedAt));
+  return (state.botKey === key || mainLoginProof) && actual && actual !== 'admin' && actual === expected
+    && (state.loggedIn === true || state.listenerConnected === true || mainLoginProof) ? actual : null;
 }
 export async function migrateBotManagementV4({ root, apply = false, releaseRoots = [] } = {}) {
   const registryPath = path.join(root, 'mybot', 'mybots.json');
@@ -22,7 +25,7 @@ export async function migrateBotManagementV4({ root, apply = false, releaseRoots
       const accountUid = accountEvidence(root, key, record);
       const patch = {
         botKey: key,
-        accountIdentityStatus: key === 'admin' || record.isMain || accountUid ? 'verified' : 'pending',
+        accountIdentityStatus: accountUid ? 'verified' : 'pending',
         adminBindingStatus: record.adminBindingStatus || (record.identityPending === false && record.resolvedChildAdminUids?.length ? 'verified' : 'pending'),
         desiredStatus: record.desiredStatus || (['running', 'starting'].includes(record.status) ? 'running' : 'stopped'),
         managementSchemaVersion: 4,
