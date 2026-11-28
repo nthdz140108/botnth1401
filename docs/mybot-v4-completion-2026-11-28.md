@@ -22,11 +22,17 @@
 
 VPS trước cập nhật:3327e71; chỉ có admin trong registry. Backup trước cập nhật: /opt/mybot/backups/management-v4-20261128. Báo cáo đối chiếu release không tìm thấy bot rơi cần chuyển.
 
-Trạng thái push/deploy và kiểm tra Linux sẽ bổ sung sau khi updater hoàn tất. Updater chuyển release/rollback, giữ shared storage; rollback mã bằng node deploy/incremental-vps.mjs --rollback. Không khôi phục toàn registry từ backup khi có thay đổi mới; dùng journal theo thao tác.
+Đã push nhánh codex/locmem-recovery lên nthdz140108/botnth1401. VPS đã chuyển release11013a8d4a8fdca9f0ee5f179c9cae2e85f24062 bằng updater (bản triển khai chính f90fce6 build Rust/dashboard thành công; patch11013a8 chuẩn hóa migration Main một lần).
+
+Xác minh sau cập nhật: Main PM2 online, PID và tài khoản khớp registry, listenerConnected=true; Node bridge health=ok, GET profile và endpoint operation phản hồi đúng; dashboard HTTP200 phục vụ bundle index-psyjR9uY.js mới. Không coi những probe này là đã xác nhận gửi/nhận tin nhắn Zalo thật.
+
+38/38 kiểm thử Linux chạy qua trên source release với dữ liệu tạm riêng, gồm quyền journal/credential0600, split runtime root, cancellation giữa hai Node process và rollback. Hai lần chạy migration --apply sau cập nhật đều changed=[]; đối chiếu backup xác nhận giữ khóa/chủ/hạn dùng; không có journal dở cần phục hồi.
+
+Bổ sung triển khai: bộ đóng gói bỏ qua dashboard/dist sinh tự động, build từ dashboard/src trong staging trước khi Rust embed SPA;25 kiểm thử updater qua,7 case theo Linux bị skip trên Windows. Sửa bổ sung handshake/reload/PM2/trial dùng runtime root:19 kiểm thử qua. Regression Main migration mới qua cùng bộ registry10 pass/1 Windows-only permission skip (đã kiểm tra lại trên Linux). Updater chuyển release/rollback, giữ shared storage; rollback mã bằng node deploy/incremental-vps.mjs --rollback. Không khôi phục toàn registry từ backup khi có thay đổi mới; dùng journal theo thao tác.
 
 Theo lựa chọn của người dùng: triển khai trước, nghiệm thu tài khoản thử cùng người dùng sau. Chưa xác nhận tạo bot QR/cookie thật, nhận/trả lời chat riêng+nhóm, đổi credential thật và reboot thật. Không coi daemon/port/PM2 online hay unit test là nghiệm thu Zalo.
 
-##22 lỗi nền đã xác minh ở7300554
+## 22 lỗi nền đã xác minh ở7300554
 
 - `tests\anti-service\anti-zalo-regression-fixes.test.js:788:1` — 10a. anti-bot ignores standard Zalo human disappearing message TTL presets while catching short bot TTLs (1.9816ms)
 - `tests\auto-download-youtube.test.js:15:1` — YouTube autodownload owns its single confirmation reaction (8.9796ms)
