@@ -2,17 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { getProfile, updateProfile } from "./mybot-profile-service.js";
 import {
-  claimOwnerTrial,
-  releaseOwnerTrial,
-  getBangkokCalendarWeek,
   reserveTrialActivation,
+  getTrialLedgerPath,
 } from "./mybot-trial-ledger.js";
 import { getProjectRoot } from "../../../utils/env.js";
 import { resolveManagedBotTarget } from "./mybot-identity.js";
 import { getBotLaunchGeneration } from "./pm2-manager.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
-import { beginBotStartOperation, isBotStartOperationCurrent, withCurrentBotStartOperation, cancelledStart } from "./bot-lifecycle-operation.js";
+import { beginBotStartOperation, isBotStartOperationCurrent, cancelledStart } from "./bot-lifecycle-operation.js";
 import { withRegistryLock } from "./registry-lock.js";
+import { withMyBotsTransaction } from "../Manager/qr-provisioning-registry.js";
 import {
   resolveOwnedActivationCandidates,
   resolveOwnerActiveSlot,
@@ -156,11 +155,18 @@ export async function activateBot({
     };
   }
 
+  const assertActivationConfigUnchanged = () => {
+    const latest = loadMyBotsRegistry(inventoryPath)[bId];
+    for (const field of ["ownerUid", "enabled", "expiryAt", "activationPolicy", "activatedAt"]) {
+      const semantic = record => field === "enabled" ? record?.enabled !== false : field === "ownerUid" ? (record?.ownerUid || record?.createdByUid || null) : record?.[field] ?? null;
+      if (JSON.stringify(semantic(latest)) !== JSON.stringify(semantic(botEntry))) {
+        throw Object.assign(new Error("Bot configuration changed during startup; retry with the current configuration"), { code: "ACTIVATION_CONFIG_CHANGED" });
+      }
+    }
+  };
+
   const execution = (async () => {
     lifecycleOperationId = await beginBotStartOperation(bId, { root: projectRoot, operationId });
-    // Snapshots for rollback
-    const profileSnapshot = JSON.parse(JSON.stringify(profile || {}));
-    const registrySnapshot = botEntry ? JSON.parse(JSON.stringify(botEntry)) : null;
 
     const now = Date.now();
     const isPermanent = profile?.expiryAt === "-1" || profile?.expiryAt === -1;
@@ -208,21 +214,23 @@ export async function activateBot({
         const effectiveExpiry = pendingPolicy
           ? (policy.type === "permanent" ? "-1" : new Date(readyAt + Number(policy.durationMs)).toISOString())
           : profile.expiryAt;
-        await withCurrentBotStartOperation(bId, lifecycleOperationId, { root: projectRoot }, () => {
-        updateProfile(bId, {
-          enabled: true, desiredStatus: "running",
-          ...(pendingPolicy ? { activatedAt: new Date(readyAt).toISOString(), expiryAt: effectiveExpiry, trialStatus: "not_required" } : {}),
-        }, { root: projectRoot });
-        if (fs.existsSync(inventoryPath)) {
-          const inv = loadMyBotsRegistry(inventoryPath);
-          if (inv[bId]) {
-            inv[bId].status = "running";
-            inv[bId].desiredStatus = "running";
-            inv[bId].enabled = true;
-            inv[bId].lastUpdated = new Date().toISOString();
-            saveMyBotsRegistry(inv, inventoryPath);
+        await withMyBotsTransaction({ root: projectRoot, registryPath: inventoryPath }, () => {
+          assertNotCancelled();
+          assertActivationConfigUnchanged();
+          updateProfile(bId, {
+            enabled: true, desiredStatus: "running",
+            ...(pendingPolicy ? { activatedAt: new Date(readyAt).toISOString(), expiryAt: effectiveExpiry, trialStatus: "not_required" } : {}),
+          }, { root: projectRoot });
+          if (fs.existsSync(inventoryPath)) {
+            const inv = loadMyBotsRegistry(inventoryPath);
+            if (inv[bId]) {
+              inv[bId].status = "running";
+              inv[bId].desiredStatus = "running";
+              inv[bId].enabled = true;
+              inv[bId].lastUpdated = new Date().toISOString();
+              saveMyBotsRegistry(inv, inventoryPath);
+            }
           }
-        }
         });
 
         return {
@@ -237,7 +245,7 @@ export async function activateBot({
         };
       } catch (err) {
         await cleanupFailedProcess(bId, projectRoot, pm2Adapter, lifecycleOperationId);
-        return { success: false, code: err?.code === "START_CANCELLED" ? err.code : "ACTIVATION_FAILED", error: err?.message || "Failed to start bot process" };
+        return { success: false, code: err?.code || "ACTIVATION_FAILED", error: err?.message || "Failed to start bot process" };
       }
     }
 
@@ -253,7 +261,6 @@ export async function activateBot({
     }
     const txn = reserveRes.txn;
 
-    let claimRecord = null;
     try {
       await startProcess({ botId: bId, root: projectRoot, operationId: lifecycleOperationId, pm2Adapter, launcherAdapter });
 
@@ -279,37 +286,40 @@ export async function activateBot({
       const readyAt = health?.checkedAt ? Date.parse(health.checkedAt) : Date.now();
       const activatedNow = Number.isFinite(readyAt) ? readyAt : Date.now();
       let claim;
-      await withCurrentBotStartOperation(bId, lifecycleOperationId, { root: projectRoot }, () => {
-      claim = txn.commit({ commitNow: activatedNow, commitDurationMs: durationMs });
-      if (!claim.success) {
-        throw new Error(claim.error || "Failed to commit trial ledger");
-      }
-      });
-      claimRecord = claim;
-
-      // Update profile
-      updateProfile(bId, {
-        desiredStatus: "running",
-        trialStatus: "active",
-        trialStartedAt: claim.grantedAt,
-        expiryAt: claim.expiryAt,
-        enabled: true,
-      }, { root: projectRoot });
-
-      // Update inventory status
-      if (fs.existsSync(inventoryPath)) {
-        const inv = loadMyBotsRegistry(inventoryPath);
-        if (inv[bId]) {
-          inv[bId].status = "running";
-          inv[bId].desiredStatus = "running";
-          inv[bId].trialStatus = "active";
-          inv[bId].trialStartedAt = claim.grantedAt;
-          inv[bId].expiryAt = claim.expiryAt;
-          inv[bId].enabled = true;
-          inv[bId].lastUpdated = new Date(activatedNow).toISOString();
-          saveMyBotsRegistry(inv, inventoryPath);
+      await withMyBotsTransaction({ root: projectRoot, registryPath: inventoryPath }, (finalization) => {
+        assertNotCancelled();
+        assertActivationConfigUnchanged();
+        finalization.trackFile(getTrialLedgerPath(projectRoot));
+        claim = txn.commit({ commitNow: activatedNow, commitDurationMs: durationMs });
+        if (!claim.success) {
+          throw new Error(claim.error || "Failed to commit trial ledger");
         }
-      }
+
+        // Update profile
+        updateProfile(bId, {
+          desiredStatus: "running",
+          trialStatus: "active",
+          trialStartedAt: claim.grantedAt,
+          expiryAt: claim.expiryAt,
+          enabled: true,
+        }, { root: projectRoot });
+
+        // Update inventory status
+        if (fs.existsSync(inventoryPath)) {
+          const inv = loadMyBotsRegistry(inventoryPath);
+          if (inv[bId]) {
+            inv[bId].status = "running";
+            inv[bId].desiredStatus = "running";
+            inv[bId].trialStatus = "active";
+            inv[bId].trialStartedAt = claim.grantedAt;
+            inv[bId].expiryAt = claim.expiryAt;
+            inv[bId].enabled = true;
+            inv[bId].lastUpdated = new Date(activatedNow).toISOString();
+            saveMyBotsRegistry(inv, inventoryPath);
+          }
+        }
+
+      });
 
       return {
         success: true,
@@ -323,62 +333,15 @@ export async function activateBot({
         health,
       };
     } catch (startErr) {
-      // Rollback on failure: stop process, release trial claim, revert profile & inventory snapshots
       await cleanupFailedProcess(bId, projectRoot, pm2Adapter, lifecycleOperationId);
-      if (claimRecord?.weekKey) {
-        try {
-          releaseOwnerTrial(ownerUid, claimRecord.weekKey, { root: projectRoot });
-        } catch {}
-      } else {
-        try {
-          txn.release();
-        } catch {}
-      }
-
+      txn.release();
       if (!isBotStartOperationCurrent(bId, lifecycleOperationId, { root: projectRoot })) {
         return { success: false, code: "START_CANCELLED", error: "Activation was superseded by a newer lifecycle operation" };
       }
 
-      try {
-        updateProfile(bId, {
-          trialStatus: profileSnapshot.trialStatus || "pending",
-          trialStartedAt: profileSnapshot.trialStartedAt || null,
-          expiryAt: profileSnapshot.expiryAt || null,
-          enabled: profileSnapshot.enabled !== false,
-        }, { root: projectRoot });
-      } catch {}
-
-      if (fs.existsSync(inventoryPath)) {
-        try {
-          const inv = loadMyBotsRegistry(inventoryPath);
-          if (inv[bId]) {
-            if (registrySnapshot) {
-              // Restore the pre-activation snapshot but ALWAYS normalize the
-              // trial fields back to pending so a failed activation never
-              // leaves a half-committed trial (no expiry, no startedAt).
-              inv[bId] = {
-                ...registrySnapshot,
-                ...(getBotLaunchGeneration(bId, projectRoot) !== generation ? { desiredStatus: "stopped" } : {}),
-                status: registrySnapshot.status === "running" ? "stopped" : registrySnapshot.status,
-                trialStatus: "pending",
-                trialStartedAt: null,
-                expiryAt: null,
-              };
-            } else {
-              inv[bId].status = "stopped";
-              inv[bId].trialStatus = "pending";
-              inv[bId].trialStartedAt = null;
-              inv[bId].expiryAt = null;
-            }
-            inv[bId].lastUpdated = new Date().toISOString();
-            saveMyBotsRegistry(inv, inventoryPath);
-          }
-        } catch {}
-      }
-
       return {
         success: false,
-        code: "ACTIVATION_FAILED",
+        code: startErr?.code || "ACTIVATION_FAILED",
         error: startErr?.message || "Failed to start bot process",
       };
     }

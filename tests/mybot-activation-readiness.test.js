@@ -14,7 +14,7 @@ async function createRoot() {
   await fs.mkdir(path.join(root, "mybot", "state"), { recursive: true });
   await fs.mkdir(path.join(root, "mybot", "profiles"), { recursive: true });
   await fs.writeFile(path.join(root, "mybot", "mybots.json"), JSON.stringify({
-    botChild: { name: "botChild", displayName: "Hẹn", ownerUid: "owner-1", status: "stopped", enabled: true, webPort: "4444" },
+    botChild: { name: "botChild", displayName: "Hẹn", ownerUid: "owner-1", status: "stopped", enabled: true, webPort: "4444", trialStatus: "pending", trialStartedAt: null, expiryAt: null },
   }, null, 2));
   await fs.writeFile(path.join(root, "mybot", "credentials", "botChild.json"), JSON.stringify({
     cookie: { token: "x" }, imei: "imei", uid: "owner-1",
