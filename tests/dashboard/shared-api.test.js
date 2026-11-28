@@ -397,7 +397,7 @@ test("credential read is masked, reveal is explicit, and update writes allowed c
   const registryPath = path.join(root, "mybot", "mybots.json");
   const records = JSON.parse(await fs.readFile(registryPath, "utf8"));
   await fs.writeFile(registryPath, JSON.stringify({ ...records, admin: { name: "admin", uid: "main-account", isMain: true } }));
-  await fs.copyFile(path.join(root, "mybot", "bots", "admin-credential.json"), path.join(root, "assets", "config.json"));
+  await fs.writeFile(path.join(root, "assets", "config.json"), JSON.stringify({ cookie: { url: "https://chat.zalo.me", cookies: [{ name: "zpw_sek", value: "secret" }] }, imei: "imei-admin", userAgent: "ua-admin", active: true, retainedSetting: "keep", accountUid: "main-account", accountIdentityStatus: "verified" }));
   const registry = new BotRegistry({ root });
   const credentialService = new CredentialService({ root, registry, verifyCredential: async () => ({ uid: "main-account" }) });
   const server = await startSharedApi(root, { registry, credentialService });
@@ -405,7 +405,7 @@ test("credential read is masked, reveal is explicit, and update writes allowed c
     const masked = await fetchJson(`${server.url}/api/bots/admin/credential`);
     assert.equal(masked.body.data.value.cookie, "[masked]");
     const revealed = await postJson(`${server.url}/api/bots/admin/credential/reveal`, {}, "req-reveal");
-    assert.equal(revealed.data.raw.cookie.token, "secret");
+    assert.equal(revealed.data.raw.cookie.cookies[0].value, "secret");
     const update = await putJson(`${server.url}/api/bots/admin/credential`, { imei: "imei-1", userAgent: "ua-1", active: true }, "req-cred");
     assert.equal(update.restartRequired, true);
     assert.ok(update.backup?.file);
@@ -413,6 +413,12 @@ test("credential read is masked, reveal is explicit, and update writes allowed c
     assert.equal(saved.imei, "imei-1");
     assert.equal(saved.userAgent, "ua-1");
     assert.equal(saved.active, true);
+    assert.equal(saved.retainedSetting, "keep");
+    assert.equal(saved.cookie.cookies[0].value, "secret");
+    const emptyUpdate = await putJson(`${server.url}/api/bots/admin/credential`, {}, "req-cred-empty");
+    assert.equal(emptyUpdate.success, true);
+    const afterEmpty = JSON.parse(await fs.readFile(path.join(root, "assets", "config.json"), "utf8"));
+    assert.deepEqual(afterEmpty, saved);
   } finally {
     await server.close();
   }
