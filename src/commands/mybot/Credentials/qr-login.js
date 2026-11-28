@@ -52,41 +52,35 @@ function waitForQrRetry(signal, delayMs = 5000) {
  * The signal is passed into the actual fetch, not just checked between polls.
  */
 async function fetchWithDeadline(fetchWithCookies, url, options = {}, { signal, expiresAt } = {}) {
-  const deadlineReached = () => typeof expiresAt === "number" && expiresAt > 0 && Date.now() >= expiresAt;
-  const fetchOptions = { ...options };
-  if (signal) {
-    fetchOptions.signal = signal;
-  }
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) controller.abort();
-    else signal.addEventListener("abort", onAbort, { once: true });
-  }
-
+  let timer;
+  let onControllerAbort;
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) controller.abort(signal.reason);
+  else signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const result = await Promise.race([
-      fetchWithCookies(url, fetchOptions),
-      new Promise((_, reject) => {
-        const tick = () => {
-          if (controller.signal.aborted) {
-            reject(new Error("QR request aborted"));
-            return;
-          }
-          if (deadlineReached()) {
-            reject(new Error("QR request deadline exceeded"));
-            return;
-          }
-          setTimeout(tick, 250);
-        };
-        tick();
-      }),
+    const cancelled = new Promise((_, reject) => {
+      onControllerAbort = () => reject(new Error("QR request aborted or deadline exceeded"));
+      if (controller.signal.aborted) onControllerAbort();
+      else controller.signal.addEventListener("abort", onControllerAbort, { once: true });
+      if (typeof expiresAt === "number" && expiresAt > 0) {
+        const remaining = expiresAt - Date.now();
+        if (remaining <= 0) controller.abort(QR_LOGIN_EXPIRY_REASON);
+        else timer = setTimeout(() => controller.abort(QR_LOGIN_EXPIRY_REASON), remaining);
+      }
+    });
+    if (controller.signal.aborted) return await cancelled;
+    return await Promise.race([
+      fetchWithCookies(url, { ...options, signal: controller.signal }),
+      cancelled,
     ]);
-    return result;
   } finally {
-    if (signal) signal.removeEventListener("abort", onAbort);
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    controller.signal.removeEventListener("abort", onControllerAbort);
   }
 }
+
 function generateZaloUUID() {
   const randomUUID = uuidv4();
   const md5Hash = crypto.createHash('md5').update(ZALO_USER_AGENT).digest('hex');
@@ -589,8 +583,6 @@ async function waitingScan(code, session, signal, options = {}) {
       );
       const statusData = await response.json();
       const classified = classifyQrScanResponse(statusData);
-      if (classified !== "waiting") {
-      }
       if (classified === "fatal") {
         return false;
       }
