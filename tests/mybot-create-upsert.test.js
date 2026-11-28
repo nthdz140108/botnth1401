@@ -47,16 +47,18 @@ test("create command provisions in pending state without starting process", asyn
   };
 
   try {
-    await createBot(fakeApi, message, [], ["imei_12345678_abcd_efgh", cookieJson], "mybot");
+    await createBot(fakeApi, message, [], ["imei_12345678_abcd_efgh", cookieJson], "mybot", { verifyCredential: async () => ({ uid: "verified-account", displayName: "Alice User" }) });
 
     // Check mybots.json
     const myBots = JSON.parse(await fs.readFile(path.join(root, "mybot", "mybots.json"), "utf8"));
-    assert.ok(myBots["user-123"]);
-    assert.equal(myBots["user-123"].status, "stopped");
-    assert.equal(myBots["user-123"].trialStatus, "pending");
+    const botKey = Object.keys(myBots).find(key => key !== "admin");
+    assert.match(botKey, /^bot_/);
+    assert.equal(myBots[botKey].accountUid, "verified-account");
+    assert.equal(myBots[botKey].status, "stopped");
+    assert.equal(myBots[botKey].trialStatus, "pending");
 
     // Check profile
-    const profile = getProfile("user-123", { root });
+    const profile = getProfile(botKey, { root });
     assert.equal(profile.trialStatus, "pending");
     assert.equal(profile.expiryAt, null);
     assert.equal(profile.enabled, true);
@@ -75,15 +77,15 @@ test("create command provisions in pending state without starting process", asyn
         content: `!mybot create imei_new_999 ${newCookieJson}`,
       },
     };
-    await createBot(fakeApi, updateMsg, [], ["imei_new_999", newCookieJson], "mybot");
+    await createBot(fakeApi, updateMsg, [], ["imei_new_999", newCookieJson], "mybot", { verifyCredential: async () => ({ uid: "verified-account", displayName: "Alice User" }) });
 
     const myBotsAfter = JSON.parse(await fs.readFile(path.join(root, "mybot", "mybots.json"), "utf8"));
-    assert.equal(myBotsAfter["user-123"].displayName, "Alice User");
-    assert.equal(myBotsAfter["user-123"].status, "stopped");
+    assert.equal(myBotsAfter[botKey].displayName, "Alice User");
+    assert.equal(myBotsAfter[botKey].status, "stopped");
 
     // Verify credential was updated
-    const credAfter = JSON.parse(await fs.readFile(path.join(root, "mybot", "credentials", "user-123.json"), "utf8"));
-    assert.equal(credAfter.cookie?.token, "updated_token_999");
+    const credAfter = JSON.parse(await fs.readFile(path.join(root, "mybot", "credentials", `${botKey}.json`), "utf8"));
+    assert.equal(credAfter.cookie?.cookies.find(cookie => cookie.name === "token")?.value, "updated_token_999");
   } finally {
     process.chdir(previousCwd);
   }
@@ -107,9 +109,11 @@ test("create command update failure preserves existing active credential data wi
   };
 
   try {
-    await createBot(fakeApi, msg1, [], ["imei_111", initialCookie], "mybot");
+    await createBot(fakeApi, msg1, [], ["imei_111", initialCookie], "mybot", { verifyCredential: async () => ({ uid: "verified-account", displayName: "Alice User" }) });
 
-    const credPath = path.join(root, "mybot", "credentials", "preserve-user.json");
+    const bots = JSON.parse(await fs.readFile(path.join(root, "mybot", "mybots.json"), "utf8"));
+    const botKey = Object.keys(bots).find(key => key !== "admin");
+    const credPath = path.join(root, "mybot", "credentials", `${botKey}.json`);
     assert.ok(await fs.access(credPath).then(() => true).catch(() => false));
 
     // Simulate an invalid update attempt that errors during processing
@@ -120,11 +124,11 @@ test("create command update failure preserves existing active credential data wi
       data: { uidFrom: "preserve-user", dName: "Owner Preserve", content: `!mybot create imei_222 ${invalidCookie}` },
     };
 
-    await createBot(fakeApi, msg2, [], ["imei_222", invalidCookie], "mybot");
+    await createBot(fakeApi, msg2, [], ["imei_222", invalidCookie], "mybot", { verifyCredential: async () => ({ uid: "verified-account", displayName: "Alice User" }) });
 
     // Verify original credentials still exist and are valid
     const credContent = JSON.parse(await fs.readFile(credPath, "utf8"));
-    assert.equal(credContent.cookie?.token, "original_secure_token");
+    assert.equal(credContent.cookie?.cookies.find(cookie => cookie.name === "token")?.value, "original_secure_token");
   } finally {
     process.chdir(previousCwd);
   }

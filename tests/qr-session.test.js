@@ -7,7 +7,8 @@ const setup = (overrides = {}) => {
   const manager = new QrSessionManager({
     initSession: async () => ({ secret: "hidden" }), verifyClient: async (s) => s,
     generateQr: async () => ["code", { secret: "hidden" }], readQr: async () => "data:image/png;base64,qr",
-    waitScan: async () => true, waitConfirm: async () => [{ imei: "imei", cookie: { zpw_sek: "x" } }, { cookies: [] }],
+    waitScan: async () => true, waitConfirm: async () => [{ imei: "imei", cookie: { zpw_sek: "x" } }, { cookies: [{ name: "zpw_sek", value: "secret" }] }],
+    verifyAccount: async () => ({ uid: "verified-account" }),
     writeCredential: async (id, value) => calls.push([id, value]), timeoutMs: 1000, ...overrides,
   });
   return { manager, calls };
@@ -25,7 +26,7 @@ test("QR manager exposes only public state and writes credential after confirm",
   for (let i = 0; i < 10 && manager.get("bot-1")?.state !== "configured"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(manager.get("bot-1").state, "configured");
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][1].rawCookies.cookies.length, 0);
+  assert.equal(calls[0][1].cookie.cookies.length, 1);
 });
 
 test("QR manager rejects concurrent sessions and supports cancellation", async () => {
@@ -106,7 +107,8 @@ test("QR manager passes bot and session context into every dependency", async ()
       return session.qrImage;
     },
     waitScan: async () => true,
-    waitConfirm: async () => [{ imei: "imei", cookie: { zpw_sek: "x" } }, { cookies: [] }],
+    waitConfirm: async () => [{ imei: "imei", cookie: { zpw_sek: "x" } }, { cookies: [{ name: "zpw_sek", value: "secret" }] }],
+    verifyAccount: async () => ({ uid: "verified-account" }),
     writeCredential: async (id, value, session) => {
       calls.push(["writeCredential", id, value, session]);
     },

@@ -1,6 +1,8 @@
 import path from "node:path";
 import { QrSessionManager } from "./qr-session.js";
 import { ConfigStore } from "./config-store.js";
+import { verifyLoginCredential } from "../commands/mybot/System/login-verification.js";
+import { persistVerifiedBot } from "../commands/mybot/System/verified-provisioning.js";
 
 export function createQrSessionManager({
   root = process.cwd(),
@@ -12,6 +14,7 @@ export function createQrSessionManager({
     ? process.env.QR_LOGIN_MAX_CONCURRENT
     : Infinity,
   persistQrFile = false,
+  verifyAccount = verifyLoginCredential,
 } = {}) {
   if (!registry) throw new Error("registry is required");
   let modulePromise;
@@ -27,7 +30,8 @@ export function createQrSessionManager({
     waitScan: async (code, session, signal, options) => (await loadModule()).waitingScan(code, session, signal, options),
     waitConfirm: async (code, session, options) => (await loadModule()).waitingConfirm(code, session, options),
     readQr: async (session) => session?.qrImage || null,
-    writeCredential: async (botId, credential, session) => {
+    verifyAccount: (credential, options) => verifyAccount(credential, { ...options, root }),
+    writeCredential: async (botId, credential, session, verification) => {
       const bot = await registry.describe(botId);
       if (!bot) {
         const error = new Error("Bot not found");
@@ -42,7 +46,7 @@ export function createQrSessionManager({
         error.code = "CREDENTIAL_FILE_NOT_FOUND";
         throw error;
       }
-      const result = await configStore.writeJson(file, credential);
+      const result = await persistVerifiedBot({ root, credential, identity: verification.identity, targetBotKey: botId, allowAdmin: true, allowMainUpdate: true, signal: verification.signal });
       if (auditStore) {
         await auditStore.append({
           action: "qr-login.complete",

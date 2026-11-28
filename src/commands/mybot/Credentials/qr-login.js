@@ -121,7 +121,6 @@ async function initSession(options = {}) {
       console.error(`GET /account failed: ${getResponse.status} ${getResponse.statusText}`);
       return null;
     }
-    console.log(`Cookies after GET /account: ${getResponse.headers.get('set-cookie') || 'none'}`);
 
     const loginUrls = [
       `${ZALO_ID_URL}/account/logininfo`,
@@ -143,11 +142,10 @@ async function initSession(options = {}) {
     if (!postResponse || !postResponse.ok) {
       return null;
     }
-    console.log(`Cookies after POST /logininfo: ${postResponse.headers.get('set-cookie') || 'none'}`);
 
     return { headers, cookieJar, fetchWithCookies, sessionId: options.sessionId, qrFilePath: options.qrFilePath };
   } catch (e) {
-    console.error(`Error in initSession: ${e}`);
+    console.error("QR_INIT_FAILED");
     return null;
   }
 }
@@ -186,10 +184,9 @@ async function verifyClient(session) {
       console.error(`POST /verify-client failed: ${response.status} ${response.statusText}`);
       return null;
     }
-    console.log(`Cookies after POST /verify-client: ${response.headers.get('set-cookie') || 'none'}`);
     return session;
   } catch (e) {
-    console.error(`Error in verifyClient: ${e}`);
+    console.error("QR_VERIFY_CLIENT_FAILED");
     return null;
   }
 }
@@ -233,7 +230,6 @@ async function generateQRCode(session, options = {}) {
       if (!response.ok) {
         console.error(`POST /qr/generate failed: ${response.status} ${response.statusText}`);
         const responseText = await response.text();
-        console.error(`Response body: ${responseText}`);
         if (isFatalAuthError(responseText)) {
           return [false, null, { fatal: true, reason: "cookie-expired-or-invalid" }];
         }
@@ -255,9 +251,7 @@ async function generateQRCode(session, options = {}) {
         continue;
       }
       const data = await response.json();
-      console.log(`QR generate response: ${JSON.stringify(data)}`);
       if (!data || !data.data || !data.data.image) {
-        console.error(`Invalid QR code response: ${JSON.stringify(data)}`);
         const responseText = JSON.stringify(data || {});
         if (isFatalAuthError(responseText)) {
           return [false, null, { fatal: true, reason: "cookie-expired-or-invalid" }];
@@ -297,10 +291,9 @@ async function generateQRCode(session, options = {}) {
           }
         }
       }
-      console.log(`QR Code: ${code}`);
       return [code, currentSession, { qrImage: qrCode, persisted: persistQrFile }];
     } catch (e) {
-      console.error(`Error in generateQRCode: ${e}`);
+      console.error("QR_GENERATE_FAILED");
       retries++;
       await new Promise(resolve => setTimeout(resolve, 2000));
       console.log('Error occurred, refreshing session...');
@@ -440,7 +433,6 @@ async function waitingConfirm(code, session, options = {}) {
         { signal, expiresAt }
       );
       const statusData = await response.json();
-      console.log(`Confirm response: ${JSON.stringify(statusData)}`);
       if (isFatalAuthError(JSON.stringify(statusData || {}))) {
         return [null, null, { fatal: true, reason: "cookie-expired-or-invalid" }];
       }
@@ -458,7 +450,6 @@ async function waitingConfirm(code, session, options = {}) {
           const cookies = await cookieJar.getCookies(domain);
           allCookies = allCookies.concat(cookies);
         }
-        console.log(`Cookies in waitingConfirm: ${JSON.stringify(allCookies, null, 2)}`);
         const zpwSekCookie = allCookies.find(cookie => cookie.key === 'zpw_sek')?.value || '';
         const userInfo = await getUserInfo(session);
         const name = userInfo?.data?.info?.name || '';
@@ -501,7 +492,7 @@ async function waitingConfirm(code, session, options = {}) {
       await waitForQrRetry(signal, retryDelayMs);
       attempts++;
     } catch (e) {
-      console.error(`Error in waitingConfirm: ${e}`);
+      console.error("QR_CONFIRM_FAILED");
       if (expired()) return expire();
       await waitForQrRetry(signal, retryDelayMs);
       attempts++;
@@ -599,7 +590,6 @@ async function waitingScan(code, session, signal, options = {}) {
       const statusData = await response.json();
       const classified = classifyQrScanResponse(statusData);
       if (classified !== "waiting") {
-        console.log(`Scan response: ${JSON.stringify(statusData)}`);
       }
       if (classified === "fatal") {
         return false;
@@ -616,7 +606,7 @@ async function waitingScan(code, session, signal, options = {}) {
       await waitForQrRetry(actualSignal, retryDelayMs);
       attempts++;
     } catch (e) {
-      console.error(`Error in waitingScan: ${e}`);
+      console.error("QR_SCAN_FAILED");
       if (expired()) return expire();
       await waitForQrRetry(actualSignal, retryDelayMs);
       attempts++;
@@ -676,10 +666,8 @@ async function authenticateZalo(options = {}) {
   const [resultData, rawCookies, confirmMeta] = await waitingConfirm(code, session, { signal, prefix, onStatus });
   if (resultData) {
     console.log("Authentication successful!");
-    console.log("IMEI:", resultData.imei);
     const userInfo = await getUserInfo(session);
     if (userInfo) {
-      console.log(`User info: ${JSON.stringify(userInfo)}`);
     }
     return {
       success: true,

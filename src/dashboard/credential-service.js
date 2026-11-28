@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ConfigStore } from "./config-store.js";
+import { normalizeLoginCredential } from "../commands/mybot/System/credential-normalizer.js";
+import { verifyLoginCredential } from "../commands/mybot/System/login-verification.js";
+import { persistVerifiedBot } from "../commands/mybot/System/verified-provisioning.js";
 
 const SENSITIVE_KEYS = /cookie|token|password|secret|imei|useragent|credential/i;
 const PLACEHOLDER_VALUES = new Set(["[REDACTED]", "[masked]"]);
@@ -23,9 +26,10 @@ function botNotFoundError() {
 }
 
 export class CredentialService {
-  constructor({ root = process.cwd(), registry, configStore } = {}) {
+  constructor({ root = process.cwd(), registry, configStore, verifyCredential = verifyLoginCredential } = {}) {
     this.root = path.resolve(root);
     this.registry = registry;
+    this.verifyCredential = verifyCredential;
     this.configStore = configStore || new ConfigStore({ backupDir: path.join(this.root, "logs", "dashboard-backups") });
   }
 
@@ -34,15 +38,15 @@ export class CredentialService {
     const bot = await this.registry.describe(botId);
     if (!bot) throw botNotFoundError();
     const loaded = await this.#readCredentialFile(bot);
-    if (!loaded.configured) return loaded;
-    return { configured: true, state: "configured", value: loaded.value };
+    return { configured: loaded.configured, state: loaded.state, ...(loaded.value ? { value: loaded.value } : {}) };
   }
 
   async reveal(botId) {
     assertSafeBotId(botId);
     const bot = await this.registry.describe(botId);
     if (!bot) throw botNotFoundError();
-    return this.#readCredentialFile(bot);
+    const loaded = await this.#readCredentialFile(bot);
+    return loaded;
   }
 
   async update(botId, patch) {
@@ -50,10 +54,11 @@ export class CredentialService {
     const bot = await this.registry.describe(botId);
     if (!bot) throw botNotFoundError();
     const current = await this.#readCredentialFile(bot);
-    const next = this.#merge(current, patch);
+    const next = normalizeLoginCredential(this.#merge(current, patch));
+    const identity = await this.verifyCredential(next, { root: this.root });
     const file = this.#resolveSafeFile(bot);
     if (!file) throw new Error("Credential file not found");
-    const result = await this.configStore.writeJson(file, next);
+    const result = await persistVerifiedBot({ root: this.root, credential: next, identity, targetBotKey: botId, allowAdmin: true, allowMainUpdate: true });
     return { ...result, value: redact(next) };
   }
 
@@ -76,7 +81,9 @@ export class CredentialService {
     if (!file) return { configured: false, state: "missing" };
     try {
       const raw = JSON.parse(await fs.readFile(file, "utf8"));
-      return { configured: true, state: "configured", value: redact(raw), raw };
+      normalizeLoginCredential(raw);
+      const verified = raw.accountIdentityStatus === "verified" && Boolean(raw.accountUid);
+      return { configured: verified, state: verified ? "configured" : "needs_verification", value: redact(raw), raw };
     } catch (error) {
       if (error.code === "ENOENT") return { configured: false, state: "missing" };
       return { configured: false, state: "invalid" };

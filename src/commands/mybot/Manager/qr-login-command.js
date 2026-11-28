@@ -1,6 +1,8 @@
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+import { verifyLoginCredential } from "../System/login-verification.js";
+import { normalizeLoginCredential } from "../System/credential-normalizer.js";
+import { persistVerifiedBot } from "../System/verified-provisioning.js";
 import { readCommandConfig } from "../../../utils/io-json.js";
 
 function getGlobalPrefix() {
@@ -16,13 +18,7 @@ import {
   getInitialAdminList,
 } from "../../../utils/bot-runtime-context.js";
 import { getProjectRoot } from "../../../utils/env.js";
-import {
-  startBotWithLauncher, checkPM2Status,
-  checkExistingBot, createBotConfig,
-  getAvailablePort, createAllRequiredFiles,
-  ensureDirectoriesExist,
-  checkSpawnedProcessStatus, waitForIdentityHandshake, writeCredentialOnly, credentialsLookLikeAdmin
-} from "../System/pm2-manager.js";
+import { createBotConfig, credentialsLookLikeAdmin } from "../System/pm2-manager.js";
 import { sendMessageComplete, sendMessageWarning } from "../../../service-debug/chat-zalo/chat-style/chat-style.js";
 import { initSession, verifyClient, generateQRCode, waitingScan, waitingConfirm } from "../Credentials/qr-login.js";
 import { writeJsonAtomic } from "../System/json-state.js";
@@ -37,14 +33,10 @@ import {
 import {
   startQrLoginPrefixCountdown,
 } from "../../../utils/qr-login-prefix-countdown.js";
-import { dedupeMyBotsRegistry, loadMyBotsRegistry, saveMyBotsRegistry } from "../System/mybots-registry.js";
 import { waitForAdminReady } from "./qr-login-admin-readiness.js";
-import {
-  QR_LOGIN_EXPIRY_REASON,
-} from "../../../utils/qr-login-expiry.js";
 import { startQrLoginCountdown } from "../../../utils/qr-login-countdown.js";
-import { getZaloCookiePayload, getZaloRuntimeConfig } from "../../../api-zalo/zalo-config.js";
-import { createDefaultProfile, saveProfile, updateProfile } from "../System/mybot-profile-service.js";
+import { getZaloRuntimeConfig } from "../../../api-zalo/zalo-config.js";
+import { createDefaultProfile, saveProfile, getProfilePath } from "../System/mybot-profile-service.js";
 import { resolveAdminIdentity, normalizeUsername, extractUsernameFromUserInfo } from "../System/mybot-identity.js";
 import { validateAdminIdentitySeeds } from "../System/child-admin-resolver.js";
 import { commitCreationQuota } from "../System/mybot-creation-quota.js";
@@ -58,21 +50,12 @@ import {
   sweepExpiredQrSessions,
   QR_SESSION_STATES,
 } from "./qr-login-session-coordinator.js";
-import {
-  withMyBotsTransaction,
-  acquireActualUidLock,
-} from "./qr-provisioning-registry.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, "../../../..");
+const projectRoot = getProjectRoot();
 const myBotDir = path.join(projectRoot, "mybot");
-const myBotsPath = path.join(myBotDir, "mybots.json");
 const defaultCommand = path.join(myBotDir, "defaultCommand.json");
 const botsDir = path.join(myBotDir, "bots");
-const adminListPath = path.join(projectRoot, "assets", "json-data", "list_admin.json");
 const adminStatePath = path.join(myBotDir, "state", "admin.json");
-const launcherPath = path.join(projectRoot, "index.js");
 const ZALO_RUNTIME = getZaloRuntimeConfig();
 
 function readJsonSafe(filePath, fallback = {}) {
@@ -119,59 +102,15 @@ async function validateImageFile(filePath) {
   }
 }
 
-async function runQrBootstrap(sessionId, credentialsData) {
-  const bootstrapId = `qr-bootstrap-${sessionId}`;
-  const bootstrapConfig = createBotConfig(bootstrapId, 0);
-  const credentialPath = path.join(projectRoot, "mybot", "credentials", `${bootstrapId}.json`);
-  const configPath = path.join(projectRoot, "mybot", "bots", `${bootstrapId}.json`);
-  await ensureDirectoriesExist();
-  writeJsonAtomic(credentialPath, credentialsData);
-  writeJsonAtomic(configPath, {
-    ...bootstrapConfig,
-    name: bootstrapId,
-    configFilePath: path.relative(projectRoot, credentialPath).replace(/\\/g, "/"),
-  });
-  try {
-    const started = await startBotWithLauncher(bootstrapId, {
-      botName: bootstrapId,
-      configPath,
-      skipHealthCheck: true,
-      env: {
-        QR_BOOTSTRAP_SESSION: sessionId,
-        QR_BOOTSTRAP_ONLY: "true",
-      },
-    });
-    if (!started || (started.success === false)) {
-      throw new Error("Không khởi động được QR bootstrap process.");
-    }
-    return await waitForIdentityHandshake(sessionId, 30000);
-  } finally {
-    try {
-      if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
-    } catch {}
-    try {
-      if (fs.existsSync(credentialPath)) fs.unlinkSync(credentialPath);
-    } catch {}
-  }
+export async function runQrBootstrap(sessionId, credentialsData, options = {}) {
+  return verifyLoginCredential(credentialsData, { root: getProjectRoot(), ...options });
 }
 
-async function waitForReloadReady(uid, requestId, timeoutMs = 30000) {
-  const reloadPath = path.join(projectRoot, "mybot", "state", "reload", `${uid}.json`);
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const state = readJsonSafe(reloadPath, {});
-    if (state.requestId === requestId && ["ready", "failed"].includes(state.status)) {
-      return state;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  return { uid, requestId, status: "failed", error: "reload timeout" };
-}
 
-export async function handleQrLogin(api, message, threadId, type, isAdminLevelHighest) {
+export async function handleQrLogin(api, message, threadId, type, isAdminLevelHighest, options = {}) {
   const { data: { dName, uidFrom } } = message;
   const qrSessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  let qrPath = path.join(process.cwd(), ".cache", `qr_code-${qrSessionId}.png`);
+  let qrPath = path.join(projectRoot, ".cache", `qr_code-${qrSessionId}.png`);
   let qrLifecycle = null;
   let expiredWarningSent = false;
   const sendExpiryWarningOnce = async () => {
@@ -213,7 +152,7 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
       return;
     }
 
-    const [code, updatedSession, qrMeta] = await generateQRCode(zaloSession, {
+    const [code, updatedSession] = await generateQRCode(zaloSession, {
       sessionId: qrSessionId,
       qrFilePath: qrPath,
     });
@@ -265,7 +204,7 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
     });
 
     // ---- 4. Wait for scan ----
-    console.log(`[DEBUG] Waiting for scan for session: ${code}`);
+
     const scanResult = await waitingScan(code, zaloSession, qrLifecycle.signal, {
       expiresAt,
       onExpired: sendExpiryWarningOnce,
@@ -280,7 +219,7 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
 
     // ---- 5. Wait for confirmation ----
     markWaitingConfirm(qrSessionId);
-    console.log(`[DEBUG] Waiting for confirmation for session: ${code}`);
+
     const [confirmData, rawCookies, confirmMeta] = await waitingConfirm(code, zaloSession, {
       signal: qrLifecycle.signal,
       expiresAt,
@@ -302,11 +241,7 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
       qrLifecycle = null;
     }
 
-    const baseCredentialsData = {
-      cookie: getZaloCookiePayload(rawCookies, ZALO_RUNTIME),
-      imei: confirmData.imei || "unknown",
-      userAgent: ZALO_RUNTIME.userAgent,
-    };
+    const baseCredentialsData = normalizeLoginCredential({ rawCookies, imei: confirmData.imei, userAgent: ZALO_RUNTIME.userAgent });
 
     // Release the requester slot immediately — credentials are acquired.
     // Bootstrap/provisioning continues independently and no longer blocks
@@ -325,54 +260,10 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
       return;
     }
 
-    const actualUid = handshake.uid;
     const scannedName = sanitizeInput(handshake.displayName || handshake.name || dName);
     const selfUsername = normalizeUsername(handshake.canonicalUsername || handshake.zaloUsername || handshake.username || "");
-    const resultData = {
-      imei: handshake.imei || baseCredentialsData.imei,
-      name: scannedName,
-      avatar: handshake.avatar || "",
-      username: selfUsername || "",
-      canonicalUsername: selfUsername || "",
-    };
 
-    // ---- 8. Admin bot check ----
-    const adminConfigPath = path.join(projectRoot, "assets", "config.json");
-    if (fs.existsSync(adminConfigPath)) {
-      try {
-        const adminConfig = JSON.parse(fs.readFileSync(adminConfigPath, "utf8").replace(/^\uFEFF/, ""));
-        const adminUid = adminConfig.uid || adminConfig.userId || adminConfig.id;
-        if (adminUid && String(actualUid).trim() === String(adminUid).trim()) {
-          console.error(`[BLOCKED] QR login account ${actualUid} matches main admin bot account ${adminUid}`);
-          await sendMessageWarning(
-            api,
-            message,
-            `Không thể tạo bot! Tài khoản Zalo này (${scannedName}) chính là tài khoản của Main Bot. Vui lòng dùng tài khoản Zalo khác!`,
-            true,
-            false
-          );
-          return;
-        }
-      } catch (adminCheckErr) {
-        console.error(`[WARN] Failed to check admin config: ${adminCheckErr.message}`);
-      }
-    }
 
-    // ---- 9. Owner/re-ownership check (serialized by actualUid) ----
-    if (!isAdminLevelHighest && actualUid !== uidFrom) {
-      const allBots = loadMyBotsRegistry();
-      const botRecord = allBots[actualUid];
-      if (botRecord && botRecord.ownerUid && botRecord.ownerUid !== uidFrom) {
-        await sendMessageWarning(
-          api,
-          message,
-          `Tài khoản Zalo này (${scannedName}) đã được sử dụng bởi bot "${botRecord.name || actualUid}". Mỗi tài khoản chỉ được tạo 1 bot!`,
-          true,
-          false
-        );
-        return;
-      }
-    }
 
     // Resolve owner and main bot admin usernames
     let ownerUsername = null;
@@ -396,196 +287,24 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
 
     const seedValidation = validateAdminIdentitySeeds(adminIdentitySeeds);
 
-    // ---- 10. Safe provisioning: file-locked registry transaction ----
-    const existingCheck = await checkExistingBot(actualUid);
-    if (existingCheck.exists) {
-      const currentBots = loadMyBotsRegistry();
-      const existingBot = currentBots[actualUid];
-      const pm2Status = await checkPM2Status(actualUid);
-      const spawnedStatus = await checkSpawnedProcessStatus(actualUid);
-      const isRunning = Boolean(pm2Status.running || spawnedStatus.running || (existingBot && existingBot.status === "running"));
-
-      if (isRunning) {
-        // Existing bot is running: only write new credentials to disk
-        const credentialPath = path.join(projectRoot, "mybot", "credentials", `${actualUid}.json`);
-        await writeCredentialOnly(actualUid, baseCredentialsData);
-
-        const registry = loadMyBotsRegistry();
-        const existingRecord = registry[actualUid] || existingBot || {};
-        const verifiedOwner = existingRecord.ownerUid || existingRecord.createdByUid;
-        const ownerUid = verifiedOwner || uidFrom;
-        const createdByUid = existingRecord.createdByUid || verifiedOwner || uidFrom;
-
-        registry[actualUid] = {
-          ...existingRecord,
-          displayName: scannedName,
-          avatar: resultData.avatar || "",
-          ownerUid,
-          createdByUid,
-          status: "running",
-          lastUpdated: new Date().toISOString(),
-          cookieUpdatedAt: new Date().toISOString(),
-          ...(selfUsername ? { zaloUsername: selfUsername, canonicalUsername: selfUsername } : {}),
-        };
-        saveMyBotsRegistry(registry);
-
-        await sendMessageComplete(
-          api,
-          message,
-          `✅ Bot của ${scannedName} đã cập nhật cookie thành công!\n\n📌 Cookie mới sẽ có hiệu lực ở lần khởi động lại tiếp theo.`,
-          true,
-          false
-        );
-        return;
-      }
-
-      // Existing bot is stopped: update credentials and files, keep stopped
-      const botConfig = createBotConfig(actualUid, existingBot?.webPort || getAvailablePort());
-      const credentialsData = {
-        cookie: getZaloCookiePayload(rawCookies, ZALO_RUNTIME),
-        imei: resultData.imei,
-        name: resultData.name || scannedName,
-        avatar: resultData.avatar || "",
-        userAgent: ZALO_RUNTIME.userAgent,
-        uid: uidFrom,
-      };
-      await createAllRequiredFilesWithCredentials(actualUid, credentialsData, botConfig);
-
-      const identityPending = false;
-      const identityPendingReason = null;
-
-      const existingRecord = existingBot || {};
-      const verifiedOwner = existingRecord.ownerUid || existingRecord.createdByUid;
-      const ownerUid = verifiedOwner || uidFrom;
-      const createdByUid = existingRecord.createdByUid || verifiedOwner || uidFrom;
-
-      updateProfile(actualUid, {
-        ownerUid,
-        createdByUid,
-        ownerName: existingRecord.ownerName || dName,
-        ownerUsername: ownerUsername || existingRecord?.ownerUsername || null,
-        nameServer: scannedName,
-        adminIdentitySeeds: seedValidation.valid ? seedValidation.normalized : (adminIdentitySeeds || null),
-        identityPending,
-        identityPendingReason,
-      }, { root: projectRoot, actor: uidFrom });
-
-      const registry = loadMyBotsRegistry();
-      registry[actualUid] = {
-        ...(registry[actualUid] || existingRecord),
-        displayName: scannedName,
-        avatar: resultData.avatar || "",
-        ownerUid,
-        createdByUid,
-        ownerName: existingRecord.ownerName || dName,
-        ownerUsername: ownerUsername || existingRecord?.ownerUsername || null,
-        status: "stopped",
-        lastUpdated: new Date().toISOString(),
-        cookieUpdatedAt: new Date().toISOString(),
-        ...(selfUsername ? { zaloUsername: selfUsername, canonicalUsername: selfUsername } : {}),
-        adminIdentitySeeds: seedValidation.valid ? seedValidation.normalized : (adminIdentitySeeds || null),
-        identityPending,
-        identityPendingReason,
-      };
-      saveMyBotsRegistry(registry);
-
-      await sendMessageComplete(
-        api,
-        message,
-        `✅ Bot của ${scannedName} đã được cập nhật thông tin thành công!\n\n📊 Trạng thái: Tạm dừng (stopped)\n👉 Dùng lệnh: !mybot active để kích hoạt dùng thử 1 giờ.`,
-        true,
-        false
-      );
-      await promptForPrefix(api, message, actualUid, uidFrom, threadId);
-      return;
-    }
-
-    // Brand new bot: use file-locked provisioning transaction
-    if (seedValidation.missing.length > 0 || seedValidation.errors.length > 0) {
-      const seedReasons = seedValidation.missing.length > 0
-        ? `thiếu ${seedValidation.missing.join(", ")}`
-        : (seedValidation.errors || []).join("; ");
-      console.warn(`[QR] Bot ${actualUid} tạo thành công nhưng identity seeds chưa đầy đủ (${seedReasons}). Bot UID + owner UID sẽ tự động được ghi làm Admin Tối Cao.`);
-    }
-
-    await ensureDirectoriesExist();
-
-    // Use the safe provisioning registry with file locking
-    await acquireActualUidLock({ root: projectRoot, actualUid }, async () => {
-      await withMyBotsTransaction({ root: projectRoot, registryPath: myBotsPath }, async (txn) => {
-        const webPort = parseInt(txn.reserveProvisionedBot({
-          uid: actualUid,
-          displayName: scannedName,
-          ownerUid: uidFrom,
-          createdByUid: uidFrom,
-          ownerName: dName,
-          ownerUsername,
-          zaloUsername: selfUsername,
-          canonicalUsername: selfUsername,
-        }).webPort, 10);
-
-        const botConfig = createBotConfig(actualUid, webPort);
-
-        const credentialsData = {
-          cookie: getZaloCookiePayload(rawCookies, ZALO_RUNTIME),
-          imei: resultData.imei,
-          name: resultData.name || scannedName,
-          avatar: resultData.avatar || "",
-          userAgent: ZALO_RUNTIME.userAgent,
-          uid: uidFrom,
-        };
-
-        await createAllRequiredFilesWithCredentials(actualUid, credentialsData, botConfig);
-        dedupeMyBotsRegistry({ removeAliasFiles: true });
-
-        // Save Profile
-        const initialProfile = createDefaultProfile(actualUid, {
-          ownerUid: uidFrom,
-          createdByUid: uidFrom,
-          ownerName: dName,
-          ownerUsername,
-          nameServer: scannedName,
-          expiryAt: null,
-          trialStatus: "pending",
-          enabled: true,
-          adminIdentitySeeds: seedValidation.normalized,
-          identityPending: false,
-          identityPendingReason: null,
-        });
-        saveProfile(actualUid, initialProfile, { root: projectRoot, actor: uidFrom });
-
-        // Finalize registry: from "provisioning" to "stopped"
-        txn.finalizeProvisionedBot(actualUid, {
-          status: "stopped",
-          displayName: scannedName,
-          avatar: resultData.avatar || "",
-          ownerUid: uidFrom,
-          createdByUid: uidFrom,
-          ownerName: dName,
-          ownerUsername,
-          createdBy: dName,
-          zaloUsername: selfUsername,
-          canonicalUsername: selfUsername,
-          adminIdentitySeeds: seedValidation.normalized,
-          identityPending: false,
-          identityPendingReason: null,
-          trialStatus: "pending",
-        });
-
-        // Commit quota
-        commitCreationQuota(uidFrom, actualUid, { projectRoot, requestId: qrSessionId });
-      });
+    const provisioned = await persistVerifiedBot({
+      root: projectRoot, credential: baseCredentialsData, identity: handshake,
+      ownerUid: uidFrom, ownerName: dName, allowAdmin: Boolean(isAdminLevelHighest), targetBotKey: options.targetBotKey,
+      profilePatch: { adminIdentitySeeds: seedValidation.normalized, ownerUsername, accountIdentityStatus: "verified", adminBindingStatus: "pending", identityPending: false, identityPendingReason: null },
+      initialize: async (botKey, credential, record, txn) => {
+        const botConfig = createBotConfig(botKey, record.webPort);
+        await createAllRequiredFilesWithCredentials(botKey, credential, botConfig, txn);
+        const profile = createDefaultProfile(botKey, { ownerUid: uidFrom, createdByUid: uidFrom, ownerName: dName, ownerUsername, nameServer: scannedName, expiryAt: null, trialStatus: "pending", enabled: true, adminIdentitySeeds: seedValidation.normalized, identityPending: false, identityPendingReason: null, accountIdentityStatus: "verified", adminBindingStatus: "pending" });
+        if (txn.writeJson) txn.writeJson(getProfilePath(botKey, projectRoot), profile);
+        else saveProfile(botKey, profile, { root: projectRoot, actor: uidFrom });
+      },
     });
-
-    await sendMessageComplete(
-      api,
-      message,
-      `✅ Bot của ${scannedName} đã được khởi tạo thành công!\n\n👤 Người tạo: ${dName}\n🤖 Tên BOT: ${scannedName}\n📊 Trạng thái: Tạm dừng (stopped)\n⏳ Thời gian dùng thử: 1 giờ (bắt đầu sau khi kích hoạt thành công lần đầu)\n\n👉 Dùng lệnh: !mybot active để kích hoạt dùng thử 1 giờ.`,
-      true,
-      false
-    );
-    console.log(`Bot con "${actualUid}" đã được khởi tạo thành công bởi ${dName} (status: stopped, trial: pending)`);
-    await promptForPrefix(api, message, actualUid, uidFrom, threadId);
+    if (provisioned.created) commitCreationQuota(uidFrom, provisioned.botKey, { projectRoot, requestId: qrSessionId });
+    await sendMessageComplete(api, message,
+      provisioned.created
+        ? `✅ Đã xác minh và tạo bot ${scannedName}.\nMã bot: ${provisioned.botKey}\nTrạng thái: Tạm dừng; quyền admin trong phiên bot con đang chờ xác minh.\nThời gian dùng thử: 1 giờ (bắt đầu sau khi kích hoạt thành công lần đầu)\nDùng lệnh: !mybot active để kích hoạt dùng thử 1 giờ.`
+        : `✅ Đã xác minh và lưu thông tin đăng nhập cho bot ${provisioned.botKey}.\nThông tin mới có hiệu lực ở lần khởi động lại tiếp theo; cấu hình và hạn dùng được giữ nguyên.`, true, false);
+    if (provisioned.created) await promptForPrefix(api, message, provisioned.botKey, uidFrom, threadId);
     return;
 
   } catch (error) {
@@ -608,6 +327,7 @@ export async function handleQrLogin(api, message, threadId, type, isAdminLevelHi
     try {
       if (qrPath && fs.existsSync(qrPath)) fs.unlinkSync(qrPath);
     } catch {}
+    failQrSession(qrSessionId, "session_closed");
     // Sweep for any stale sessions
     try { sweepExpiredQrSessions(); } catch {}
   }
@@ -706,12 +426,20 @@ export async function applyPrefixToBot(botUid, newPrefix) {
 
 export const persistBotPrefix = applyPrefixToBot;
 
-export async function createAllRequiredFilesWithCredentials(uidFrom, credentialsData, botConfig) {
+export async function createAllRequiredFilesWithCredentials(uidFrom, credentialsData, botConfig, transaction = null, customRoot = null) {
+  const write = (file, data) => transaction?.writeJson ? transaction.writeJson(file, data) : writeJsonAtomic(file, data);
   if (uidFrom !== "admin" && credentialsLookLikeAdmin(credentialsData)) {
     throw new Error(`Credential mới của bot ${uidFrom} trùng session admin; dừng tạo bot con để tránh đá session bot chính.`);
   }
-  const root = getProjectRoot();
+  const root = customRoot || getProjectRoot();
   const runtimeContext = createBotRuntimeContext({ uid: uidFrom, ...botConfig });
+  if (customRoot) {
+    const originalRoot = runtimeContext.projectRoot;
+    for (const [key, value] of Object.entries(runtimeContext)) {
+      if (typeof value === "string" && path.isAbsolute(value) && !path.relative(originalRoot, value).startsWith("..")) runtimeContext[key] = path.join(root, path.relative(originalRoot, value));
+    }
+    runtimeContext.projectRoot = root;
+  }
   const myBotDirPath = path.join(root, "mybot");
   const legacyAdminFilePath = path.join(root, botConfig.adminFilePath);
   const runtimeAdminFilePath = runtimeContext.adminListPath;
@@ -735,7 +463,7 @@ export async function createAllRequiredFilesWithCredentials(uidFrom, credentials
       } catch {}
     }
     if (finalAdmins.length === 0) {
-      finalAdmins = [String(uidFrom).trim()].filter((s) => s && s.toLowerCase() !== "admin");
+      finalAdmins = [String(credentialsData.accountUid || uidFrom).trim()].filter((s) => s && s.toLowerCase() !== "admin");
     }
   } else {
     const initialAdmins = getInitialAdminList(uidFrom, root);
@@ -835,7 +563,9 @@ export async function createAllRequiredFilesWithCredentials(uidFrom, credentials
 
   for (const [filePath, data] of Object.entries(fileMap)) {
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
+      if (filePath === path.join(root, botConfig.configFilePath) || !fs.existsSync(filePath)) {
+        write(filePath, data);
+      }
     } catch (error) {
       throw new Error(`Không thể tạo file ${filePath}: ${error.message}`);
     }
@@ -845,16 +575,31 @@ export async function createAllRequiredFilesWithCredentials(uidFrom, credentials
   const legacyCommandFilePath = path.join(root, botConfig.commandFilePath);
   try {
     fs.mkdirSync(path.dirname(legacyCommandFilePath), { recursive: true });
-    fs.writeFileSync(legacyCommandFilePath, commandStateStub);
-    fs.writeFileSync(runtimeContext.commandConfigPath, commandStateStub);
+    if (!fs.existsSync(legacyCommandFilePath)) write(legacyCommandFilePath, JSON.parse(commandStateStub));
+    if (!fs.existsSync(runtimeContext.commandConfigPath)) write(runtimeContext.commandConfigPath, JSON.parse(commandStateStub));
   } catch (error) {
     throw new Error(`Không thể tạo file command state cho bot: ${error.message}`);
   }
 
   const botConfigPath = path.join(myBotDirPath, "bots", `${uidFrom}.json`);
   try {
-    fs.writeFileSync(botConfigPath, JSON.stringify(botConfig, null, 4));
+    if (!fs.existsSync(botConfigPath)) write(botConfigPath, botConfig);
   } catch (error) {
     throw new Error(`Không thể tạo file config bot: ${error.message}`);
+  }
+}
+
+export async function initializeVerifiedBotFiles({ root, botKey, credential, record, txn, prefix = "!" }) {
+  const botConfig = createBotConfig(botKey, record.webPort);
+  await createAllRequiredFilesWithCredentials(botKey, credential, botConfig, txn, root);
+  const profile = createDefaultProfile(botKey, { ...record, nameServer: record.displayName, enabled: true, trialStatus: "pending", expiryAt: null, identityPending: false, accountIdentityStatus: "verified", adminBindingStatus: "pending" });
+  if (txn?.writeJson) txn.writeJson(getProfilePath(botKey, root), profile);
+  else saveProfile(botKey, profile, { root });
+  if (prefix !== "!") {
+    for (const file of [path.join(root, botConfig.commandFilePath), path.join(root, "mybot", "instances", botKey, "data", "command.json")]) {
+      const config = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (txn?.writeJson) txn.writeJson(file, { ...config, prefix });
+      else writeJsonAtomic(file, { ...config, prefix });
+    }
   }
 }
