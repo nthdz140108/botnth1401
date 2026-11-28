@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import os from "os";
 import path from "path";
+import { probeBotReadiness } from '../src/runtime/runtime-readiness.js';
 
 import {
   assertAdminReady,
@@ -20,6 +21,41 @@ function writeJson(filePath, data) {
   writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
+function liveReadiness(identityPatch = {}) {
+  return {
+    getProcess: async () => ({ name: 'admin', status: 'online', pid: 4242 }),
+    probe: params => probeBotReadiness({ ...params,
+      portProbe: async () => true,
+      identityFetcher: async () => ({ kind: 'main', botKey: 'admin', pid: 4242, liveZaloUid: 'main-account', listenerConnected: true, ...identityPatch }),
+    }),
+  };
+}
+
+test('QR accepts a verified live Main when registry PID is null or obsolete', async () => {
+  for (const pid of [null, '99999999']) {
+    const result = await assertAdminReady({
+      registry: { admin: { pid, uid: 'main-account', status: 'running', webPort: 2000 } },
+      state: { cookieDead: false }, roleRegistry: { adminBotId: 'admin' },
+      api: { isReady: () => true }, readiness: liveReadiness(),
+      isProcessAlive: value => Number(value) === 4242,
+    });
+    assert.equal(result.ready, true);
+    assert.equal(result.livePid, 4242);
+  }
+});
+
+test('QR rejects wrong process, account or disconnected listener despite a live cached PID', async () => {
+  for (const identity of [{ botKey: 'other' }, { pid: 9876 }, { liveZaloUid: 'other-account' }, { listenerConnected: false }]) {
+    const result = await assertAdminReady({
+      registry: { admin: { pid: String(process.pid), uid: 'main-account', status: 'running', webPort: 2000 } },
+      state: {}, roleRegistry: { adminBotId: 'admin' }, api: { isReady: () => true },
+      readiness: liveReadiness(identity), isProcessAlive: () => true,
+    });
+    assert.equal(result.ready, false);
+    assert.equal(result.reason, 'api_not_ready');
+  }
+});
+
 test("assertAdminReady rejects cookie-dead admin before QR session is created", async () => {
   const root = makeRoot();
   writeJson(path.join(root, "mybot", "mybots.json"), {
@@ -34,6 +70,7 @@ test("assertAdminReady rejects cookie-dead admin before QR session is created", 
     projectRoot: root,
     api: { isReady: () => true },
     isProcessAlive: () => true,
+    readiness: liveReadiness(),
   });
 
   assert.equal(result.ready, false);
@@ -53,6 +90,7 @@ test("assertAdminReady rejects running registry when admin PID is gone", async (
     projectRoot: root,
     api: { isReady: () => true },
     isProcessAlive: () => false,
+    readiness: liveReadiness(),
   });
 
   assert.equal(result.ready, false);
@@ -72,6 +110,7 @@ test("assertAdminReady accepts running admin with live process and ready API", a
     projectRoot: root,
     api: { isReady: () => true },
     isProcessAlive: () => true,
+    readiness: liveReadiness(),
   });
 
   assert.equal(result.ready, true);
@@ -85,6 +124,7 @@ test("assertAdminReady accepts a stale stopped registry when admin is still live
     state: { cookieDead: false },
     api: { isReady: () => true },
     isProcessAlive: () => true,
+    readiness: liveReadiness(),
   });
 
   assert.equal(result.ready, true);
@@ -102,6 +142,7 @@ test("waitForAdminReady tolerates a transient restart state", async () => {
     state: { cookieDead: false },
     loadRegistry: () => registryStates.shift() || { admin: { status: "running", pid: String(process.pid) } },
     isProcessAlive: () => true,
+    readiness: liveReadiness(),
     sleep: async () => {},
     maxWaitMs: 1000,
     pollMs: 1,

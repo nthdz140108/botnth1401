@@ -56,3 +56,9 @@ Theo lựa chọn của người dùng: triển khai trước, nghiệm thu tài
 - `tests\terminal-log.test.js:73:1` — uses ansi colors only when enabled and never when NO_COLOR or redirected (1.4468ms)
 - `tests\terminal-log.test.js:103:1` — allows managed listener pipes to color when the supervising terminal opted in (0.7666ms)
 - `tests\terminal-log.test.js:120:1` — colors event branches and labels by field tone for easier scanning (1.0076ms)
+
+## Hotfix QR readiness — 2026-11-28
+
+Trên VPS tái hiện Main PM2 online, runtime đúng PID và listenerConnected=true nhưng registry.admin.pid=null. Gate QR cũ dùng riêng PID cache nên trả process_stopped. Bản vá dùng PID hiện tại từ PM2 và shared readiness để kiểm tra botKey/tài khoản/PID/listener; vẫn chặn cookie chết, sai danh tính và API chưa sẵn sàng. Không sửa tay PID registry để vượt gate.
+
+Hai regression mới đã RED→GREEN;68 kiểm thử QR/runtime liên quan qua, ESLint và diff check qua. Review scoped xác nhận phù hợp lỗi PID trống/cũ. Nghiệm thu nhận/quét QR thật trong chat cần người dùng xác nhận; không suy ra từ unit test.

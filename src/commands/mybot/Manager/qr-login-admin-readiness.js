@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { readRoleRegistry } from "../../../dashboard/role-registry-service.js";
+import { createBotReadinessService } from '../../../runtime/runtime-readiness.js';
 
 function readJsonSafe(filePath, fallback = {}) {
   try {
@@ -13,7 +14,7 @@ function readJsonSafe(filePath, fallback = {}) {
 }
 
 function processAlive(pid) {
-  if (!pid) return false;
+  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
   try {
     process.kill(Number(pid), 0);
     return true;
@@ -43,18 +44,39 @@ export async function assertAdminReady(options = {}) {
   if (status === "recovering") {
     return { ready: false, reason: "recovering", message: "Admin dang QR recovery. Vui long thu lai sau khi admin online." };
   }
-  const processIsAlive = isAlive(admin.pid);
+  // Registry PID is diagnostic data: it can be absent or stale after a restart.
+  // Resolve the supervisor's current PID and verify the runtime identity/listener.
+  const adminKey = registry[adminBotId] ? adminBotId : 'admin';
+  const readiness = options.readiness || createBotReadinessService({ root });
+  let runtimeProcess;
+  let health;
+  try {
+    runtimeProcess = await readiness.getProcess(adminKey);
+    const processIsAlive = runtimeProcess?.status === 'online' && isAlive(runtimeProcess.pid);
+    if (processIsAlive) {
+      health = await readiness.probe({
+        descriptor: {
+          kind: adminKey === 'admin' || admin.isMain ? 'main' : 'child',
+          botKey: adminKey, pm2Name: adminKey,
+          webPort: Number(admin.webPort || (adminKey === 'admin' ? 2000 : 0)),
+          accountUid: admin.accountUid || (admin.uid && admin.uid !== adminKey ? admin.uid : undefined),
+        },
+        process: runtimeProcess, expectedPid: runtimeProcess.pid,
+      });
+    }
+  } catch {
+    return { ready: false, reason: 'api_not_ready', stage: 'qr_admin_readiness', message: 'Chưa xác minh được trạng thái Main từ PM2 và runtime. Vui lòng thử lại.' };
+  }
+  const processIsAlive = runtimeProcess?.status === 'online' && isAlive(runtimeProcess.pid);
   if (!processIsAlive) {
     return { ready: false, reason: "process_stopped", message: "Admin process da dung hoac PID khong con ton tai." };
   }
   const api = options.api;
-  const apiReady = typeof api?.isReady === "function" ? api.isReady() : api?.ready !== false && Boolean(api?.listener);
-  if (!apiReady) {
+  const apiReady = typeof api?.isReady === "function" ? await api.isReady() : api?.ready !== false && api?.listener?.ws?.readyState === 1;
+  if (!apiReady || !health?.ready || !health.identity?.liveZaloUid) {
     return { ready: false, reason: "api_not_ready", message: "API admin chua san sang de xu ly qrlogin." };
   }
-  // The registry can briefly contain a stale stopped value after a child
-  // process handoff. A live PID with a ready API is the authoritative state.
-  return { ready: true, reason: "ready", admin };
+  return { ready: true, reason: "ready", admin, livePid: Number(runtimeProcess.pid) };
 }
 
 export async function waitForAdminReady(options = {}) {
