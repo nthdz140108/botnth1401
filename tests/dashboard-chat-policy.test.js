@@ -12,6 +12,7 @@ import { ConfigStore } from "../src/dashboard/config-store.js";
 async function makeRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-chat-policy-"));
   await fs.mkdir(path.join(root, "mybot", "bots"), { recursive: true });
+  await fs.writeFile(path.join(root, 'mybot', 'mybots.json'), JSON.stringify({ child: { name: 'child' } }));
   await fs.writeFile(path.join(root, "mybot", "bots", "child.json"), JSON.stringify({
     name: "child",
     WEB_CONFIG_PATH: "mybot/web-config-child.json",

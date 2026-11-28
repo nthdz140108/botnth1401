@@ -20,7 +20,7 @@ test("resolver: PM2 online + identity match + live Zalo UID → running", async 
     root,
     pm2: { getProcessStatus: async () => sup() },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "child", botKey: "user-123", configuredUid: "user-123", liveZaloUid: "999888777" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "child", botKey: "user-123", configuredUid: "user-123", liveZaloUid: "999888777" }),
   });
   const snap = await resolver.resolveBot({ id: "user-123", port: 3111, configuredStatus: "running" });
   assert.equal(snap.status, "running");
@@ -35,7 +35,7 @@ test("resolver: registry says running but PM2 has no process → stopped (no fak
     root,
     pm2: { getProcessStatus: async () => ({ available: true, status: null, pid: null, pm2Id: null, uptime: 0, restartCount: 0 }) },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "child", botKey: "child", liveZaloUid: "1" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "child", botKey: "child", liveZaloUid: "1" }),
   });
   const snap = await resolver.resolveBot({ id: "child", port: 3111, configuredStatus: "running" });
   assert.equal(snap.status, "stopped");
@@ -93,7 +93,7 @@ test("resolver: port open but wrong identity → identity-mismatch; no identity 
     root,
     pm2: { getProcessStatus: async () => sup() },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "child", botKey: "other-bot", liveZaloUid: "42" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "child", botKey: "other-bot", liveZaloUid: "42" }),
   });
   assert.equal((await mismatch.resolveBot({ id: "child", port: 3111 })).status, "identity-mismatch");
 
@@ -124,25 +124,24 @@ test("resolver: admin requires kind main identity", async () => {
     root,
     pm2: { getProcessStatus: async () => sup() },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "main", botKey: "admin", liveZaloUid: "777" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "main", botKey: "admin", liveZaloUid: "777" }),
   });
   assert.equal((await ok.resolveBot({ id: "admin", port: 2000 })).status, "running");
   const bad = createRuntimeStatusResolver({
     root,
     pm2: { getProcessStatus: async () => sup() },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "child", botKey: "someone", liveZaloUid: "777" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "child", botKey: "someone", liveZaloUid: "777" }),
   });
   assert.equal((await bad.resolveBot({ id: "admin", port: 2000 })).status, "identity-mismatch");
 });
 
-test("matchesIdentity: child matches botKey/configuredUid/liveZaloUid", () => {
-  assert.equal(matchesIdentity({ id: "user-123" }, { kind: "child", botKey: "user-123" }), true);
-  assert.equal(matchesIdentity({ id: "user-123" }, { kind: "child", botKey: "other", configuredUid: "user-123" }), true);
-  assert.equal(matchesIdentity({ id: "user-123" }, { kind: "child", botKey: "other", liveZaloUid: "user-123" }), true);
-  assert.equal(matchesIdentity({ id: "user-123" }, { kind: "child", botKey: "other", configuredUid: "nope" }), false);
-  assert.equal(matchesIdentity({ id: "admin" }, { kind: "main" }), true);
-  assert.equal(matchesIdentity({ id: "admin" }, { kind: "child" }), false);
+test("matchesIdentity requires exact management key, process and listener evidence", () => {
+  const valid = { kind: "child", botKey: "user-123", pid: 1234, listenerConnected: true };
+  assert.equal(matchesIdentity({ id: "user-123" }, valid, 1234), true);
+  assert.equal(matchesIdentity({ id: "user-123" }, { ...valid, botKey: "other", configuredUid: "user-123" }, 1234), false);
+  assert.equal(matchesIdentity({ id: "user-123" }, { ...valid, pid: 999 }, 1234), false);
+  assert.equal(matchesIdentity({ id: "admin" }, { ...valid, kind: "main", botKey: "admin" }, 1234), true);
 });
 
 test("resolver result shape: supervisor + readiness layers present", async () => {
@@ -151,11 +150,11 @@ test("resolver result shape: supervisor + readiness layers present", async () =>
     root,
     pm2: { getProcessStatus: async () => sup() },
     portProbe: async () => true,
-    identityFetcher: async () => ({ kind: "child", botKey: "child", liveZaloUid: "1" }),
+    identityFetcher: async () => ({ pid: 1234, listenerConnected: true, kind: "child", botKey: "child", liveZaloUid: "1" }),
   });
   const snap = await resolver.resolveBot({ id: "child", port: 3111 });
   assert.deepEqual(Object.keys(snap.supervisor).sort(), ["available", "code", "pid", "pm2Id", "reason", "restartCount", "status", "uptime"]);
-  assert.deepEqual(Object.keys(snap.readiness).sort(), ["checkedAt", "identityVerified", "listenerConnected", "listenerLastError", "listenerState", "portOpen", "reason", "status"]);
+  assert.deepEqual(Object.keys(snap.readiness).sort(), ["checkedAt", "identityVerified", "listenerConnected", "listenerLastError", "listenerState", "memory", "portOpen", "reason", "status"]);
   assert.ok(snap.readiness.checkedAt);
 });
 

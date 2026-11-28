@@ -48,7 +48,7 @@ function resolveSeedPath(projectRoot, relativeCandidates) {
 
 export function resolveCanonicalBotUid(identity) {
   const raw = typeof identity === "object" && identity !== null
-    ? (identity.uid || identity.botKey || identity.configuredUid || identity.name || "")
+    ? (identity.botKey || identity.key || identity.name || identity.uid || identity.configuredUid || "")
     : String(identity || "").trim();
   const rawStr = String(raw || "").trim();
 
@@ -60,8 +60,8 @@ export function resolveCanonicalBotUid(identity) {
   return rawStr || "admin";
 }
 
-export function createBotRuntimeContext(uidOrConfig) {
-  const projectRoot = getProjectRoot();
+export function createBotRuntimeContext(uidOrConfig, { root } = {}) {
+  const projectRoot = root || getProjectRoot();
   let descriptor = null;
   try {
     const { getRuntimeInstanceDescriptor } = { getRuntimeInstanceDescriptor: null };
@@ -69,7 +69,7 @@ export function createBotRuntimeContext(uidOrConfig) {
 
   let rawUid = typeof uidOrConfig === "string"
     ? uidOrConfig.trim()
-    : (uidOrConfig?.uid || uidOrConfig?.botKey || uidOrConfig?.configuredUid || uidOrConfig?.name || "");
+    : (uidOrConfig?.botKey || uidOrConfig?.key || uidOrConfig?.name || uidOrConfig?.uid || uidOrConfig?.configuredUid || "");
 
   let uid = rawUid;
   if (!uid) {
@@ -124,6 +124,7 @@ export function createBotRuntimeContext(uidOrConfig) {
     botManagerLogPath: path.join(logsDir, "bot-manager.log"),
     ...base,
   };
+  resolved.uid = uid;
 
   for (const key of mutableKeys) {
     if (!resolved[key]) continue;

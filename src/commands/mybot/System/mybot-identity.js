@@ -1,3 +1,5 @@
+import { loadMyBotsRegistry, saveMyBotsRegistry } from './mybots-registry.js';
+import { withRegistryLockSync } from './registry-lock.js';
 import fs from "fs";
 import path from "path";
 import { writeJsonAtomic } from "./json-state.js";
@@ -279,7 +281,11 @@ export function resolveAdminIdentity({ projectRoot = process.cwd(), api, config,
   };
 }
 
-export function syncMainBotRegistry({ projectRoot = process.cwd(), adminUid, webPort, pid, forceSave = true, identityInfo = null } = {}) {
+export function syncMainBotRegistry(options = {}) {
+  const root = path.resolve(options.projectRoot || process.cwd());
+  return withRegistryLockSync(path.join(root, 'mybot', 'mybots.json'), () => syncMainBotRegistryLocked(options));
+}
+function syncMainBotRegistryLocked({ projectRoot = process.cwd(), adminUid, webPort, pid, forceSave = true, identityInfo = null } = {}) {
   const root = path.resolve(projectRoot || process.cwd());
   const myBotDir = path.join(root, "mybot");
   const registryPath = path.join(myBotDir, "mybots.json");
@@ -288,16 +294,7 @@ export function syncMainBotRegistry({ projectRoot = process.cwd(), adminUid, web
     fs.mkdirSync(myBotDir, { recursive: true });
   }
 
-  let myBots = {};
-  if (fs.existsSync(registryPath)) {
-    try {
-      const raw = fs.readFileSync(registryPath, "utf8").replace(/^\uFEFF/, "");
-      myBots = JSON.parse(raw) || {};
-    } catch (e) {
-      console.warn("Lỗi đọc mybots.json trong syncMainBotRegistry:", e.message);
-      myBots = {};
-    }
-  }
+  const myBots = loadMyBotsRegistry(registryPath);
 
   const resolvedUid = adminUid && adminUid.toLowerCase() !== "admin" ? String(adminUid).trim() : null;
 
@@ -378,7 +375,7 @@ export function syncMainBotRegistry({ projectRoot = process.cwd(), adminUid, web
   }
 
   if (forceSave) {
-    writeJsonAtomic(registryPath, myBots);
+    saveMyBotsRegistry(myBots, registryPath);
   }
 
   return { myBots, changed: true };
@@ -492,32 +489,33 @@ export function resolveBotPaths(targetOrUid, projectRoot = process.cwd()) {
   if (!canonicalKey) canonicalKey = "admin";
   if (!canonicalUid) canonicalUid = canonicalKey;
 
-  const instanceDir = isMain ? path.join(myBotDir, "instances", "admin") : path.join(myBotDir, "instances", canonicalUid);
+  const storageKey = isMain ? 'admin' : canonicalKey;
+  const instanceDir = path.join(myBotDir, 'instances', storageKey);
   const dataDir = path.join(instanceDir, "data");
-  const logsDir = isMain ? path.join(root, "logs", "admin") : path.join(root, "logs", canonicalUid);
+  const logsDir = path.join(root, 'logs', storageKey);
 
   // Canonical paths for child bot (write target)
   const canonicalCredPath = isMain
     ? path.join(root, "assets", "config.json")
-    : path.join(myBotDir, "credentials", `${canonicalUid}.json`);
+    : path.join(myBotDir, "credentials", `${storageKey}.json`);
   const legacyCredPath = isMain
     ? path.join(myBotDir, "credentials", "admin.json")
     : path.join(myBotDir, "credentials", `${canonicalKey}.json`);
 
-  const canonicalConfigPath = path.join(myBotDir, "bots", `${canonicalUid}.json`);
+  const canonicalConfigPath = path.join(myBotDir, "bots", `${storageKey}.json`);
   const legacyConfigPath = path.join(myBotDir, "bots", `${canonicalKey}.json`);
 
-  const canonicalStatePath = path.join(myBotDir, "state", `${canonicalUid}.json`);
+  const canonicalStatePath = path.join(myBotDir, "state", `${storageKey}.json`);
   const legacyStatePath = path.join(myBotDir, "state", `${canonicalKey}.json`);
 
   const adminListPath = path.join(dataDir, "admin-list.json");
-  const legacyAdminListPath = path.join(myBotDir, "configs", `list_admin-${canonicalUid}.json`);
+  const legacyAdminListPath = path.join(myBotDir, "configs", `list_admin-${storageKey}.json`);
 
   const groupSettingsPath = path.join(dataDir, "group-settings.json");
-  const legacyGroupSettingsPath = path.join(myBotDir, "settings", `groupSettings-${canonicalUid}.json`);
+  const legacyGroupSettingsPath = path.join(myBotDir, "settings", `groupSettings-${storageKey}.json`);
 
   const commandConfigPath = path.join(dataDir, "command.json");
-  const legacyCommandConfigPath = path.join(myBotDir, "json-data", `command-${canonicalUid}.json`);
+  const legacyCommandConfigPath = path.join(myBotDir, "json-data", `command-${storageKey}.json`);
 
   // Helper to pick existing file path when reading
   function getReadPath(canonical, fallback) {
@@ -667,19 +665,7 @@ export function resolveManagedBotList({
   const root = path.resolve(projectRoot || process.cwd());
   const registryPath = path.join(root, "mybot", "mybots.json");
 
-  let myBots = registry;
-  if (!myBots || typeof myBots !== "object") {
-    if (fs.existsSync(registryPath)) {
-      try {
-        const raw = fs.readFileSync(registryPath, "utf8").replace(/^\uFEFF/, "");
-        myBots = JSON.parse(raw) || {};
-      } catch {
-        myBots = {};
-      }
-    } else {
-      myBots = {};
-    }
-  }
+  const myBots = registry && typeof registry === 'object' ? registry : loadMyBotsRegistry(registryPath);
 
   const list = [];
   for (const [key, rawRecord] of Object.entries(myBots)) {
@@ -687,7 +673,7 @@ export function resolveManagedBotList({
 
     const isMain = isMainBot(rawRecord, key);
     const targetUid = String(rawRecord.uid || rawRecord.botId || key).trim();
-    const profile = getProfile(targetUid, { root });
+    const profile = getProfile(key, { root });
 
     let resolvedOwnerUid = null;
     let ownerResolution = "missing";
@@ -987,8 +973,7 @@ export function resolveManagedBotTarget({
     case "self":
     default: {
       if (normCaller) {
-        const ownBot = targetList.find((b) => !b.isMain) || allList.find((b) => !b.isMain && isBotOwnedByCaller(b, normCaller));
-        if (ownBot) matched = [ownBot];
+        matched = targetList.filter(b => !b.isMain && isBotOwnedByCaller(b, normCaller));
       }
       break;
     }

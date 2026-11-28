@@ -175,7 +175,7 @@ test("bot-action-service: start, stop, restart, delete acquire per-bot mutex loc
   const root = await createTempWorkspace();
   try {
     await fs.writeFile(path.join(root, "mybot", "mybots.json"), JSON.stringify({
-      child: { name: "child", displayName: "Child Bot", status: "running" },
+      child: { name: "child", displayName: "Child Bot", status: "running", ownerUid: "owner", expiryAt: "-1", activatedAt: "2026-01-01T00:00:00Z" },
     }));
     await fs.writeFile(path.join(root, "mybot", "bots", "child.json"), JSON.stringify({
       name: "child",
@@ -184,6 +184,9 @@ test("bot-action-service: start, stop, restart, delete acquire per-bot mutex loc
     await fs.writeFile(path.join(root, "mybot", "state", "child.json"), JSON.stringify({
       status: "running",
       pid: "1234",
+    }));
+    await fs.writeFile(path.join(root, 'mybot', 'credentials', 'child.json'), JSON.stringify({
+      imei: 'fixture-imei', userAgent: 'fixture-agent', cookie: { cookies: [{ name: 'session', value: 'fixture' }] }, accountUid: 'child', accountIdentityStatus: 'verified',
     }));
 
     const registry = new BotRegistry({ root, portProbe: async () => false, pm2: { status: async () => null } });
@@ -216,6 +219,7 @@ test("bot-action-service: start, stop, restart, delete acquire per-bot mutex loc
       registry,
       configStore,
       pm2Adapter,
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
     });
 
     await service.start("child");

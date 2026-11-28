@@ -225,11 +225,11 @@ test("two concurrent provisioning transactions reserve distinct ports and both r
 
   const results = await Promise.all([
     withMyBotsTransaction({ root, registryPath }, async (txn) => {
-      const record = txn.reserveProvisionedBot({ uid: "bot-a", displayName: "Bot A" });
+      const record = await txn.reserveProvisionedBot({ uid: "bot-a", displayName: "Bot A" });
       return { uid: record.uid, port: record.webPort };
     }),
     withMyBotsTransaction({ root, registryPath }, async (txn) => {
-      const record = txn.reserveProvisionedBot({ uid: "bot-b", displayName: "Bot B" });
+      const record = await txn.reserveProvisionedBot({ uid: "bot-b", displayName: "Bot B" });
       return { uid: record.uid, port: record.webPort };
     }),
   ]);
@@ -258,7 +258,7 @@ test("rollback of session A does not remove or revert bot created by session B",
 
   // Session B creates a bot successfully
   const bResult = await withMyBotsTransaction({ root, registryPath }, async (txn) => {
-    const record = txn.reserveProvisionedBot({ uid: "bot-b", displayName: "Bot B" });
+    const record = await txn.reserveProvisionedBot({ uid: "bot-b", displayName: "Bot B" });
     txn.finalizeProvisionedBot("bot-b", { status: "stopped" });
     return record.webPort;
   });
@@ -266,7 +266,7 @@ test("rollback of session A does not remove or revert bot created by session B",
   // Session A tries to provision but fails; its rollback must not remove bot B
   await assert.rejects(
     withMyBotsTransaction({ root, registryPath }, async (txn) => {
-      txn.reserveProvisionedBot({ uid: "bot-a", displayName: "Bot A" });
+      await txn.reserveProvisionedBot({ uid: "bot-a", displayName: "Bot A" });
       throw new Error("session A failed");
     }),
     /session A failed/
@@ -336,7 +336,7 @@ test("no raw cookie or IMEI is logged by the provisioning registry", async () =>
 
   try {
     await withMyBotsTransaction({ root, registryPath }, async (txn) => {
-      txn.reserveProvisionedBot({
+      await txn.reserveProvisionedBot({
         uid: "bot-secret",
         displayName: "Bot Secret",
         cookie: "super-secret-cookie-value-12345",
@@ -365,7 +365,7 @@ test("new bot records start stopped with pending trial", async () => {
   });
 
   const record = await withMyBotsTransaction({ root, registryPath }, async (txn) => {
-    txn.reserveProvisionedBot({ uid: "bot-new", displayName: "Bot New" });
+    await txn.reserveProvisionedBot({ uid: "bot-new", displayName: "Bot New" });
     txn.finalizeProvisionedBot("bot-new", { status: "stopped" });
     return txn.readRegistry()["bot-new"];
   });
@@ -387,13 +387,13 @@ test("provisioning record marked 'provisioning' mid-flight is not treated as run
 
   let midFlightRecord = null;
   await withMyBotsTransaction({ root, registryPath }, async (txn) => {
-    const rec = txn.reserveProvisionedBot({ uid: "bot-mid", displayName: "Bot Mid" });
+    const rec = await txn.reserveProvisionedBot({ uid: "bot-mid", displayName: "Bot Mid" });
     midFlightRecord = readJson(registryPath)["bot-mid"];
     txn.finalizeProvisionedBot("bot-mid", { status: "stopped" });
   });
 
   assert.equal(midFlightRecord.status, "provisioning");
-  assert.equal(midFlightRecord.provisioningSessionId, "bot-mid");
+  assert.ok(midFlightRecord.provisioningSessionId, "Provisioning must carry a unique transaction ID");
   assert.ok(midFlightRecord.provisioningStartedAt, "provisioningStartedAt must be set");
 
   const finalRecord = readJson(registryPath)["bot-mid"];

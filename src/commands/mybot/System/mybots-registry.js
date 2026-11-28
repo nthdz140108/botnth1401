@@ -1,27 +1,51 @@
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { writeJsonAtomic } from "./json-state.js";
+import { getProjectRoot } from '../../../utils/env.js';
+import { withRegistryLockSync, registryTransactions } from './registry-lock.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, "../../../..");
+const projectRoot = getProjectRoot();
 const defaultMyBotsPath = path.join(projectRoot, "mybot", "mybots.json");
 
+const snapshots = new WeakMap();
 function readRegistry(filePath = defaultMyBotsPath) {
   try {
     if (!fs.existsSync(filePath)) return {};
     const data = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(data);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(data.replace(/^\uFEFF/, ''));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Registry must be an object');
+    snapshots.set(parsed, structuredClone(parsed));
+    return parsed;
   } catch (error) {
-    console.error(`Không thể đọc mybots.json: ${error.message}`);
-    return {};
+    throw Object.assign(new Error('Cannot read registry; restore a valid backup before retrying', { cause: error }), { code: 'REGISTRY_CORRUPT', stage: 'registry-read' });
   }
 }
 
 function writeRegistry(myBots, filePath = defaultMyBotsPath) {
-  writeJsonAtomic(filePath, myBots);
+  return withRegistryLockSync(filePath, () => {
+    const base = snapshots.get(myBots);
+    const current = readRegistry(filePath);
+    const next = base ? mergeDelta(base, myBots, current) : myBots;
+    const transaction = registryTransactions.getStore();
+    if (transaction && path.resolve(transaction._registryPath) === path.resolve(filePath)) {
+      for (const key of Object.keys(transaction._registry)) delete transaction._registry[key];
+      Object.assign(transaction._registry, next);
+      transaction._flush();
+    } else writeJsonAtomic(filePath, next);
+    snapshots.set(myBots, structuredClone(myBots));
+  });
+}
+
+function mergeDelta(base, edited, current) {
+  const next = structuredClone(current);
+  for (const key of new Set([...Object.keys(base), ...Object.keys(edited)])) {
+    if (JSON.stringify(base[key]) === JSON.stringify(edited[key])) continue;
+    if (!(key in edited)) { delete next[key]; continue; }
+    if (base[key] && edited[key] && typeof base[key] === 'object' && typeof edited[key] === 'object' && !Array.isArray(edited[key])) {
+      next[key] = mergeDelta(base[key], edited[key], current[key] || {});
+    } else next[key] = structuredClone(edited[key]);
+  }
+  return next;
 }
 
 function cloneRecord(record = {}) {
@@ -82,7 +106,10 @@ export function saveMyBotsRegistry(myBots, filePath) {
   writeRegistry(myBots, filePath);
 }
 
-export function dedupeMyBotsRegistry({ adminUid, adminPid, adminWebPort, removeAliasFiles = false, filePath } = {}) {
+export function dedupeMyBotsRegistry(options = {}) {
+  return withRegistryLockSync(options.filePath || defaultMyBotsPath, () => dedupeMyBotsRegistryLocked(options));
+}
+function dedupeMyBotsRegistryLocked({ adminUid, adminPid, adminWebPort, removeAliasFiles = false, filePath } = {}) {
   const myBots = readRegistry(filePath);
   const entries = Object.entries(myBots);
   if (entries.length === 0) return { myBots, changed: false, removed: [] };

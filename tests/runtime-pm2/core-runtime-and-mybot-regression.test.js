@@ -147,12 +147,12 @@ test("withMyBotsTransaction locks via proper-lockfile ESM and leaves zero .tmp f
   try {
     await Promise.all([
       withMyBotsTransaction({ root: tmpRoot }, async (txn) => {
-        txn.reserveProvisionedBot({ uid: "10001", displayName: "Bot One", ownerUid: "owner-1" });
+        await txn.reserveProvisionedBot({ uid: "10001", displayName: "Bot One", ownerUid: "owner-1" });
         await new Promise((r) => setTimeout(r, 30));
         txn.finalizeProvisionedBot("10001", { status: "stopped" });
       }),
       withMyBotsTransaction({ root: tmpRoot }, async (txn) => {
-        txn.reserveProvisionedBot({ uid: "10002", displayName: "Bot Two", ownerUid: "owner-1" });
+        await txn.reserveProvisionedBot({ uid: "10002", displayName: "Bot Two", ownerUid: "owner-1" });
         await new Promise((r) => setTimeout(r, 30));
         txn.finalizeProvisionedBot("10002", { status: "stopped" });
       }),

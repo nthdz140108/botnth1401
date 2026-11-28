@@ -47,7 +47,7 @@ export function migrateLegacyMyBotIdentities({ projectRoot = getProjectRoot(), r
 
     const isMain = bot.isMain === true || key === "admin" || String(bot.name || "").toLowerCase() === "admin";
     const botUid = String(bot.uid || bot.botId || key).trim();
-    const profile = getProfile(botUid, { root });
+    const profile = getProfile(key, { root });
 
     let ownerUid = null;
     let createdByUid = null;
@@ -72,7 +72,7 @@ export function migrateLegacyMyBotIdentities({ projectRoot = getProjectRoot(), r
       // 2. Credential file written from Main Bot session (mybot/credentials/<botUid>.json has uid field)
       if (!createdByUid) {
         try {
-          const credPath = path.join(root, "mybot", "credentials", `${botUid}.json`);
+          const credPath = path.join(root, "mybot", "credentials", `${key}.json`);
           if (fs.existsSync(credPath)) {
             const parsedCred = JSON.parse(fs.readFileSync(credPath, "utf8").replace(/^\uFEFF/, ""));
             const credUid = String(parsedCred?.uid || "").trim();
@@ -201,7 +201,7 @@ export function migrateLegacyMyBotIdentities({ projectRoot = getProjectRoot(), r
     }
 
     try {
-      updateProfile(botUid, {
+      updateProfile(key, {
         ownerUid,
         createdByUid,
         adminIdentitySeeds: bot.adminIdentitySeeds || null,

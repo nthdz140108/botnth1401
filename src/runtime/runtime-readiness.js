@@ -88,9 +88,9 @@ export function matchesBotIdentity({ descriptor, identity, expectedPid = null, s
   if (typeof identity.botKey !== 'string' || identity.botKey.length === 0) return false;
 
   const kindOk = identity.kind === kind;
-  const keyOk = identity.botKey === botKey
-    || identity.configuredUid === botKey
-    || identity.liveZaloUid === botKey;
+  const keyOk = identity.botKey === botKey;
+  const expectedAccount = descriptor?.accountUid || descriptor?.verifiedAccountUid || descriptor?.expectedAccountUid;
+  const accountOk = !expectedAccount || String(identity.liveZaloUid || '') === String(expectedAccount);
 
   // PID check: expected PID wins; fall back to supervisor PID; otherwise any
   // numeric pid present is accepted (adopt path without a known PID).
@@ -101,7 +101,7 @@ export function matchesBotIdentity({ descriptor, identity, expectedPid = null, s
     pidOk = String(identity.pid) === String(supervisorPid);
   }
 
-  return Boolean(kindOk && keyOk && pidOk);
+  return Boolean(kindOk && keyOk && pidOk && accountOk);
 }
 
 /**

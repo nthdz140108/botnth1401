@@ -478,9 +478,8 @@ export async function restoreChildBotsForTest({
 
       const webPort = bot.webPort;
       if (webPort && (await isPortInUseFn(webPort))) {
-        console.log(`[reconcile] ${pm2Name} port ${webPort} already in use, skipping`);
-        summary.alreadyOnline += 1;
-        summary.alreadyOnlineList.push(pm2Name);
+        console.log(`[reconcile] ${pm2Name} port ${webPort} is held without a verified managed process`);
+        summary.failed.push({ uid: pm2Name, reason: 'port-in-use' });
         continue;
       }
 

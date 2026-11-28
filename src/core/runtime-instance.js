@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { withRegistryLockSync } from '../commands/mybot/System/registry-lock.js';
 
 export const RESTART_EXIT_CODE = 10;
 export const QR_UID_MISMATCH_EXIT_CODE = 13;
@@ -251,6 +252,10 @@ export function verifyRuntimeIdentity(descriptor, liveUid, { projectRoot = descr
   const desc = descriptor || getRuntimeInstanceDescriptor();
 
   if (desc.isChild) {
+    const expectedAccount = desc.configuredUid !== desc.botKey ? desc.configuredUid : (/^\d+$/.test(desc.botKey) ? desc.botKey : '');
+    if (expectedAccount && normalizedLiveUid !== expectedAccount) {
+      return { verified: false, action: 'exit', code: QR_UID_MISMATCH_EXIT_CODE, reason: `Child bot '${desc.botKey}' authenticated a different account` };
+    }
     const mainState = readJsonIfExists(path.join(root, "mybot", "state", "admin.json"));
     const mainBotUid = String(mainState?.uid || "").trim();
 
@@ -264,7 +269,7 @@ export function verifyRuntimeIdentity(descriptor, liveUid, { projectRoot = descr
     }
 
     if (normalizedLiveUid && normalizedLiveUid.toLowerCase() !== "admin") {
-      const childStatePath = path.join(root, "mybot", "state", `${normalizedLiveUid}.json`);
+      const childStatePath = path.join(root, "mybot", "state", `${desc.botKey}.json`);
       const currentState = readJsonIfExists(childStatePath) || {};
       writeJsonAtomic(childStatePath, {
         ...currentState,
@@ -294,6 +299,7 @@ export function verifyRuntimeIdentity(descriptor, liveUid, { projectRoot = descr
     });
 
     const registryPath = path.join(root, "mybot", "mybots.json");
+    withRegistryLockSync(registryPath, () => {
     const reg = readJsonIfExists(registryPath);
     if (reg && typeof reg === "object") {
       const existingAdmin = reg.admin || {};
@@ -305,6 +311,7 @@ export function verifyRuntimeIdentity(descriptor, liveUid, { projectRoot = descr
       };
       writeJsonAtomic(registryPath, reg);
     }
+    });
 
     desc.setLiveZaloUid(normalizedLiveUid);
     return {

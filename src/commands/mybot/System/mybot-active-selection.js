@@ -131,6 +131,7 @@ export async function openMyBotActiveSelection({
   message,
   candidates,
   onSelect,
+  actionLabel = 'chạy',
   projectRoot = getProjectRoot(),
   schedule,
   cancelSchedule,
@@ -158,7 +159,7 @@ export async function openMyBotActiveSelection({
     console.error("Lỗi tạo ảnh danh sách bot active:", renderErr);
   }
 
-  const promptCaption = `📋 DANH SÁCH BOT CỦA BẠN (${candidates.length} bot)\n\nReply tin nhắn này hoặc chat số thứ tự để chọn bot cần chạy. Bạn có 60 giây để lựa chọn.`;
+  const promptCaption = `📋 DANH SÁCH BOT CỦA BẠN (${candidates.length} bot)\n\nReply tin nhắn này hoặc chat số thứ tự để chọn bot cần ${actionLabel}. Bạn có 60 giây để lựa chọn.`;
 
   const payload = {
     msg: promptCaption,

@@ -301,7 +301,7 @@ test("audit store appends dashboard write metadata", async () => {
   assert.equal(entries[0].actor, "dashboard-local");
 });
 
-test("bot registry discovers inventory, bot files, state files, pid, pm2, and port health", async () => {
+test("bot registry uses registered keys and ignores orphan state files", async () => {
   const root = await makeDashboardFixture();
   const registry = new BotRegistry({
     root,
@@ -313,9 +313,9 @@ test("bot registry discovers inventory, bot files, state files, pid, pm2, and po
   assert.ok(ids.includes("admin"));
   assert.ok(ids.includes("child"));
   assert.ok(ids.includes("pm2bot"));
-  assert.ok(ids.includes("stateonly"));
+  assert.equal(ids.includes("stateonly"), false);
   assert.equal(bots.find((bot) => bot.id === "child").portOpen, true);
-  assert.equal(bots.find((bot) => bot.id === "stateonly").processAlive, true);
+  assert.equal(await registry.describe("stateonly"), null);
   assert.equal(bots.find((bot) => bot.id === "pm2bot").pm2Status.status, "online");
 });
 
@@ -354,9 +354,8 @@ test("per-bot prefix API reads and updates only the selected bot command config"
     assert.equal(read.body.data.prefix, "!");
 
     const unavailable = await fetchJson(`${server.url}/api/bots/stateonly/prefix`);
-    assert.equal(unavailable.status, 200);
-    assert.equal(unavailable.body.data.prefix, "!");
-    assert.equal(unavailable.body.data.available, false);
+    assert.equal(unavailable.status, 404);
+    assert.equal(unavailable.body.error.code, "BOT_NOT_FOUND");
 
     const invalid = await fetch(`${server.url}/api/bots/child/prefix`, {
       method: "PUT",

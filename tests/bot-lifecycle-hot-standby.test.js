@@ -263,6 +263,7 @@ test("lifecycle: PM2 online does not equal Zalo ready; running requires real lis
       portProbe: async () => true, // port is open
       identityFetcher: async () => ({
         kind: "child",
+        pid: 9999,
         botKey: "bot1",
         liveZaloUid: "bot1_live_uid",
         listenerConnected: false, // Zalo WS listener is NOT connected
@@ -298,6 +299,7 @@ test("lifecycle: PM2 online does not equal Zalo ready; running requires real lis
       portProbe: async () => true,
       identityFetcher: async () => ({
         kind: "child",
+        pid: 9999,
         botKey: "bot1",
         liveZaloUid: "bot1_live_uid",
         listenerConnected: true, // Zalo WS handshake complete!

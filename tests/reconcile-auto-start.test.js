@@ -6,7 +6,7 @@ import path from "node:path";
 
 /**
  * Reconcile auto-start policy:
- * - restoreChildBots starts every valid unexpired candidate (even stopped)
+ * - restoreChildBots starts every valid unexpired candidate (only when desiredStatus is running)
  * - per-bot failures do not block other bots; summary reports
  *   started/already-online/skipped/failed with reasons
  * - --monitor-only never starts bots
@@ -31,10 +31,10 @@ test("reconcile child restore loop is failure-isolated and returns a summary", a
   const { restoreChildBotsForTest } = await loadModule();
   const summary = await restoreChildBotsForTest({
     registry: {
-      "bot-a": { uid: "bot-a", botKey: "bot-a", status: "stopped", webPort: "5301", expiryAt: new Date(Date.now() + 3600_000).toISOString(), credentials: { cookie: "c", imei: "i" }, enabled: true },
+      "bot-a": { uid: "bot-a", botKey: "bot-a", status: "stopped", desiredStatus: "running", webPort: "5301", expiryAt: new Date(Date.now() + 3600_000).toISOString(), credentials: { cookie: "c", imei: "i" }, enabled: true },
       "bot-b": { uid: "bot-b", botKey: "bot-b", status: "running", webPort: "5302", expiryAt: "-1", credentials: { cookie: "c", imei: "i" }, enabled: true },
-      "bot-c": { uid: "bot-c", botKey: "bot-c", status: "stopped", webPort: "5303", expiryAt: new Date(Date.now() + 3600_000).toISOString(), credentials: { cookie: "c", imei: "i" }, enabled: true },
-      "bot-expired": { uid: "bot-expired", botKey: "bot-expired", status: "stopped", webPort: "5304", expiryAt: "2020-01-01T00:00:00Z", credentials: { cookie: "c", imei: "i" }, enabled: true },
+      "bot-c": { uid: "bot-c", botKey: "bot-c", status: "stopped", desiredStatus: "running", webPort: "5303", expiryAt: new Date(Date.now() + 3600_000).toISOString(), credentials: { cookie: "c", imei: "i" }, enabled: true },
+      "bot-expired": { uid: "bot-expired", botKey: "bot-expired", status: "stopped", desiredStatus: "running", webPort: "5304", expiryAt: "2020-01-01T00:00:00Z", credentials: { cookie: "c", imei: "i" }, enabled: true },
     },
     adapter: {
       listManagedProcesses: async () => [{ name: "bot-b", status: "online" }],
@@ -55,4 +55,15 @@ test("reconcile child restore loop is failure-isolated and returns a summary", a
   assert.equal(summary.skipped.length, 1);
   assert.equal(summary.skipped[0].uid, "bot-expired");
   assert.match(summary.skipped[0].reason, /expired/i);
+});
+
+test('a foreign process holding a child port is a restore failure, never already running', async () => {
+  const { restoreChildBotsForTest } = await loadModule();
+  const summary = await restoreChildBotsForTest({
+    registry: { child: { uid: 'account', desiredStatus: 'running', status: 'stopped', enabled: true, webPort: 5301, expiryAt: '-1', credentials: { cookie: 'c', imei: 'i' } } },
+    adapter: { listManagedProcesses: async () => [], startBot: async () => { throw new Error('must not launch on occupied port'); } },
+    isPortInUseFn: async () => true,
+  });
+  assert.equal(summary.alreadyOnline, 0);
+  assert.equal(summary.failed[0].reason, 'port-in-use');
 });

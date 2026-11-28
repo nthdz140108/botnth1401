@@ -25,6 +25,7 @@
 
 import { PM2Adapter, PM2ErrorCode } from "../runtime/pm2-adapter.js";
 import { classifyBotExpiry } from "../commands/mybot/System/expiry-classifier.js";
+import { matchesBotIdentity } from '../runtime/runtime-readiness.js';
 
 export const STARTUP_GRACE_MS = 60_000;
 const IDENTITY_TIMEOUT_MS = 400;
@@ -160,16 +161,16 @@ export function createRuntimeStatusResolver({
     let readinessReason = probeEligible ? "probing" : "skipped";
     // Listener layer: ability to RECEIVE messages. Absent fields (older bot
     // processes) are treated as connected for backward compatibility.
-    let listenerConnected = true;
+    let listenerConnected = false;
     let listenerStateValue = null;
     let listenerLastErrorValue = null;
     if (probeEligible) {
       portOpen = port ? await portProbe(port, host) : false;
       if (portOpen) {
         identity = await identityFetcher(port, host);
-        identityVerified = matchesIdentity(bot, identity);
+        identityVerified = matchesIdentity(bot, identity, sup.pid);
         readinessReason = identityVerified ? "identity-verified" : identity ? "identity-mismatch" : "identity-unreachable";
-        listenerConnected = identity ? identity.listenerConnected !== false : true;
+        listenerConnected = identity?.listenerConnected === true;
         listenerStateValue = identity?.listenerState ?? null;
         listenerLastErrorValue = identity?.listenerLastError ?? null;
       } else {
@@ -283,17 +284,11 @@ export function createRuntimeStatusResolver({
  * match strongest; child bots matched only via liveZaloUid/configuredUid are
  * still accepted but flagged through reason in the resolver ladder.
  */
-export function matchesIdentity(bot, identity) {
-  if (!identity || typeof identity !== "object") return false;
-  const id = String(bot?.id || "");
-  if (id === "admin") {
-    return identity.kind === "main";
-  }
-  const kindOk = identity.kind === "child" || identity.kind === "main" && Boolean(identity.liveZaloUid);
-  const keyOk = identity.botKey === id
-    || identity.configuredUid === id
-    || identity.liveZaloUid === id;
-  return Boolean(kindOk && keyOk);
+export function matchesIdentity(bot, identity, expectedPid = null) {
+  return matchesBotIdentity({ descriptor: {
+    kind: bot?.id === 'admin' || bot?.isMain ? 'main' : 'child', botKey: String(bot?.id || ''),
+    accountUid: bot?.accountUid || bot?.configuredLiveUid,
+  }, identity, expectedPid });
 }
 
 /**

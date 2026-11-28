@@ -4,6 +4,8 @@ import path from "node:path";
 import { readRoleRegistry } from "./role-registry-service.js";
 import { createRuntimeStatusResolver } from "./runtime-status-resolver.js";
 import { classifyBotExpiry } from "../commands/mybot/System/expiry-classifier.js";
+import { loadMyBotsRegistry } from '../commands/mybot/System/mybots-registry.js';
+import { normalizeLoginCredential } from '../commands/mybot/System/credential-normalizer.js';
 
 const SENSITIVE = /cookie|token|password|secret|imei|useragent|credential/i;
 
@@ -24,9 +26,9 @@ export class BotRegistry {
   }
 
   async list() {
-    const inventory = await readJson(this.inventoryPath, {});
+    const inventory = loadMyBotsRegistry(this.inventoryPath);
     const roleRegistry = await readJson(this.roleRegistryPath, {});
-    const botIds = new Set(["admin", ...Object.keys(inventory), ...(await readIds(path.join(this.root, "mybot", "bots"))), ...(await readIds(path.join(this.root, "mybot", "state")))]);
+    const botIds = new Set(["admin", ...Object.keys(inventory)]);
     const bots = [];
     for (const id of botIds) bots.push(await this.describe(id, inventory[id] || {}, roleRegistry));
     return bots.sort((a, b) => (a.id === "admin" ? -1 : b.id === "admin" ? 1 : a.id.localeCompare(b.id)));
@@ -40,9 +42,9 @@ export class BotRegistry {
     const hasStateFile = await exists(stateFile);
     const config = hasBotFile ? await readJson(botFile, {}) : {};
     const state = hasStateFile ? await readJson(stateFile, {}) : {};
-    const inventoryFile = await readJson(this.inventoryPath, {});
+    const inventoryFile = loadMyBotsRegistry(this.inventoryPath);
     const inventory = inventoryEntry || inventoryFile[id] || {};
-    if (id !== "admin" && !hasBotFile && !hasStateFile && !inventoryEntry && !inventoryFile[id]) return null;
+    if (id !== "admin" && !inventoryFile[id]) return null;
     const roleRegistry = roleRegistryEntry || await readJson(this.roleRegistryPath, {});
     const adminBotId = typeof roleRegistry.adminBotId === "string"
       ? roleRegistry.adminBotId
@@ -56,13 +58,22 @@ export class BotRegistry {
       merged.port = merged.port || 2000;
       if (!merged.configFilePath) merged.configFilePath = "assets/config.json";
     }
-    const configPath = resolveProjectPath(this.root, merged.configFilePath || config.configFilePath || inventory.configFilePath);
+    const configPath = resolveProjectPath(this.root, merged.configFilePath || config.configFilePath || inventory.configFilePath || path.join('mybot', 'credentials', `${id}.json`));
     const paths = collectPaths(this.root, merged, configPath);
     const enabled = merged.enabled !== false;
     const runtime = await this.runtime(id, { inventory, config, state, merged, configPath });
     return {
       id,
       uid: id,
+      botKey: id,
+      accountUid: merged.accountUid || (merged.uid !== id ? merged.uid : null),
+      ownerUid: merged.ownerUid || merged.createdByUid || null,
+      accountIdentityStatus: merged.accountIdentityStatus || 'pending',
+      adminBindingStatus: merged.adminBindingStatus || 'pending',
+      desiredStatus: merged.desiredStatus || 'stopped',
+      operationId: merged.operationId || null,
+      trialStatus: merged.trialStatus || 'pending',
+      activationPolicy: merged.activationPolicy || null,
       displayName: merged.displayName || merged.name || id,
       name: merged.name || id,
       status: enabled ? runtime.status : "disabled",
@@ -114,6 +125,7 @@ export class BotRegistry {
     try {
       resolved = await this.resolver.resolveBot({
         id,
+        accountUid: data.merged?.accountUid || (data.merged?.uid !== id ? data.merged?.uid : null),
         enabled: data.merged?.enabled !== false,
         expiryAt: data.merged?.expiryAt || null,
         trialStatus: data.merged?.trialStatus,
@@ -152,9 +164,12 @@ export class BotRegistry {
 async function credentialState(root, relativePath) {
   if (!relativePath) return { configured: false, state: "missing" };
   try {
-    const value = await readJson(resolveProjectPath(root, relativePath), {});
-    const configured = Boolean(value?.cookie && typeof value.cookie === "object" && Object.keys(value.cookie).length);
-    return { configured, state: configured ? "configured" : "missing" };
+    const credentialPath = resolveProjectPath(root, relativePath);
+    if (!(await exists(credentialPath))) return { configured: false, state: 'missing' };
+    const value = await readJson(credentialPath, {});
+    normalizeLoginCredential(value);
+    const configured = value.accountIdentityStatus === 'verified' && Boolean(value.accountUid);
+    return { configured, state: configured ? 'configured' : 'needs_verification' };
   } catch {
     return { configured: false, state: "invalid" };
   }

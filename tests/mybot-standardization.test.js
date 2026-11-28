@@ -100,15 +100,15 @@ test("resolveBotPaths returns canonical paths and preserves separation from Main
     assert.equal(childPaths.canonicalKey, "my-alias-key");
     assert.equal(childPaths.canonicalUid, "999888777");
     assert.equal(childPaths.isMain, false);
-    assert.ok(childPaths.credentialPath.endsWith(path.join("mybot", "credentials", "999888777.json")));
-    assert.ok(childPaths.configPath.endsWith(path.join("mybot", "bots", "999888777.json")));
-    assert.ok(childPaths.logDir.endsWith(path.join("logs", "999888777")));
+    assert.ok(childPaths.credentialPath.endsWith(path.join("mybot", "credentials", "my-alias-key.json")));
+    assert.ok(childPaths.configPath.endsWith(path.join("mybot", "bots", "my-alias-key.json")));
+    assert.ok(childPaths.logDir.endsWith(path.join("logs", "my-alias-key")));
 
     // 2. Fallback read paths for legacy alias file
     await fs.writeFile(path.join(env.root, "mybot", "credentials", "my-alias-key.json"), JSON.stringify({ cookie: {} }), "utf8");
     const pathsWithLegacy = resolveBotPaths(childTarget, env.root);
-    // Write path is still canonical UID
-    assert.ok(pathsWithLegacy.credentialPath.endsWith(path.join("mybot", "credentials", "999888777.json")));
+    // Write path stays under the management key
+    assert.ok(pathsWithLegacy.credentialPath.endsWith(path.join("mybot", "credentials", "my-alias-key.json")));
     // Read path falls back to existing legacy key file
     assert.ok(pathsWithLegacy.readCredentialPath.endsWith(path.join("mybot", "credentials", "my-alias-key.json")));
 
@@ -174,7 +174,7 @@ test("resolveManagedBotTarget strictly scopes UID selector to bot UID/key and se
       registry: env.registry,
       projectRoot: env.root,
     });
-    assert.equal(targetSelf.length, 1);
+    assert.equal(targetSelf.length, 2);
     assert.equal(targetSelf[0].ownerUid, "100000000000001");
 
     // 4. Selector type: "all" for action restart excludes Main Bot
