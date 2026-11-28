@@ -6,6 +6,7 @@ import { isMainBot, assertCanDeleteBot, resolveManagedBotTarget, resolveManagedB
 import { releaseCreationQuota } from "./mybot-creation-quota.js";
 import { withMyBotsTransaction } from "../Manager/qr-provisioning-registry.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
+import { invalidateBotStartOperation } from "./bot-lifecycle-operation.js";
 
 export function getSortedBotList(myBotsRegistry = {}, projectRoot = process.cwd()) {
   return resolveManagedBotList({ registry: myBotsRegistry, projectRoot, includeMain: true, includeRejected: true });
@@ -172,6 +173,7 @@ async function deleteChildBotLocked({
 
   // Safety check: protect main bot
   assertCanDeleteBot(botRecord, botKey);
+  await invalidateBotStartOperation(botKey, { root });
 
   // 1. Save previous status and mark as deleting
   const previousStatus = botRecord.status || "stopped";

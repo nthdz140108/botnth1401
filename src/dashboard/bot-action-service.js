@@ -23,7 +23,9 @@ import { activateBot } from "../commands/mybot/System/mybot-activation-service.j
 import { PM2Adapter, PM2ErrorCode } from "../runtime/pm2-adapter.js";
 import { createLaunchDescriptor } from "../runtime/launch-descriptor.js";
 import { withBotLock } from "../runtime/bot-lock.js";
+import { withRegistryLock } from "../commands/mybot/System/registry-lock.js";
 import { withMyBotsTransaction } from "../commands/mybot/Manager/qr-provisioning-registry.js";
+import { beginBotStartOperation, isBotStartOperationCurrent, cancelledStart } from "../commands/mybot/System/bot-lifecycle-operation.js";
 
 const DELETE_CONFIRMATION = "DELETE_SELECTED_BOTS";
 
@@ -238,9 +240,10 @@ export function createBotActionService({
         }
 
         operation.phase = "connecting";
+        const lifecycleToken = await beginBotStartOperation(botId, { root: projectRoot });
         let started;
         try {
-          started = await pm2.start(botId, { projectRoot });
+          started = await pm2.start(botId, { projectRoot, operationId: lifecycleToken });
         } catch (error) {
           throw actionFailureFromPM2(error, "Bot start failed");
         }
@@ -250,9 +253,10 @@ export function createBotActionService({
         }
         if (operation.cancelled) throw actionError(409, "START_CANCELLED", "Startup was cancelled", { stage: "readiness" });
         const health = await verifyReady(botId, bot);
+        if (!isBotStartOperationCurrent(botId, lifecycleToken, { root: projectRoot })) throw cancelledStart();
         if (operation.cancelled) throw actionError(409, "START_CANCELLED", "Startup was cancelled", { stage: "readiness" });
         if (botId !== "admin" && !bot.isMain) {
-          const activation = await activateBot({ botId, root: projectRoot, actorUid: bot.ownerUid || bot.profile?.ownerUid, isSystemAdmin: true,
+          const activation = await activateBot({ botId, root: projectRoot, operationId: lifecycleToken, actorUid: bot.ownerUid || bot.profile?.ownerUid, isSystemAdmin: true,
             pm2Adapter: { start: async () => true, stop: pm2.stop }, healthProbe: async () => health });
           if (!activation.success) throw actionError(409, activation.code || "ACTIVATION_FAILED", activation.error || "Activation failed", { stage: "activation" });
         }
@@ -281,7 +285,7 @@ export function createBotActionService({
         operation.phase = "stopping";
         await cancelPendingBotStart(botId, { projectRoot });
         await stopRuntime(botId);
-        updateProfile(botId, { desiredStatus: "stopped" }, { root: projectRoot });
+        await updateLifecycleProfile(botId, { desiredStatus: "stopped" });
         // Verify the process is really no longer online before claiming "stopped".
         try {
           const status = await pm2.status(botId);
@@ -388,7 +392,7 @@ export function createBotActionService({
         root: projectRoot,
       });
       await verifyReady(botId, bot);
-      updateProfile(botId, { desiredStatus: "running" }, { root: projectRoot });
+      await updateLifecycleProfile(botId, { desiredStatus: "running" });
       return {
         botId,
         action: "resume",
@@ -456,7 +460,7 @@ export function createBotActionService({
           throw actionError(409, "ACTION_FAILED", "Bot restart failed", { details: [error?.message || String(error)] });
         }
         await verifyReady(botId, bot);
-        updateProfile(botId, { desiredStatus: "running" }, { root: projectRoot });
+        await updateLifecycleProfile(botId, { desiredStatus: "running" });
         return { botId, action: "restart", status: "running", phase: "ws_ready" };
       }, { root: projectRoot });
     });
@@ -467,7 +471,7 @@ export function createBotActionService({
     const inventory = await readInventory();
     inventory[botId] = { ...(inventory[botId] || {}), enabled: true, disabledAt: null, disabledReason: null };
     await configStore.writeJson(registry.inventoryPath, inventory);
-    try { updateProfile(botId, { enabled: true }, { root: projectRoot }); } catch {}
+    try { await updateLifecycleProfile(botId, { enabled: true }); } catch {}
     const bot = await registry.describe(botId);
     await auditStore.append({ action: "bots.enable", botId });
     return { botId, action: "enable", enabled: true, status: bot?.status || "stopped" };
@@ -482,7 +486,7 @@ export function createBotActionService({
     const disabledAt = new Date().toISOString();
     inventory[botId] = { ...(inventory[botId] || {}), enabled: false, disabledAt, disabledReason: String(reason || "") };
     await configStore.writeJson(registry.inventoryPath, inventory);
-    updateProfile(botId, { enabled: false, desiredStatus: "stopped" }, { root: projectRoot });
+    await updateLifecycleProfile(botId, { enabled: false, desiredStatus: "stopped" });
     await auditStore.append({ action: "bots.disable", botId, reason: String(reason || "") });
     return { botId, action: "disable", enabled: false, disabledAt, disabledReason: String(reason || ""), status: "disabled" };
   }
@@ -666,6 +670,10 @@ export function createBotActionService({
       if (!killResult?.success) errors.push("SPAWNED_PROCESS_KILL_FAILED");
     }
     if (errors.length) throw actionError(409, "STOP_FAILED", "Bot could not be stopped", { details: errors });
+  }
+
+  async function updateLifecycleProfile(botId, patch) {
+    return withRegistryLock(path.join(projectRoot, "mybot", "mybots.json"), () => updateProfile(botId, patch, { root: projectRoot }));
   }
 
   async function verifyReady(botId, bot) {

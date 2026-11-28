@@ -3,7 +3,7 @@ import path from "node:path";
 import { writeJsonAtomic } from "./json-state.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 import { DEFAULT_STYLE, normalizeStyle, validateStyle } from "./mybot-style.js";
-import { withRegistryLockSync } from "./registry-lock.js";
+import { withRegistryLockSync, registryTransactions } from "./registry-lock.js";
 
 export function getProfileDir(botId, root = process.cwd()) {
   return path.join(root, "mybot", "instances", String(botId), "data");
@@ -154,6 +154,8 @@ export function getProfile(botId, { root = process.cwd() } = {}) {
     if (fs.existsSync(filePath)) {
       const raw = fs.readFileSync(filePath, "utf8");
       const profile = JSON.parse(raw);
+      const inventory = loadMyBotsRegistry(path.join(root, "mybot", "mybots.json"));
+      if (inventory[bId]?.desiredStatus !== undefined) profile.desiredStatus = inventory[bId].desiredStatus;
       return createDefaultProfile(bId, profile);
     }
   } catch {}
@@ -209,6 +211,7 @@ function saveProfileLocked(botId, profileData, {
   expectedRevision = null,
   actor = "system",
   auditStore = null,
+  lifecycleDesiredStatus = null,
 } = {}) {
   const bId = String(botId).trim();
   const current = getProfile(bId, { root });
@@ -253,10 +256,11 @@ function saveProfileLocked(botId, profileData, {
   };
 
   const filePath = getProfilePath(bId, root);
+  registryTransactions.getStore()?.trackFile(filePath);
   writeJsonAtomic(filePath, updatedProfile);
 
   // Sync summary metadata to mybots.json
-  syncProfileToRegistry(updatedProfile, { root });
+  syncProfileToRegistry(updatedProfile, { root, desiredStatus: lifecycleDesiredStatus });
 
   // Update database.json nameServer if present
   try {
@@ -264,6 +268,7 @@ function saveProfileLocked(botId, profileData, {
     if (fs.existsSync(dbJsonPath)) {
       const dbConfig = JSON.parse(fs.readFileSync(dbJsonPath, "utf8"));
       dbConfig.nameServer = updatedProfile.nameServer;
+      registryTransactions.getStore()?.trackFile(dbJsonPath);
       writeJsonAtomic(dbJsonPath, dbConfig);
     }
   } catch {}
@@ -319,7 +324,7 @@ function updateProfileLocked(botId, patch = {}, options = {}) {
     }
   }
 
-  return saveProfile(bId, { ...current, ...safePatch }, options);
+  return saveProfile(bId, { ...current, ...safePatch }, { ...options, lifecycleDesiredStatus: safePatch.desiredStatus || null });
 }
 
 export function updateStyle(botId, stylePatch = {}, options = {}) {
@@ -362,7 +367,7 @@ export function resetStyle(botId, options = {}) {
   return saveProfile(bId, { ...current, style: { ...DEFAULT_STYLE } }, options);
 }
 
-export function syncProfileToRegistry(profile, { root = process.cwd() } = {}) {
+export function syncProfileToRegistry(profile, { root = process.cwd(), desiredStatus = null } = {}) {
   if (!profile || !profile.botId) return;
   const registryPath = path.join(root, "mybot", "mybots.json");
   const registry = fs.existsSync(registryPath) ? loadMyBotsRegistry(registryPath) : {};
@@ -383,7 +388,8 @@ export function syncProfileToRegistry(profile, { root = process.cwd() } = {}) {
   entry.trialStatus = profile.trialStatus;
   entry.expiryAt = profile.expiryAt;
   entry.enabled = profile.enabled !== false;
-  for (const field of ["activationPolicy", "activatedAt", "desiredStatus", "accountIdentityStatus", "adminBindingStatus", "childOwnerUid", "childMainAdminUid"]) {
+  if (["running", "stopped"].includes(desiredStatus)) entry.desiredStatus = desiredStatus;
+  for (const field of ["activationPolicy", "activatedAt", "accountIdentityStatus", "adminBindingStatus", "childOwnerUid", "childMainAdminUid"]) {
     if (profile[field] !== undefined) entry[field] = profile[field];
   }
   if (profile.adminIdentitySeeds !== undefined) {

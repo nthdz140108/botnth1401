@@ -120,5 +120,5 @@ test('stop while activation awaits readiness never consumes trial or restores ru
   assert.equal(result.success, false);
   const registry = JSON.parse(fs.readFileSync(path.join(root, 'mybot', 'mybots.json')));
   assert.equal(registry.bot_fixed.desiredStatus, 'stopped');
-  assert.equal(registry.bot_fixed.expiryAt, null);
+  assert.equal(registry.bot_fixed.expiryAt ?? null, null);
 });

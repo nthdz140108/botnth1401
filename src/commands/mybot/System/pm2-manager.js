@@ -16,6 +16,7 @@ import { createLaunchDescriptor } from "../../../runtime/launch-descriptor.js";
 import { probeBotReadiness, createBotReadinessService } from "../../../runtime/runtime-readiness.js";
 import { withRegistryLock } from "./registry-lock.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
+import { beginBotStartOperation, invalidateBotStartOperation, isBotStartOperationCurrent, withCurrentBotStartOperation } from "./bot-lifecycle-operation.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,8 +57,20 @@ export async function cancelPendingBotStart(targetOrUid, { projectRoot = null } 
   const target = resolveManagedBotTargetRecord(targetOrUid, { projectRoot: root });
   const token = `${root}:${target.key}`;
   launchGenerations.set(token, (launchGenerations.get(token) || 0) + 1);
-  await updateMyBotRecord(target, { desiredStatus: "stopped", lastUpdated: new Date().toISOString() }, root);
+  await invalidateBotStartOperation(target.key, { root });
   await Promise.allSettled([startingBots.get(token), restartingBots.get(token)].filter(Boolean));
+}
+
+async function stopCancelledLaunchIfOwned(botKey, pid, root, adapter = new PM2Adapter({ projectRoot: root })) {
+  if (!pid) return;
+  return withRegistryLock(path.join(root, "mybot", "mybots.json"), async () => {
+    const latest = loadMyBotsRegistry(path.join(root, "mybot", "mybots.json"))[botKey];
+    if (latest?.desiredStatus !== "stopped") return;
+    const current = await adapter.listMyBotProcesses();
+    if (!current.some(proc => proc.name === botKey && Number(proc.pid) === Number(pid))) return;
+    try { process.kill(Number(pid), "SIGTERM"); }
+    catch (error) { if (error.code !== "ESRCH") throw error; }
+  });
 }
 
 export function checkPortInUse(port) {
@@ -609,6 +622,7 @@ export function restartBotRuntime(targetOrUid, options = {}) {
   if (existing) return existing;
 
   const operation = (async () => {
+    const operationId = await beginBotStartOperation(botKey, { root, operationId: options.operationId });
     if (effectiveBotUid && effectiveBotUid !== "admin") {
       consumeRestartRequest(effectiveBotUid, root, { maxAgeMs: 120_000 });
     }
@@ -621,6 +635,10 @@ export function restartBotRuntime(targetOrUid, options = {}) {
       const restarted = await restartPM2Process(botKey);
       if (restarted) {
         const health = await checkBotHealth(target, readBotWebPort(target, root), options.readinessTimeoutMs || 60000, root);
+        if (!isBotStartOperationCurrent(botKey, operationId, { root })) {
+          await stopCancelledLaunchIfOwned(botKey, health.identity?.pid, root);
+          return { success: false, code: "START_CANCELLED", reason: "START_CANCELLED" };
+        }
         return { success: health.healthy, method: "pm2", botKey, pid: health.identity?.pid || null, previousPid, health, reason: health.healthy ? "ready" : health.reason };
       }
     }
@@ -640,7 +658,7 @@ export function restartBotRuntime(targetOrUid, options = {}) {
       }
     }
 
-    const launchResult = await startBotWithLauncher(target, { ...options, projectRoot: root });
+    const launchResult = await startBotWithLauncher(target, { ...options, operationId, projectRoot: root });
     return {
       ...launchResult,
       previousPid,
@@ -822,11 +840,13 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
   }
 
   const generation = launchGenerations.get(lockKey) || 0;
-  const isCancelled = () => (launchGenerations.get(lockKey) || 0) !== generation;
+  let operationId = null;
+  const isCancelled = () => (launchGenerations.get(lockKey) || 0) !== generation || !isBotStartOperationCurrent(botKey, operationId, { root });
   const startPromise = (async () => {
     if (options.env?.TEST_MOCK_LAUNCH === "true") {
       return { success: true, pid: 99999, consolePid: 88888, reason: "mock" };
     }
+    operationId = await beginBotStartOperation(botKey, { root, operationId: options.operationId });
 
     const isBootstrapOnly = Boolean(options.skipHealthCheck || options.env?.QR_BOOTSTRAP_ONLY === "true");
     const webPort = isBootstrapOnly ? null : readBotWebPort(target, root);
@@ -846,7 +866,7 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
     if (webPort && (await checkPortInUse(webPort))) {
       const health = await checkBotHealth(target, webPort, 1000, root);
       if (!health.healthy) return { success: false, reason: "PORT_IN_USE", health };
-      await updateMyBotRecord(target, { status: "running", desiredStatus: "running", lastUpdated: new Date().toISOString() }, root);
+      await withCurrentBotStartOperation(botKey, operationId, { root }, () => updateMyBotRecord(target, { status: "running", desiredStatus: "running", lastUpdated: new Date().toISOString() }, root));
       return { success: true, pid: health.identity?.pid || null, consolePid: null, reason: "already_running", health };
     }
 
@@ -936,18 +956,18 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
       const health = await service.waitFor({ descriptor, timeoutMs: options.readinessTimeoutMs || 60000 });
       if (health.ready) {
           if (isCancelled()) {
-            await stopPM2Process(botKey);
+            await stopCancelledLaunchIfOwned(botKey, health.identity?.pid, root, adapter);
             return { success: false, code: "START_CANCELLED", reason: "START_CANCELLED" };
           }
           const nodePid = health.identity?.pid || null;
-          await updateMyBotRecord(target, {
+          await withCurrentBotStartOperation(botKey, operationId, { root }, () => updateMyBotRecord(target, {
             pid: nodePid ? String(nodePid) : null,
             consolePid: null,
             status: "running",
             desiredStatus: "running",
             startError: null,
             lastUpdated: new Date().toISOString(),
-          }, root);
+          }, root));
           appendStartupLog(target, `Healthy under PM2 pm2Name=${descriptor.pm2Name} pid=${nodePid} port=${webPort}`, root);
           return { success: true, pid: nodePid, consolePid: null, reason: result.reason, health };
       }

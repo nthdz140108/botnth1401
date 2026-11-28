@@ -11,6 +11,8 @@ import { getProjectRoot } from "../../../utils/env.js";
 import { resolveManagedBotTarget } from "./mybot-identity.js";
 import { getBotLaunchGeneration } from "./pm2-manager.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
+import { beginBotStartOperation, isBotStartOperationCurrent, withCurrentBotStartOperation, cancelledStart } from "./bot-lifecycle-operation.js";
+import { withRegistryLock } from "./registry-lock.js";
 import {
   resolveOwnedActivationCandidates,
   resolveOwnerActiveSlot,
@@ -45,6 +47,7 @@ export async function activateBot({
   healthProbe = null,
   durationMs = 60 * 60 * 1000,
   maxActiveBotsPerOwner,
+  operationId = null,
 } = {}) {
   if (!botId) {
     return { success: false, code: "BOT_NOT_FOUND", error: "botId is required" };
@@ -53,8 +56,9 @@ export async function activateBot({
   const bId = String(botId).trim();
   const projectRoot = root || getProjectRoot();
   const generation = getBotLaunchGeneration(bId, projectRoot);
+  let lifecycleOperationId = null;
   const assertNotCancelled = () => {
-    if (getBotLaunchGeneration(bId, projectRoot) !== generation) throw Object.assign(new Error("Activation cancelled by stop/delete"), { code: "START_CANCELLED" });
+    if (getBotLaunchGeneration(bId, projectRoot) !== generation || !isBotStartOperationCurrent(bId, lifecycleOperationId, { root: projectRoot })) throw cancelledStart();
   };
 
   // Resolve inventory and bot record first
@@ -142,7 +146,7 @@ export async function activateBot({
   }
 
   // Check in-flight lock (per-bot always; per-owner only when a finite active cap is configured)
-  const botLockKey = `bot_${bId}`;
+  const botLockKey = `bot_${projectRoot}_${bId}`;
   const ownerLockKey = ownerUid && Number.isFinite(effectiveMaxActive) ? `owner_${ownerUid}` : null;
   if (inFlightActivations.has(botLockKey) || (ownerLockKey && inFlightActivations.has(ownerLockKey))) {
     return {
@@ -153,6 +157,7 @@ export async function activateBot({
   }
 
   const execution = (async () => {
+    lifecycleOperationId = await beginBotStartOperation(bId, { root: projectRoot, operationId });
     // Snapshots for rollback
     const profileSnapshot = JSON.parse(JSON.stringify(profile || {}));
     const registrySnapshot = botEntry ? JSON.parse(JSON.stringify(botEntry)) : null;
@@ -170,6 +175,7 @@ export async function activateBot({
       if (!pendingPolicy && botEntry?.status === "running" && await pm2Adapter?.isRunning?.(bId)) {
         const health = await performHealthCheck({ botId: bId, webPort: botEntry?.webPort, root: projectRoot, pm2Adapter, healthProbe });
         if (!health.healthy) return { success: false, code: "READINESS_FAILED", error: health.error || "Bot is not ready", health };
+        assertNotCancelled();
         return {
           success: true,
           botId: bId,
@@ -182,7 +188,7 @@ export async function activateBot({
       }
 
       try {
-        await startProcess({ botId: bId, root: projectRoot, pm2Adapter, launcherAdapter });
+        await startProcess({ botId: bId, root: projectRoot, operationId: lifecycleOperationId, pm2Adapter, launcherAdapter });
         let health = { healthy: true };
         if (checkHealth) {
           health = await performHealthCheck({
@@ -202,6 +208,7 @@ export async function activateBot({
         const effectiveExpiry = pendingPolicy
           ? (policy.type === "permanent" ? "-1" : new Date(readyAt + Number(policy.durationMs)).toISOString())
           : profile.expiryAt;
+        await withCurrentBotStartOperation(bId, lifecycleOperationId, { root: projectRoot }, () => {
         updateProfile(bId, {
           enabled: true, desiredStatus: "running",
           ...(pendingPolicy ? { activatedAt: new Date(readyAt).toISOString(), expiryAt: effectiveExpiry, trialStatus: "not_required" } : {}),
@@ -216,6 +223,7 @@ export async function activateBot({
             saveMyBotsRegistry(inv, inventoryPath);
           }
         }
+        });
 
         return {
           success: true,
@@ -228,8 +236,8 @@ export async function activateBot({
           health,
         };
       } catch (err) {
-        await cleanupFailedProcess(bId, projectRoot, pm2Adapter);
-        return { success: false, code: "ACTIVATION_FAILED", error: err?.message || "Failed to start bot process" };
+        await cleanupFailedProcess(bId, projectRoot, pm2Adapter, lifecycleOperationId);
+        return { success: false, code: err?.code === "START_CANCELLED" ? err.code : "ACTIVATION_FAILED", error: err?.message || "Failed to start bot process" };
       }
     }
 
@@ -247,7 +255,7 @@ export async function activateBot({
 
     let claimRecord = null;
     try {
-      await startProcess({ botId: bId, root: projectRoot, pm2Adapter, launcherAdapter });
+      await startProcess({ botId: bId, root: projectRoot, operationId: lifecycleOperationId, pm2Adapter, launcherAdapter });
 
       let health = { healthy: true };
       if (checkHealth) {
@@ -270,10 +278,13 @@ export async function activateBot({
       assertNotCancelled();
       const readyAt = health?.checkedAt ? Date.parse(health.checkedAt) : Date.now();
       const activatedNow = Number.isFinite(readyAt) ? readyAt : Date.now();
-      const claim = txn.commit({ commitNow: activatedNow, commitDurationMs: durationMs });
+      let claim;
+      await withCurrentBotStartOperation(bId, lifecycleOperationId, { root: projectRoot }, () => {
+      claim = txn.commit({ commitNow: activatedNow, commitDurationMs: durationMs });
       if (!claim.success) {
         throw new Error(claim.error || "Failed to commit trial ledger");
       }
+      });
       claimRecord = claim;
 
       // Update profile
@@ -313,7 +324,7 @@ export async function activateBot({
       };
     } catch (startErr) {
       // Rollback on failure: stop process, release trial claim, revert profile & inventory snapshots
-      await cleanupFailedProcess(bId, projectRoot, pm2Adapter);
+      await cleanupFailedProcess(bId, projectRoot, pm2Adapter, lifecycleOperationId);
       if (claimRecord?.weekKey) {
         try {
           releaseOwnerTrial(ownerUid, claimRecord.weekKey, { root: projectRoot });
@@ -322,6 +333,10 @@ export async function activateBot({
         try {
           txn.release();
         } catch {}
+      }
+
+      if (!isBotStartOperationCurrent(bId, lifecycleOperationId, { root: projectRoot })) {
+        return { success: false, code: "START_CANCELLED", error: "Activation was superseded by a newer lifecycle operation" };
       }
 
       try {
@@ -384,14 +399,14 @@ export async function activateBot({
   }
 }
 
-async function startProcess({ botId, root, pm2Adapter, launcherAdapter }) {
+async function startProcess({ botId, root, operationId, pm2Adapter, launcherAdapter }) {
   if (pm2Adapter && typeof pm2Adapter.start === "function") {
-    const res = await pm2Adapter.start(botId);
+    const res = await pm2Adapter.start(botId, { projectRoot: root, operationId });
     if (res === false) throw new Error("PM2 start returned false");
     return;
   }
   if (launcherAdapter && typeof launcherAdapter.startBotWithLauncher === "function") {
-    const res = await launcherAdapter.startBotWithLauncher(botId, { root });
+    const res = await launcherAdapter.startBotWithLauncher(botId, { root, projectRoot: root, operationId });
     if (res && res.success === false) {
       throw new Error(res.error || res.reason || "Launcher failed to start bot");
     }
@@ -399,7 +414,7 @@ async function startProcess({ botId, root, pm2Adapter, launcherAdapter }) {
   }
   const { startBotWithLauncher } = await import("./pm2-manager.js");
   if (typeof startBotWithLauncher === "function") {
-    const res = await startBotWithLauncher(botId, { root });
+    const res = await startBotWithLauncher(botId, { root, projectRoot: root, operationId });
     if (res && res.success === false) {
       throw new Error(res.error || res.reason || "Launcher failed to start bot");
     }
@@ -426,7 +441,10 @@ async function performHealthCheck({ botId, webPort, root, pm2Adapter, healthProb
   return { healthy: false, error: "No readiness probe available" };
 }
 
-async function cleanupFailedProcess(botId, root, pm2Adapter) {
+async function cleanupFailedProcess(botId, root, pm2Adapter, operationId) {
+  return withRegistryLock(path.join(root, "mybot", "mybots.json"), async () => {
+  const registry = loadMyBotsRegistry(path.join(root, "mybot", "mybots.json"));
+  if (registry[botId]?.desiredStatus === "running" && registry[botId]?.operationId !== operationId) return;
   try {
     if (pm2Adapter && typeof pm2Adapter.stop === "function") {
       await pm2Adapter.stop(botId);
@@ -438,4 +456,5 @@ async function cleanupFailedProcess(botId, root, pm2Adapter) {
     if (typeof killSpawnedProcess === "function") await killSpawnedProcess(botId);
     if (typeof stopPM2Process === "function") await stopPM2Process(botId);
   } catch {}
+  });
 }
