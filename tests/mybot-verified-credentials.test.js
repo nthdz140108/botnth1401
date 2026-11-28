@@ -106,6 +106,27 @@ test('targeted QR refuses a different account for a legacy numeric bot key befor
     await assert.rejects(fs.access(path.join(root, 'mybot', 'credentials', '123456789012.json')));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+test('credential upsert never changes an existing activation policy', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'credential-policy-'));
+  try {
+    const initialize = async (key, value, _record, txn) => txn.writeJson(path.join(root, 'mybot', 'credentials', `${key}.json`), value);
+    const first = await persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', initialize, profilePatch: { activationPolicy: { days: 7 }, expiryAt: null } });
+    const next = await persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', profilePatch: { activationPolicy: { permanent: true }, expiryAt: '2099-01-01' } });
+    assert.equal(next.botKey, first.botKey);
+    assert.deepEqual(next.record.activationPolicy, { days: 7 });
+    assert.equal(next.record.expiryAt, null);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('verified dashboard draft may choose its stable key without creating duplicate accounts', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'draft-bot-'));
+  const newBotKey = 'bot_11111111-1111-4111-8111-111111111111';
+  try {
+    const initialize = async (key, value, _record, txn) => txn.writeJson(path.join(root, 'mybot', 'credentials', `${key}.json`), value);
+    const first = await persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', newBotKey, initialize });
+    assert.equal(first.botKey, newBotKey);
+    await assert.rejects(persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', newBotKey: 'bot_22222222-2222-4222-8222-222222222222', initialize }), { code: 'DUPLICATE_ACCOUNT' });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 test('QR reinitialization preserves command and group settings and seeds the account UID', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'qr-preserve-'));
   const previous = process.env.PROJECT_ROOT;

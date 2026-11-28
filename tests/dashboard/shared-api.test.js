@@ -6,6 +6,7 @@ import path from "node:path";
 import express from "express";
 import { createServer } from "node:http";
 import portfinder from "portfinder";
+import { CredentialService } from "../../src/dashboard/credential-service.js";
 import { AuditStore } from "../../src/dashboard/audit-store.js";
 import { BotRegistry } from "../../src/dashboard/bot-registry.js";
 import { registerDashboardApi } from "../../src/dashboard/api-routes.js";
@@ -390,7 +391,16 @@ test("per-bot prefix API reads and updates only the selected bot command config"
 
 test("credential read is masked, reveal is explicit, and update writes allowed credential fields", async () => {
   const root = await makeDashboardFixture();
-  const server = await startSharedApi(root);
+  const botConfigPath = path.join(root, "mybot", "bots", "admin.json");
+  const botConfig = JSON.parse(await fs.readFile(botConfigPath, "utf8"));
+  await fs.writeFile(botConfigPath, JSON.stringify({ ...botConfig, configFilePath: "assets/config.json" }));
+  const registryPath = path.join(root, "mybot", "mybots.json");
+  const records = JSON.parse(await fs.readFile(registryPath, "utf8"));
+  await fs.writeFile(registryPath, JSON.stringify({ ...records, admin: { name: "admin", uid: "main-account", isMain: true } }));
+  await fs.copyFile(path.join(root, "mybot", "bots", "admin-credential.json"), path.join(root, "assets", "config.json"));
+  const registry = new BotRegistry({ root });
+  const credentialService = new CredentialService({ root, registry, verifyCredential: async () => ({ uid: "main-account" }) });
+  const server = await startSharedApi(root, { registry, credentialService });
   try {
     const masked = await fetchJson(`${server.url}/api/bots/admin/credential`);
     assert.equal(masked.body.data.value.cookie, "[masked]");
@@ -399,7 +409,7 @@ test("credential read is masked, reveal is explicit, and update writes allowed c
     const update = await putJson(`${server.url}/api/bots/admin/credential`, { imei: "imei-1", userAgent: "ua-1", active: true }, "req-cred");
     assert.equal(update.restartRequired, true);
     assert.ok(update.backup?.file);
-    const saved = JSON.parse(await fs.readFile(path.join(root, "mybot", "bots", "admin-credential.json"), "utf8"));
+    const saved = JSON.parse(await fs.readFile(path.join(root, "assets", "config.json"), "utf8"));
     assert.equal(saved.imei, "imei-1");
     assert.equal(saved.userAgent, "ua-1");
     assert.equal(saved.active, true);

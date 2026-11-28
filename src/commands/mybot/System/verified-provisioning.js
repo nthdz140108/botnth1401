@@ -5,10 +5,11 @@ import { withMyBotsTransaction } from '../Manager/qr-provisioning-registry.js';
 import { normalizeLoginCredential, credentialError } from './credential-normalizer.js';
 import { writeJsonAtomic } from './json-state.js';
 
-export async function persistVerifiedBot({ root, credential: input, identity, ownerUid, ownerName = '', targetBotKey, allowAdmin = false, allowMainUpdate = false, initialize, profilePatch = {}, signal } = {}) {
+export async function persistVerifiedBot({ root, credential: input, identity, ownerUid, ownerName = '', targetBotKey, newBotKey, allowAdmin = false, allowMainUpdate = false, initialize, profilePatch = {}, signal } = {}) {
   const credential = normalizeLoginCredential(input);
   const accountUid = String(identity?.uid || '').trim();
   if (!accountUid) throw credentialError('ACCOUNT_IDENTITY_MISSING', 'Cần xác minh tài khoản trước khi lưu.', 'verify');
+  if (newBotKey && (targetBotKey || !/^bot_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(newBotKey))) throw credentialError('INVALID_BOT_KEY', 'Mã bot dự thảo không hợp lệ.', 'identity');
   return withMyBotsTransaction({ root }, async txn => {
     if (signal?.aborted) throw credentialError('LOGIN_CANCELLED', 'Phiên đăng nhập đã bị hủy.', 'persist');
     const registry = txn._registry;
@@ -20,6 +21,8 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
     if (mainUpdate && (!mainUid || mainUid !== accountUid)) throw credentialError('ACCOUNT_MISMATCH', 'Tài khoản vừa quét không đúng tài khoản Main đã lưu.', 'identity');
     if (!mainUpdate && [main?.uid, main?.accountUid, state.uid].some(uid => uid && String(uid) === accountUid)) throw credentialError('MAIN_ACCOUNT_FORBIDDEN', 'Không thể dùng tài khoản Main để tạo bot con.', 'identity');
     const matches = Object.entries(registry).filter(([key, record]) => key !== 'admin' && String(record?.accountUid || record?.uid || key) === accountUid);
+    if (newBotKey && matches.length) throw credentialError('DUPLICATE_ACCOUNT', 'Tài khoản đã được dùng bởi bot khác.', 'identity');
+    if (newBotKey && registry[newBotKey]) throw credentialError('BOT_EXISTS', 'Mã bot đã được sử dụng.', 'identity');
     if (matches.length > 1) throw credentialError('DUPLICATE_ACCOUNT', 'Tài khoản trùng nhiều bot; cần đối chiếu dữ liệu trước.', 'identity');
     let botKey = targetBotKey || matches[0]?.[0];
     let existing = botKey ? registry[botKey] : null;
@@ -31,24 +34,32 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
     if (!existing && !String(ownerUid || '').trim()) throw credentialError('OWNER_REQUIRED', 'Cần chọn chủ quản lý bot.', 'authorize');
     const created = !existing;
     if (created) {
-      botKey = `bot_${randomUUID()}`;
+      botKey = newBotKey || `bot_${randomUUID()}`;
       existing = await txn.reserveProvisionedBot({ uid: botKey, name: botKey, accountUid, ownerUid, createdByUid: ownerUid, ownerName, displayName: identity.displayName || ownerName });
     }
-    const record = { ...existing, botKey, uid: accountUid, accountUid, accountIdentityStatus: 'verified', adminBindingStatus: existing.adminBindingStatus || 'pending', displayName: identity.displayName || existing.displayName || ownerName, avatar: identity.avatar || existing.avatar || '', canonicalUsername: identity.canonicalUsername || existing.canonicalUsername || '', desiredStatus: existing.desiredStatus || 'stopped', lastUpdated: new Date().toISOString(), cookieUpdatedAt: new Date().toISOString(), ...profilePatch };
+    const record = { ...existing, ...(created ? profilePatch : {}), botKey, uid: accountUid, accountUid, accountIdentityStatus: 'verified', adminBindingStatus: existing.adminBindingStatus || 'pending', displayName: identity.displayName || existing.displayName || ownerName, avatar: identity.avatar || existing.avatar || '', canonicalUsername: identity.canonicalUsername || existing.canonicalUsername || '', desiredStatus: existing.desiredStatus || 'stopped', lastUpdated: new Date().toISOString(), cookieUpdatedAt: new Date().toISOString() };
     const stored = { ...credential, accountUid, accountIdentityStatus: 'verified' };
+    let backup = null;
+    const credentialFile = mainUpdate ? path.join(root, 'assets', 'config.json') : path.join(root, 'mybot', 'credentials', `${botKey}.json`);
     if (created) {
       if (typeof initialize !== 'function') throw credentialError('INITIALIZER_REQUIRED', 'Thiếu bước khởi tạo dữ liệu bot.', 'persist');
       await initialize(botKey, stored, record, txn);
     } else {
-      const file = mainUpdate ? path.join(root, 'assets', 'config.json') : path.join(root, 'mybot', 'credentials', `${botKey}.json`);
+      const file = credentialFile;
       let previous = {};
-      try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      let hadCredential = false;
+      try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); hadCredential = true; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (hadCredential) {
+        const backupFile = path.join(root, 'logs', 'dashboard-backups', `${path.basename(file)}.${Date.now()}-${randomUUID()}.bak`);
+        if (txn.writeJson) txn.writeJson(backupFile, previous); else writeJsonAtomic(backupFile, previous);
+        backup = { file: backupFile };
+      }
       const next = { ...previous, ...stored };
       if (txn.writeJson) txn.writeJson(file, next); else writeJsonAtomic(file, next);
     }
     if (created) txn.finalizeProvisionedBot(botKey, { ...record, status: 'stopped' });
     else if (txn.patchBot) txn.patchBot(botKey, record);
     else { txn._registry[botKey] = record; txn._flush(); }
-    return { botKey, record: { ...record, status: created ? 'stopped' : record.status }, created, restartRequired: !created };
+    return { botKey, record: { ...record, status: created ? 'stopped' : record.status }, created, restartRequired: !created, backup, changedPaths: [credentialFile] };
   });
 }
