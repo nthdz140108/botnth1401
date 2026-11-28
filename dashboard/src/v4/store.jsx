@@ -10,6 +10,8 @@ import {
 } from "../app/session.js";
 import { normalizeBotRecord, v4Fetch } from "./http.js";
 
+import { awaitBotOperation } from "./operation-state.js";
+
 const ControlCenterContext = createContext(null);
 
 const OPERATIONS_STORAGE_KEY = "mybot_v4_operations";
@@ -299,18 +301,13 @@ export function ControlCenterProvider({ children }) {
           body: extraBody,
         });
 
+        const confirmed = await awaitBotOperation({
+          botId, action, response: res, fetchOperation: v4Fetch,
+          onProgress: (serverOp) => setOperations((prev) => prev.map((op) => op.id === opId ? { ...op, phase: serverOp.phase || op.phase, operationId: serverOp.operationId } : op)),
+        });
         const durationMs = Date.now() - startTime;
-        const finalPhase =
-          action === "hot_standby" || action === "standby"
-            ? "standby"
-            : action === "stop" || action === "shutdown"
-              ? "stopped"
-              : "ws_ready";
-
-        const finalStatus =
-          action === "hot_standby" || action === "standby"
-            ? "hot_standby"
-            : "completed";
+        const finalPhase = confirmed.phase;
+        const finalStatus = finalPhase === "standby" ? "hot_standby" : "completed";
 
         setOperations((prev) =>
           prev.map((op) =>
@@ -403,10 +400,7 @@ export function ControlCenterProvider({ children }) {
       setOperations((prev) => [initialOp, ...prev.slice(0, 49)]);
 
       try {
-        const res = await v4Fetch("/api/bots/actions/bulk", {
-          method: "POST",
-          body: { action, botIds, ...extraBody },
-        });
+        const res = await Promise.all(botIds.map((id) => runBotAction(id, action, extraBody)));
 
         const durationMs = Date.now() - startTime;
         setOperations((prev) =>
@@ -448,7 +442,7 @@ export function ControlCenterProvider({ children }) {
         throw err;
       }
     },
-    [notify, refreshAll]
+    [notify, refreshAll, runBotAction]
   );
 
   // Retry operation

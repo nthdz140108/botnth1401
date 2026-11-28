@@ -25,7 +25,7 @@ use zalo_sdk::apis::messaging::VideoSendRequest;
 
 use crate::auth::{LoginError, RequestContext};
 use crate::qr_coordinator::parse_expiry_preset;
-use crate::routes::DashboardState;
+use crate::routes::{DashboardState, hybrid_management};
 
 #[derive(RustEmbed)]
 #[folder = "../../../dashboard/dist"]
@@ -229,6 +229,7 @@ pub async fn api_bots_create(
     Extension(ctx): Extension<RequestContext>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/bots"), Some(&body)).await; }
     let requested_key = body
         .get("botKey")
         .or_else(|| body.get("id"))
@@ -456,6 +457,7 @@ pub async fn api_bot_put_expiry(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::PUT, format!("/bridge/bots/{id}/expiry"), Some(&body)).await; }
     let engine = st.supervisor.caches().engine();
     let Ok(Some(mut bot)) = engine.get_bot(&id) else {
         return err(StatusCode::NOT_FOUND, &ctx, "BOT_NOT_FOUND", "Không tìm thấy Bot.");
@@ -510,6 +512,7 @@ pub async fn api_owner_trial_reset(
     Extension(ctx): Extension<RequestContext>,
     Path(owner_uid): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/owners/{owner_uid}/trial-reset"), None).await; }
     let removed = st
         .supervisor
         .caches()
@@ -531,6 +534,7 @@ pub async fn api_bot_list_admins(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/bots/{id}/admins"), None).await; }
     let rows = st
         .supervisor
         .caches()
@@ -557,6 +561,7 @@ pub async fn api_bot_add_admin(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/bots/{id}/admins"), Some(&body)).await; }
     let Some(uid) = body
         .get("uid")
         .or_else(|| body.get("adminUid"))
@@ -589,6 +594,7 @@ pub async fn api_bot_remove_admin(
     Extension(ctx): Extension<RequestContext>,
     Path((id, admin_uid)): Path<(String, String)>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::DELETE, format!("/bridge/bots/{id}/admins/{admin_uid}"), None).await; }
     let removed = st
         .supervisor
         .caches()
@@ -604,6 +610,7 @@ pub async fn api_bot_put_unified_settings(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::PUT, format!("/bridge/bots/{id}/settings"), Some(&body)).await; }
     let engine = st.supervisor.caches().engine();
     let Ok(Some(mut bot)) = engine.get_bot(&id) else {
         return err(StatusCode::NOT_FOUND, &ctx, "BOT_NOT_FOUND", "Không tìm thấy Bot.");

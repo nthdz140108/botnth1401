@@ -39,26 +39,19 @@ import { createQrSessionManager } from "./qr-service.js";
 import { createRuntimeMetrics } from "../observability/runtime-metrics.js";
 import { createWorkloadBroker } from "../core/workload-broker.js";
 import { getZaloRuntimeConfig } from "../api-zalo/zalo-config.js";
+import { normalizeLoginCredential } from "../commands/mybot/System/credential-normalizer.js";
+import { verifyLoginCredential } from "../commands/mybot/System/login-verification.js";
+import { persistVerifiedBot } from "../commands/mybot/System/verified-provisioning.js";
+import { initializeVerifiedBotFiles } from "../commands/mybot/Manager/qr-login-command.js";
+import { withMyBotsTransaction } from "../commands/mybot/Manager/qr-provisioning-registry.js";
 import { writeJsonAtomic } from "../commands/mybot/System/json-state.js";
-import { updateProfile } from "../commands/mybot/System/mybot-profile-service.js";
+import { CredentialService } from "./credential-service.js";
+import { createBotManagementService } from "./bot-management-service.js";
 
 function assertSafeId(id, label = "id") {
   if (!id || typeof id !== "string") throw new Error(`${label} must be a non-empty string`);
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error(`${label} contains invalid characters`);
   if (id.length > 64) throw new Error(`${label} is too long`);
-}
-
-function parseFlexibleCookieInput(raw) {
-  if (!raw) return null;
-  if (typeof raw === "object") return raw;
-  const trimmed = String(raw).trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {}
-  }
-  return { raw: trimmed };
 }
 
 const DEFAULT_BRIDGE_PORT = 4174;
@@ -95,8 +88,11 @@ export class NodeBridgeService {
     port = Number(process.env.MYBOT_BRIDGE_PORT || DEFAULT_BRIDGE_PORT),
     host = process.env.MYBOT_BRIDGE_HOST || DEFAULT_BRIDGE_HOST,
     secret = null,
+    verifyCredential = verifyLoginCredential,
+    verifyChildAdminUid = null,
   } = {}) {
     this.root = path.resolve(root);
+    this.verifyCredential = verifyCredential;
     this.port = port;
     this.host = host;
     this.secret = secret || process.env.INTERNAL_API_SECRET || getInternalSecret({ projectRoot: this.root });
@@ -111,6 +107,20 @@ export class NodeBridgeService {
       configStore: this.configStore,
       auditStore: this.auditStore,
     });
+
+    this.management = createBotManagementService({ root: this.root, registry: this.registry, prefixService: this.prefixService, auditStore: this.auditStore, verifyAdminUid: verifyChildAdminUid || (async (botId, uid) => {
+      const bot = await this.registry.describe(botId);
+      const stateFile = path.join(this.root, "mybot", "state", `${botId}.json`);
+      const state = JSON.parse(await fs.readFile(stateFile, "utf8").catch(() => "{}"));
+      if (state.connected && String(state.uid || "") === uid) return true;
+      if (!bot?.connected || !bot.port) return false;
+      const response = await fetch(`http://127.0.0.1:${bot.port}/internal/runtime/friends`, { headers: { "x-internal-secret": this.secret }, signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) return false;
+      const data = await response.json();
+      return data.online === true && Array.isArray(data.friends) && data.friends.some((friend) => String(friend.uid) === uid);
+    }) });
+
+    this.credentials = new CredentialService({ root: this.root, registry: this.registry, configStore: this.configStore, verifyCredential });
 
     this.qrCoordinator = createWebAdminRecoveryCoordinator({
       root: this.root,
@@ -239,19 +249,26 @@ export class NodeBridgeService {
 
   async _collectBots() {
     const rawBots = await this.registry.list();
+    const inventory = JSON.parse(await fs.readFile(path.join(this.root, "mybot", "mybots.json"), "utf8").catch((error) => { if (error.code === "ENOENT") return "{}"; throw error; }));
     const bots = rawBots.map((desc) => {
+      const record = inventory[desc.id] || {};
       return {
         id: desc.id,
         botKey: desc.id,
         displayName: desc.displayName || desc.id,
         isMain: Boolean(desc.isMain || desc.id === "admin"),
         status: desc.status, // e.g. "running", "stopped", "cookie-dead"
-        desiredStatus: desc.enabled === false ? "stopped" : "running",
+        desiredStatus: record.desiredStatus || "stopped",
+        accountIdentityStatus: record.accountIdentityStatus || "pending",
+        adminBindingStatus: record.adminBindingStatus || "pending",
+        ownerUid: record.ownerUid || "",
+        expiryAt: record.expiryAt ?? null,
+        activationPolicy: record.activationPolicy || null,
         cookieDead: Boolean(desc.cookieDead),
         cookieDeadReason: desc.cookieDeadReason || null,
         prefix: desc.prefix || "!",
         port: desc.webPort || desc.port || null,
-        uid: desc.uid || null,
+        uid: record.accountUid || record.uid || desc.uid || null,
         connected: Boolean(desc.connected),
         standbyRam: desc.standbyRam || desc.readiness?.memory || null,
         lastError: desc.lastError || null,
@@ -415,8 +432,10 @@ export class NodeBridgeService {
 
       const requestId = req.headers["x-request-id"] || req.headers["x-requestid"];
       if (requestId) {
+        req.idempotencyFingerprint = crypto.createHash("sha256").update(`${req.method} ${req.path} ${rawBody}`).digest("hex");
         const cached = this.idempotencyMap.get(requestId);
         if (cached && req.method !== "GET") {
+          if (cached.fingerprint !== req.idempotencyFingerprint) return res.status(409).json({ success: false, error: { code: "IDEMPOTENCY_CONFLICT", stage: "request", message: "Mã yêu cầu đã được dùng cho thao tác khác." } });
           return res.status(200).json(cached.response);
         }
         req.requestId = requestId;
@@ -440,6 +459,7 @@ export class NodeBridgeService {
           if (req.requestId && req.method !== "GET") {
             this.idempotencyMap.set(req.requestId, {
               timestamp: Date.now(),
+              fingerprint: req.idempotencyFingerprint,
               response: responsePayload,
             });
           }
@@ -452,6 +472,7 @@ export class NodeBridgeService {
             success: false,
             error: {
               code: err.code || "BRIDGE_ERROR",
+              stage: err.stage || "bridge",
               message: err.message || "An unexpected error occurred in Node bridge.",
               details: err.details || null,
             },
@@ -594,6 +615,21 @@ export class NodeBridgeService {
       })
     );
 
+    // Canonical Node configuration APIs for the hybrid dashboard.
+    this.app.get("/bridge/bots/:botId/profile", wrap((req) => this.management.profile(req.params.botId)));
+    this.app.put("/bridge/bots/:botId/profile", wrap((req) => this.management.saveProfile(req.params.botId, req.body || {})));
+    this.app.put("/bridge/bots/:botId/style", wrap((req) => this.management.style(req.params.botId, req.body || {})));
+    this.app.post("/bridge/bots/:botId/style/reset", wrap((req) => this.management.style(req.params.botId, {}, true)));
+    this.app.get("/bridge/bots/:botId/prefix", wrap((req) => this.management.prefix(req.params.botId)));
+    this.app.put("/bridge/bots/:botId/prefix", wrap((req) => this.management.prefix(req.params.botId, req.body || {})));
+    this.app.put("/bridge/bots/:botId/expiry", wrap((req) => this.management.expiry(req.params.botId, req.body || {})));
+    this.app.put("/bridge/bots/:botId/settings", wrap((req) => this.management.settings(req.params.botId, req.body || {})));
+    this.app.get("/bridge/bots/:botId/admins", wrap((req) => this.management.admins(req.params.botId)));
+    this.app.post("/bridge/bots/:botId/admins", wrap((req) => this.management.changeAdmin(req.params.botId, req.body || {})));
+    this.app.delete("/bridge/bots/:botId/admins/:adminUid", wrap((req) => this.management.changeAdmin(req.params.botId, {}, req.params.adminUid)));
+    this.app.get("/bridge/owners/:ownerUid/trial-status", wrap((req) => this.management.trialStatus(req.params.ownerUid)));
+    this.app.post("/bridge/owners/:ownerUid/trial-reset", wrap((req) => this.management.resetTrial(req.params.ownerUid)));
+
     // Get single bot info
     this.app.get(
       "/bridge/bots/:botId",
@@ -613,27 +649,38 @@ export class NodeBridgeService {
     // NOTE: per-bot lock is managed exclusively by bot-action-service via withBotLock.
     this.app.post(
       "/bridge/bots/:botId/action",
-      wrap(async (req) => {
+      wrap(async (req, res) => {
         const { botId } = req.params;
         const action = String(req.body?.action || "").toLowerCase();
 
         let result;
         if (action === "start" || action === "resume") {
-          result = await this.actions.start(botId, req.body || {});
+          result = this.actions.start(botId, req.body || {});
         } else if (action === "stop") {
-          result = await this.actions.stop(botId, req.body || {});
+          result = this.actions.stop(botId, req.body || {});
         } else if (action === "restart") {
-          result = await this.actions.restart(botId);
+          result = this.actions.restart(botId);
         } else if (action === "standby" || action === "hot_standby") {
-          result = await this.actions.standby(botId, req.body || {});
+          result = this.actions.standby(botId, req.body || {});
         } else if (action === "delete") {
-          result = await this.actions.delete(botId, req.body || {});
+          result = this.actions.delete(botId, req.body || {});
         } else {
           const err = new Error(`Unsupported bot action: '${action}'`);
           err.status = 400;
           err.code = "INVALID_ACTION";
           throw err;
         }
+
+        const active = this.actions.getActiveOperation?.(botId);
+        if (active?.operationId) {
+          void Promise.resolve(result).then(() => {
+            this.statusVersion += 1;
+            return this.getFleetSnapshot().then((snapshot) => this.broadcastSse("snapshot", snapshot));
+          }).catch(() => {});
+          res.status(202);
+          return { botId, action, operationId: active.operationId, phase: active.phase, applied: false, operation: active };
+        }
+        result = await result;
 
         // Read back verified state from registry
         const updated = await this.registry.describe(botId).catch(() => null);
@@ -663,7 +710,7 @@ export class NodeBridgeService {
       wrap(async (req) => {
         const { botId, operationId } = req.params;
         const op = this.actions.getOperation?.(operationId);
-        if (!op) {
+        if (!op || op.botId !== botId) {
           const err = new Error(`Operation '${operationId}' not found for bot '${botId}'`);
           err.status = 404;
           err.code = "OPERATION_NOT_FOUND";
@@ -939,317 +986,57 @@ export class NodeBridgeService {
       })
     );
 
-    // Create new bot in Node
-    this.app.post(
-      "/bridge/bots",
-      wrap(async (req) => {
-        if (req.body?.startImmediately === true) {
-          const err = new Error("startImmediately không còn được hỗ trợ. Bot luôn được tạo ở trạng thái chờ kích hoạt.");
-          err.status = 400;
-          err.code = "START_IMMEDIATELY_NOT_ALLOWED";
-          throw err;
-        }
+    // Creation is pending until account login has been verified; keys never follow account UIDs.
+    this.app.post("/bridge/bots", wrap(async (req) => {
+      if (req.body?.startImmediately) throw Object.assign(new Error("Bot luôn chờ kích hoạt riêng."), { status: 400, code: "START_IMMEDIATELY_NOT_ALLOWED" });
+      const ownerUid = String(req.body?.ownerUid || "").trim();
+      if (!ownerUid) throw Object.assign(new Error("Cần chọn chủ quản lý Bot."), { status: 400, code: "OWNER_REQUIRED", stage: "authorize" });
+      const prefix = String(req.body?.prefix || "!").trim();
+      if (!/^\S{1,3}$/.test(prefix)) throw Object.assign(new Error("Prefix phải gồm 1–3 ký tự."), { status: 400, code: "PREFIX_INVALID" });
+      const preset = String(req.body?.expiryPreset || "30d").toLowerCase();
+      const durations = { "1h": 3600000, "1d": 86400000, "7d": 604800000, "30d": 2592000000 };
+      const activationPolicy = ["permanent", "never", "-1"].includes(preset) ? { type: "permanent" } : { type: "duration", durationMs: durations[preset] || durations["30d"] };
+      let created;
+      const initialize = (botKey, credential, record, txn) => initializeVerifiedBotFiles({ root: this.root, botKey, credential, record, txn, prefix });
+      if (req.body?.cookie) {
+        const credential = normalizeLoginCredential({ ...req.body, userAgent: req.body.userAgent || getZaloRuntimeConfig().userAgent });
+        const identity = await this.verifyCredential(credential, { root: this.root });
+        created = await persistVerifiedBot({ root: this.root, credential, identity, ownerUid, allowAdmin: true, initialize, profilePatch: { activationPolicy } });
+      } else {
+        created = await withMyBotsTransaction({ root: this.root }, async (txn) => {
+          const botKey = `bot_${crypto.randomUUID()}`;
+          const record = await txn.reserveProvisionedBot({ uid: botKey, botKey, ownerUid, createdByUid: ownerUid, displayName: req.body?.displayName || botKey, accountIdentityStatus: "pending", adminBindingStatus: "pending", desiredStatus: "stopped", activationPolicy });
+          await initialize(botKey, { prefix, cookie: {}, imei: "", userAgent: getZaloRuntimeConfig().userAgent, active: false }, record, txn);
+          txn.finalizeProvisionedBot(botKey, { ...record, status: "stopped" });
+          return { botKey, record, created: true, restartRequired: false };
+        });
+      }
+      const botKey = created.botKey;
+      let qr = null;
+      if (req.body?.startQr) qr = await this.botQrManager.start(botKey);
+      this.statusVersion += 1;
+      return { ok: true, id: botKey, botKey, bot: { ...created.record, id: botKey, botKey, status: "stopped" }, qr, restartRequired: created.restartRequired };
+    }));
 
-        const rawKey = String(req.body?.botKey || req.body?.id || "").trim();
-        const botId = rawKey
-          ? rawKey.replace(/[^a-zA-Z0-9_-]/g, "")
-          : `bot_${Date.now().toString(36)}`;
-        assertSafeId(botId, "botId");
-        if (botId.toLowerCase() === "admin") {
-          const err = new Error("Mã 'admin' được dành riêng cho Bot Quản Trị Chính.");
-          err.status = 400;
-          err.code = "RESERVED_BOT_ID";
-          throw err;
-        }
+    this.app.get("/bridge/bots/:botId/credentials", wrap((req) => this.credentials.read(req.params.botId)));
+    this.app.post("/bridge/bots/:botId/credentials/reveal", wrap(async (req) => {
+      const loaded = await this.credentials.reveal(req.params.botId);
+      await this.auditStore.append({ action: "credential.reveal", botId: req.params.botId, actor: "dashboard", requestId: req.requestId });
+      return { botId: req.params.botId, ...loaded.raw };
+    }));
+    this.app.post("/bridge/bots/:botId/credentials", wrap(async (req) => {
+      if (req.body?.startImmediately) throw Object.assign(new Error("Yêu cầu restart riêng để áp dụng đăng nhập."), { status: 400, code: "START_IMMEDIATELY_NOT_ALLOWED" });
+      const result = await this.credentials.update(req.params.botId, req.body || {});
+      return { ok: true, botId: req.params.botId, status: result.record.status, trialStatus: result.record.trialStatus, accountIdentityStatus: "verified", restartRequired: result.restartRequired, message: "Đã lưu đăng nhập. Bot đang chạy áp dụng sau lần restart được yêu cầu." };
+    }));
 
-        const existing = await this.registry.describe(botId);
-        if (existing) {
-          const err = new Error(`Bot '${botId}' đã tồn tại trong hệ thống.`);
-          err.status = 409;
-          err.code = "BOT_ALREADY_EXISTS";
-          throw err;
-        }
-
-        const displayName = String(req.body?.displayName || req.body?.name || botId).trim() || botId;
-        const ownerUid = String(req.body?.ownerUid || "").trim();
-        const prefix = String(req.body?.prefix || "!").trim() || "!";
-        const expiryPreset = String(req.body?.expiryPreset || "30d").trim();
-
-        const myBotsPath = path.join(this.root, "mybot", "mybots.json");
-        let myBots = {};
-        try {
-          if (fsSync.existsSync(myBotsPath)) {
-            myBots = JSON.parse(fsSync.readFileSync(myBotsPath, "utf8"));
-          }
-        } catch {}
-
-        const usedPorts = new Set(
-          Object.values(myBots || {})
-            .map((entry) => Number(entry?.webPort || 0))
-            .filter((n) => n > 0)
-        );
-        usedPorts.add(2000);
-        let nextPort = 3001;
-        while (usedPorts.has(nextPort)) nextPort += 1;
-
-        const relCredPath = `mybot/credentials/${botId}.json`;
-        const absCredPath = path.join(this.root, relCredPath);
-        const botMetaPath = path.join(this.root, "mybot", "bots", `${botId}.json`);
-        const groupSettingsRel = `mybot/bots/group_settings_${botId}.json`;
-
-        const parsedCookie = parseFlexibleCookieInput(req.body?.cookie);
-        const initialCred = {
-          prefix,
-          imei: String(req.body?.imei || "").trim(),
-          userAgent: String(req.body?.userAgent || getZaloRuntimeConfig().userAgent).trim(),
-          cookie: parsedCookie || {},
-          active: false,
-        };
-
-        const credDir = path.dirname(absCredPath);
-        const botsDir = path.dirname(botMetaPath);
-        if (!fsSync.existsSync(credDir)) fsSync.mkdirSync(credDir, { recursive: true });
-        if (!fsSync.existsSync(botsDir)) fsSync.mkdirSync(botsDir, { recursive: true });
-
-        writeJsonAtomic(absCredPath, initialCred);
-        writeJsonAtomic(path.join(this.root, groupSettingsRel), {});
-
-        const nowIso = new Date().toISOString();
-        const botConfig = {
-          id: botId,
-          uid: botId,
-          name: displayName,
-          displayName,
-          ownerUid,
-          prefix,
-          webPort: nextPort,
-          configFilePath: relCredPath,
-          groupSettingsPath: groupSettingsRel,
-          expiryAt: null,
-          expiryPreset,
-          trialStatus: "pending",
-          enabled: true,
-          status: "stopped",
-          admins: ownerUid ? [ownerUid] : [],
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
-        writeJsonAtomic(botMetaPath, botConfig);
-
-        myBots[botId] = {
-          uid: botId,
-          name: displayName,
-          displayName,
-          ownerUid,
-          webPort: nextPort,
-          configFilePath: relCredPath,
-          groupSettingsPath: groupSettingsRel,
-          expiryAt: null,
-          expiryPreset,
-          trialStatus: "pending",
-          enabled: true,
-          status: "stopped",
-          createdAt: nowIso,
-          lastUpdated: nowIso,
-        };
-        writeJsonAtomic(myBotsPath, myBots);
-
-        if (ownerUid) {
-          try {
-            updateProfile(botId, { ownerUid, displayName }, { root: this.root, actor: "dashboard-bridge" });
-          } catch {}
-        }
-
-        let qr = null;
-        if (req.body?.startQr) {
-          try {
-            qr = await this.botQrManager.start(botId);
-          } catch (qrErr) {
-            qr = { state: "failed", error: qrErr.message };
-          }
-        }
-
-        await this.auditStore?.append?.({
-          action: "bot.create",
-          botId,
-          actor: "bridge",
-          details: { displayName, ownerUid, prefix },
-        }).catch(() => {});
-
-        this.statusVersion += 1;
-
-        return {
-          ok: true,
-          botKey: botId,
-          id: botId,
-          bot: {
-            id: botId,
-            botKey: botId,
-            displayName,
-            ownerUid,
-            prefix,
-            status: "stopped",
-            desiredStatus: "stopped",
-            trialStatus: "pending",
-            webPort: nextPort,
-          },
-          qr,
-        };
-      })
-    );
-
-    // Update bot credentials
-    this.app.post(
-      "/bridge/bots/:botId/credentials",
-      wrap(async (req) => {
-        if (req.body?.startImmediately === true) {
-          const err = new Error("startImmediately không còn được hỗ trợ. Bot luôn được giữ ở trạng thái chờ kích hoạt.");
-          err.status = 400;
-          err.code = "START_IMMEDIATELY_NOT_ALLOWED";
-          throw err;
-        }
-
-        const { botId } = req.params;
-        const bot = await this.registry.describe(botId);
-        if (!bot) {
-          const err = new Error(`Bot '${botId}' not found`);
-          err.status = 404;
-          err.code = "BOT_NOT_FOUND";
-          throw err;
-        }
-
-        const configPathRaw = bot.configPath || `mybot/credentials/${botId}.json`;
-        const credPath = path.isAbsolute(configPathRaw) ? configPathRaw : path.join(this.root, configPathRaw);
-        let existingCred = {};
-        try {
-          if (fsSync.existsSync(credPath)) {
-            existingCred = JSON.parse(fsSync.readFileSync(credPath, "utf8"));
-          }
-        } catch {}
-
-        const parsedCookie = parseFlexibleCookieInput(req.body?.cookie) || existingCred.cookie || {};
-        const updatedCred = {
-          ...existingCred,
-          cookie: parsedCookie,
-          imei: String(req.body?.imei || existingCred.imei || "").trim(),
-          userAgent: String(req.body?.userAgent || existingCred.userAgent || getZaloRuntimeConfig().userAgent).trim(),
-          active: false,
-        };
-        writeJsonAtomic(credPath, updatedCred);
-
-        return { ok: true, botId, status: "stopped", trialStatus: "pending" };
-      })
-    );
-
-    // Reconcile SQLite bots into Node registry safely
-    this.app.post(
-      "/bridge/reconcile-sqlite",
-      wrap(async (req) => {
-        const botsFromSqlite = Array.isArray(req.body?.bots) ? req.body.bots : [];
-        const backupDir = path.join(this.root, "logs", "dashboard-backups");
-        if (!fsSync.existsSync(backupDir)) fsSync.mkdirSync(backupDir, { recursive: true });
-
-        const myBotsPath = path.join(this.root, "mybot", "mybots.json");
-        let myBots = {};
-        if (fsSync.existsSync(myBotsPath)) {
-          try {
-            myBots = JSON.parse(fsSync.readFileSync(myBotsPath, "utf8"));
-            const backupFile = path.join(backupDir, `mybots-reconcile-${Date.now()}.json`);
-            fsSync.writeFileSync(backupFile, JSON.stringify(myBots, null, 2), "utf8");
-          } catch {}
-        }
-
-        const existingBotKeys = new Set(Object.keys(myBots || {}));
-        const existingUids = new Set(
-          Object.values(myBots || {})
-            .map((b) => String(b.uid || "").trim())
-            .filter(Boolean)
-        );
-
-        let imported = 0;
-        const conflicts = [];
-
-        for (const sqBot of botsFromSqlite) {
-          const key = String(sqBot.botKey || sqBot.id || sqBot.key || "").trim();
-          const uid = String(sqBot.uid || "").trim();
-          if (!key || key === "admin") continue;
-
-          if (existingBotKeys.has(key)) {
-            const existingUid = String(myBots[key]?.uid || "").trim();
-            if (uid && existingUid && uid !== existingUid) {
-              conflicts.push({ botKey: key, sqliteUid: uid, nodeUid: existingUid, reason: "UID_MISMATCH" });
-            }
-            continue;
-          }
-
-          if (uid && existingUids.has(uid)) {
-            conflicts.push({ botKey: key, uid, reason: "DUPLICATE_UID" });
-            continue;
-          }
-
-          const relCredPath = `mybot/credentials/${key}.json`;
-          const absCredPath = path.join(this.root, relCredPath);
-          const botMetaPath = path.join(this.root, "mybot", "bots", `${key}.json`);
-          const groupSettingsRel = `mybot/bots/group_settings_${key}.json`;
-
-          if (!fsSync.existsSync(absCredPath)) {
-            writeJsonAtomic(absCredPath, {
-              prefix: sqBot.prefix || "!",
-              imei: sqBot.imei || "",
-              userAgent: sqBot.userAgent || getZaloRuntimeConfig().userAgent,
-              cookie: sqBot.cookie || {},
-              active: false,
-            });
-          }
-
-          const botConfig = {
-            id: key,
-            uid: uid || key,
-            name: sqBot.displayName || key,
-            displayName: sqBot.displayName || key,
-            ownerUid: sqBot.ownerUid || "",
-            prefix: sqBot.prefix || "!",
-            webPort: sqBot.webPort || 0,
-            configFilePath: relCredPath,
-            groupSettingsPath: groupSettingsRel,
-            expiryAt: sqBot.expiryAt || null,
-            trialStatus: sqBot.trialStatus || "pending",
-            enabled: true,
-            status: "stopped",
-            admins: sqBot.ownerUid ? [sqBot.ownerUid] : [],
-            createdAt: sqBot.createdAt || new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          writeJsonAtomic(botMetaPath, botConfig);
-
-          myBots[key] = {
-            uid: uid || key,
-            name: sqBot.displayName || key,
-            displayName: sqBot.displayName || key,
-            ownerUid: sqBot.ownerUid || "",
-            webPort: sqBot.webPort || 0,
-            configFilePath: relCredPath,
-            groupSettingsPath: groupSettingsRel,
-            expiryAt: sqBot.expiryAt || null,
-            trialStatus: sqBot.trialStatus || "pending",
-            enabled: true,
-            status: "stopped",
-            createdAt: sqBot.createdAt || new Date().toISOString(),
-            lastUpdated: new Date().toISOString(),
-          };
-          existingBotKeys.add(key);
-          if (uid) existingUids.add(uid);
-          imported++;
-        }
-
-        if (imported > 0) {
-          writeJsonAtomic(myBotsPath, myBots);
-          this.statusVersion += 1;
-        }
-
-        return { ok: true, imported, conflicts, totalNodeBots: Object.keys(myBots).length };
-      })
-    );
+    // Report old SQLite records for operator reconciliation; never resurrect them automatically.
+    this.app.post("/bridge/reconcile-sqlite", wrap(async (req) => {
+      const current = JSON.parse(await fs.readFile(path.join(this.root, "mybot", "mybots.json"), "utf8").catch((error) => { if (error.code === "ENOENT") return "{}"; throw error; }));
+      const bots = Array.isArray(req.body?.bots) ? req.body.bots : [];
+      const unresolved = bots.map((bot) => ({ botKey: String(bot.botKey || bot.id || bot.key || ""), reason: "REQUIRES_IDENTITY_RECONCILIATION" })).filter((bot) => bot.botKey && !current[bot.botKey]);
+      return { imported: 0, reportOnly: true, unresolved, sourceOfTruth: "node-json" };
+    }));
   }
 
   start() {

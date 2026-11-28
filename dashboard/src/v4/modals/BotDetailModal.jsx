@@ -95,7 +95,7 @@ export default function BotDetailModal() {
     try {
       const res = await v4Fetch(`/api/bots/${encodeURIComponent(botId)}/qr-login`);
       if (res) setQrState(res);
-    } catch {}
+    } catch (error) { setQrState((prev) => ({ ...prev, pollError: error.message })); }
   }, []);
 
   // Load Admins & Credential
@@ -125,11 +125,11 @@ export default function BotDetailModal() {
     loadExtras(bot.id);
     loadGroups(bot.id);
     loadQrSession(bot.id);
-  }, [bot, loadExtras, loadGroups, loadQrSession]);
+  }, [bot?.id, loadExtras, loadGroups, loadQrSession]);
 
   // Polling QR if active
   useEffect(() => {
-    if (!bot || qrState?.state !== "waiting_scan") return;
+    if (!bot || !["starting", "waiting_scan", "waiting_confirm", "verifying"].includes(qrState?.state)) return;
     const interval = setInterval(() => loadQrSession(bot.id), 2500);
     return () => clearInterval(interval);
   }, [bot, qrState?.state, loadQrSession]);
@@ -376,11 +376,12 @@ export default function BotDetailModal() {
                 <h2 style={{ margin: 0, fontSize: 18 }}>{bot.displayName}</h2>
                 {bot.isMain && <span className="v4-badge info">BOT ADMIN CHÍNH</span>}
                 <span className={`v4-badge ${bot.status === "online" ? "success" : bot.status === "hot_standby" ? "accent" : bot.status === "cookie_expired" ? "danger" : "neutral"}`}>
-                  ● {bot.status}
+                  ● {bot.status === "online" ? "Đang chạy" : bot.status === "connecting" ? "Đang kết nối" : bot.status}
                 </span>
               </div>
               <div className="v4-muted v4-mono" style={{ fontSize: 12 }}>
-                ID: {bot.id} • UID: {bot.uid} • Prefix: {bot.prefix} • Hạn: {formatExpiryVi(bot.expiryAt)}
+                ID: {bot.id} • UID: {bot.uid} • Prefix: {bot.prefix} • Hạn: {bot.activationPolicy && !bot.expiryAt ? "Bắt đầu khi sẵn sàng lần đầu" : formatExpiryVi(bot.expiryAt)}
+                <div>{bot.accountIdentityStatus === "verified" ? "✓ Đã xác minh tài khoản" : "Tài khoản đang chờ xác minh"} • {bot.adminBindingStatus === "verified" || bot.adminBindingStatus === "resolved" ? "Đã xác minh quyền quản trị" : "Quyền quản trị trong Bot con còn thiếu"}</div>
               </div>
             </div>
           </div>

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useControlCenter } from "../store.jsx";
 import { v4Fetch } from "../http.js";
+import { createRequestFence, isQrTerminal } from "../operation-state.js";
 
 function resolveQrSrc(rec) {
   if (!rec) return "";
@@ -27,12 +28,19 @@ export default function CreateBotQrModal() {
   const [qrState, setQrState] = useState({ state: "idle" });
   const [busy, setBusy] = useState(false);
 
+  const requestFence = useRef(createRequestFence());
+  const latestBots = useRef(bots);
+  latestBots.current = bots;
+  const targetMode = createQrTargetBot?.mode;
+  const targetId = createQrTargetBot?.botId || "";
+
   useEffect(() => {
-    if (!createQrTargetBot) return;
-    if (createQrTargetBot.mode === "relogin" && createQrTargetBot.botId) {
-      setActiveBotId(createQrTargetBot.botId);
-      const found = bots.find((b) => b.id === createQrTargetBot.botId);
-      setDisplayName(found?.displayName || createQrTargetBot.botId);
+    requestFence.current.invalidate();
+    if (!targetMode) return;
+    if (targetMode === "relogin" && targetId) {
+      setActiveBotId(targetId);
+      const found = latestBots.current.find((b) => b.id === targetId);
+      setDisplayName(found?.displayName || targetId);
       setPrefix(found?.prefix || "!");
       setOwnerUid(found?.ownerUid || "");
     } else {
@@ -44,29 +52,32 @@ export default function CreateBotQrModal() {
     }
     setQrState({ state: "idle" });
     setTab("qr");
-  }, [createQrTargetBot, bots]);
+    return () => { requestFence.current.invalidate(); };
+  }, [targetMode, targetId]);
 
   const pollBotQr = useCallback(async () => {
     if (!activeBotId) return;
+    const token = requestFence.current.capture();
     try {
       const data = await v4Fetch(`/api/bots/${encodeURIComponent(activeBotId)}/qr-login`);
+      if (!requestFence.current.isCurrent(token)) return;
       if (data && typeof data === "object") {
         setQrState(data);
         const st = String(data.state || data.status || "").toLowerCase();
         if (st === "completed" || st === "success" || st === "configured") {
-          notify(`Bot ${data.displayName || activeBotId} đã lưu thông tin đăng nhập! Sẵn sàng kích hoạt.`, "success");
+          notify(`Bot ${data.displayName || activeBotId} đã xác minh và lưu đăng nhập. Bot đang chạy sẽ dùng đăng nhập mới sau lần restart được yêu cầu.`, "success");
           await refreshAll();
         }
       }
-    } catch {
-      // ignore poll error
+    } catch (error) {
+      if (requestFence.current.isCurrent(token)) setQrState((prev) => ({ ...prev, pollError: error.message || "Không đọc được trạng thái QR" }));
     }
   }, [activeBotId, notify, refreshAll]);
 
   useEffect(() => {
     if (!createQrTargetBot || !activeBotId || tab !== "qr") return undefined;
     const st = String(qrState?.state || qrState?.status || "").toLowerCase();
-    if (st === "completed" || st === "success" || st === "configured") return undefined;
+    if (isQrTerminal(st) || st === "idle") return undefined;
     const timer = setInterval(pollBotQr, 1300);
     return () => clearInterval(timer);
   }, [createQrTargetBot, activeBotId, tab, qrState, pollBotQr]);
@@ -77,7 +88,16 @@ export default function CreateBotQrModal() {
   const qrSrc = resolveQrSrc(qrState);
   const state = String(qrState?.state || qrState?.status || "idle").toLowerCase();
 
+  const closeModal = () => {
+    requestFence.current.invalidate();
+    if (activeBotId && !isQrTerminal(qrState.state)) void v4Fetch(`/api/bots/${encodeURIComponent(activeBotId)}/qr-login`, { method: "DELETE" }).catch((err) => notify(err.message, "error"));
+    setCreateQrTargetBot(null);
+  };
+
+  const cancelLateSession = async (id) => { if (id) await v4Fetch(`/api/bots/${encodeURIComponent(id)}/qr-login`, { method: "DELETE" }).catch(() => {}); };
+
   const handleStartQr = async () => {
+    const token = requestFence.current.capture();
     setBusy(true);
     try {
       let targetId = activeBotId;
@@ -96,6 +116,7 @@ export default function CreateBotQrModal() {
         if (!targetId) {
           throw new Error("Máy chủ chưa trả về mã định danh Bot mới.");
         }
+        if (!requestFence.current.isCurrent(token)) { await cancelLateSession(targetId); return; }
         setActiveBotId(targetId);
         if (created?.qr) {
           setQrState(created.qr);
@@ -112,6 +133,7 @@ export default function CreateBotQrModal() {
           expiryPreset,
         },
       });
+      if (!requestFence.current.isCurrent(token)) { await cancelLateSession(targetId); return; }
       setQrState(qr || { state: "waiting_scan" });
       notify("Đã tạo mã QR đăng nhập Bot!", "info");
     } catch (err) {
@@ -154,7 +176,7 @@ export default function CreateBotQrModal() {
           },
         });
       }
-      notify(`Đã lưu Cookie cho bot ${targetId || "mới"} thành công! Trạng thái: Sẵn sàng kích hoạt.`, "success");
+      notify(`Đã xác minh và lưu Cookie cho bot ${targetId || "mới"}. Bot đang chạy sẽ áp dụng sau lần restart được yêu cầu.`, "success");
       await refreshAll();
       setCreateQrTargetBot(null);
     } catch (err) {
@@ -165,8 +187,9 @@ export default function CreateBotQrModal() {
   };
 
   return (
-    <div className="v4-modal-backdrop" onClick={() => setCreateQrTargetBot(null)}>
+    <div className="v4-modal-backdrop" onClick={closeModal}>
       <div className="v4-modal wide" onClick={(e) => e.stopPropagation()}>
+        {qrState.pollError && <div role="alert" className="v4-alert error">{qrState.pollError}</div>}
         <div className="v4-card-header">
           <div>
             <h2>{isRelogin ? `Đăng Nhập Lại Bot: ${displayName}` : "➕ Tạo & Đăng Nhập Bot Mới Từ Xa"}</h2>
@@ -174,7 +197,7 @@ export default function CreateBotQrModal() {
               Quét mã QR Zalo trực tiếp trên Web hoặc dán Cookie J2Team để thêm Bot phụ vào hệ thống.
             </div>
           </div>
-          <button type="button" className="v4-btn sm" onClick={() => setCreateQrTargetBot(null)}>
+          <button type="button" className="v4-btn sm" onClick={closeModal}>
             Đóng
           </button>
         </div>
@@ -279,7 +302,7 @@ export default function CreateBotQrModal() {
                   <button
                     type="button"
                     className="v4-btn success"
-                    onClick={() => setCreateQrTargetBot(null)}
+                    onClick={closeModal}
                   >
                     Hoàn tất (Sẵn sàng kích hoạt)
                   </button>

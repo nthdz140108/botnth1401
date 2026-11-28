@@ -40,6 +40,7 @@ test("NodeBridgeService: health, HMAC verification, idempotency, bot list & cons
       port: 0, // pick random available port
       host: "127.0.0.1",
       secret,
+      verifyCredential: async () => ({ uid: "verified_child_account", displayName: "Verified Child", avatar: "", canonicalUsername: "verified.child" }),
     });
 
     const port = await bridge.start();
@@ -229,7 +230,7 @@ test("NodeBridgeService: health, HMAC verification, idempotency, bot list & cons
       assert.equal(qrStatusData.success, true);
       assert.ok(qrStatusData.data.state !== undefined);
 
-      // 9e. Reconcile SQLite records safely into mybots.json
+      // 9e. Reconciliation reports old SQLite records without resurrecting bots.
       const reconcilePayload = JSON.stringify({
         bots: [
           {
@@ -249,8 +250,11 @@ test("NodeBridgeService: health, HMAC verification, idempotency, bot list & cons
       assert.equal(reconcileRes.status, 200);
       const reconcileData = await reconcileRes.json();
       assert.equal(reconcileData.success, true);
-      assert.equal(reconcileData.data.imported, 1);
-      assert.equal(reconcileData.data.conflicts.length, 0);
+      assert.equal(reconcileData.data.imported, 0);
+      assert.equal(reconcileData.data.reportOnly, true);
+      assert.equal(reconcileData.data.unresolved.length, 1);
+      const inventory = JSON.parse(await fs.readFile(path.join(tempRoot, "mybot", "mybots.json"), "utf8"));
+      assert.equal(inventory["bot-sqlite-imported"], undefined);
 
     } finally {
       await bridge.stop();

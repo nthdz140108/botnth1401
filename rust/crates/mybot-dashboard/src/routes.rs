@@ -93,6 +93,18 @@ impl DashboardState {
     }
 }
 
+pub(crate) async fn hybrid_management(st: &DashboardState, ctx: &RequestContext, method: reqwest::Method, route: String, body: Option<&Value>) -> Response {
+    match st.bridge.management_request(method, &route, body).await {
+        Ok((status, value)) => (StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), Json(value)).into_response(),
+        Err(message) => err_json(StatusCode::BAD_GATEWAY, ctx, "BRIDGE_UNAVAILABLE", &message, None),
+    }
+}
+
+async fn api_bot_operation(State(st): State<DashboardState>, Extension(ctx): Extension<RequestContext>, Path((id, operation_id)): Path<(String, String)>) -> Response {
+    if !st.is_node_hybrid() { return err_json(StatusCode::NOT_FOUND, &ctx, "OPERATION_NOT_FOUND", "Operation unavailable", None); }
+    hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/bots/{id}/operations/{operation_id}"), None).await
+}
+
 fn ok_json(ctx: &RequestContext, data: Value) -> Response {
     (StatusCode::OK, Json(ApiEnvelope::ok(data, &ctx.request_id))).into_response()
 }
@@ -238,6 +250,7 @@ pub fn build_api_and_spa_router(state: DashboardState) -> Router {
             post(api_bot_promote_primary),
         )
         .route("/api/bots/{id}/actions/{action}", post(api_bot_action))
+        .route("/api/bots/{id}/operations/{operationId}", get(api_bot_operation))
         .route(
             "/api/bots/{id}/qr-login",
             get(api_bot_get_qr_login).delete(api_bot_cancel_qr_login),
@@ -972,6 +985,7 @@ async fn api_bot_get_profile(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/bots/{id}/profile"), None).await; }
     let Ok(Some(bot)) = st.supervisor.caches().engine().get_bot(&id) else {
         return err_json(
             StatusCode::NOT_FOUND,
@@ -1001,6 +1015,7 @@ async fn api_bot_put_profile(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::PUT, format!("/bridge/bots/{id}/profile"), Some(&body)).await; }
     let Ok(Some(mut bot)) = st.supervisor.caches().engine().get_bot(&id) else {
         return err_json(
             StatusCode::NOT_FOUND,
@@ -1029,6 +1044,7 @@ async fn api_bot_put_style(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::PUT, format!("/bridge/bots/{id}/style"), Some(&body)).await; }
     let Ok(Some(mut bot)) = st.supervisor.caches().engine().get_bot(&id) else {
         return err_json(
             StatusCode::NOT_FOUND,
@@ -1053,6 +1069,7 @@ async fn api_bot_reset_style(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/bots/{id}/style/reset"), None).await; }
     let Ok(Some(mut bot)) = st.supervisor.caches().engine().get_bot(&id) else {
         return err_json(
             StatusCode::NOT_FOUND,
@@ -1076,6 +1093,7 @@ async fn api_owner_trial_status(
     Extension(ctx): Extension<RequestContext>,
     Path(owner_uid): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/owners/{owner_uid}/trial-status"), None).await; }
     let week = current_ict_iso_week_key(Utc::now());
     let row = st
         .supervisor
@@ -1459,6 +1477,7 @@ async fn api_bot_get_prefix(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/bots/{id}/prefix"), None).await; }
     let Ok(Some(bot)) = st.supervisor.caches().engine().get_bot(&id) else {
         return err_json(StatusCode::NOT_FOUND, &ctx, "BOT_NOT_FOUND", "Bot not found", None);
     };
@@ -1471,6 +1490,7 @@ async fn api_bot_put_prefix(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::PUT, format!("/bridge/bots/{id}/prefix"), Some(&body)).await; }
     let Some(new_prefix) = body
         .get("prefix")
         .and_then(Value::as_str)
@@ -1640,6 +1660,7 @@ async fn api_bot_get_credential(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::GET, format!("/bridge/bots/{id}/credentials"), None).await; }
     if !is_safe_bot_id(&id) {
         return err_json(StatusCode::BAD_REQUEST, &ctx, "INVALID_BOT_ID", "Invalid bot id", None);
     }
@@ -1666,6 +1687,7 @@ async fn api_bot_reveal_credential(
     Extension(ctx): Extension<RequestContext>,
     Path(id): Path<String>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/bots/{id}/credentials/reveal"), None).await; }
     if !is_safe_bot_id(&id) {
         return err_json(StatusCode::BAD_REQUEST, &ctx, "INVALID_BOT_ID", "Invalid bot id", None);
     }
@@ -1700,6 +1722,7 @@ async fn api_bot_put_credential(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    if st.is_node_hybrid() { return hybrid_management(&st, &ctx, reqwest::Method::POST, format!("/bridge/bots/{id}/credentials"), Some(&body)).await; }
     if !is_safe_bot_id(&id) {
         return err_json(StatusCode::BAD_REQUEST, &ctx, "INVALID_BOT_ID", "Invalid bot id", None);
     }

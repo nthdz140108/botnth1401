@@ -47,6 +47,20 @@ impl NodeBridgeClient {
         }
     }
 
+    /// Preserve the Node status and error envelope: hybrid configuration has one owner.
+    pub async fn management_request(&self, method: reqwest::Method, route: &str, body: Option<&Value>) -> Result<(reqwest::StatusCode, Value), String> {
+        if !route.starts_with("/bridge/") || route.contains("..") || route.contains('?') || route.contains('#') {
+            return Err("Invalid bridge management path".into());
+        }
+        let bytes = match body { Some(value) => serde_json::to_vec(value).map_err(|e| e.to_string())?, None => Vec::new() };
+        let response = self.client.request(method, format!("{}{route}", self.base_url))
+            .headers(self.build_signed_headers(&bytes)).body(bytes).send().await
+            .map_err(|e| format!("Node bridge connection failed: {e}"))?;
+        let status = response.status();
+        let value = response.json::<Value>().await.map_err(|e| format!("Invalid Node bridge response: {e}"))?;
+        Ok((status, value))
+    }
+
     pub fn build_signed_headers(&self, body_bytes: &[u8]) -> HeaderMap {
         let now_ms = Utc::now().timestamp_millis();
         let sig = sign_internal_payload(&self.secret, now_ms, body_bytes);
@@ -770,6 +784,24 @@ async fn process_sse_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn management_forwarding_preserves_status_and_error_stage() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        use axum::{Router, routing::put, Json};
+        let app = Router::new().route("/bridge/bots/b/profile", put(|| async {
+            (axum::http::StatusCode::CONFLICT, Json(json!({"success": false, "error": {"code": "REVISION_CONFLICT", "stage": "profile", "message": "Changed"}})))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let bridge = NodeBridgeClient { base_url: format!("http://{addr}"), secret: "secret".into(), client: reqwest::Client::new() };
+        let (status, body) = bridge.management_request(reqwest::Method::PUT, "/bridge/bots/b/profile", Some(&json!({"nameServer":"B"}))).await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "REVISION_CONFLICT");
+        assert_eq!(body["error"]["stage"], "profile");
+        server.abort();
+    }
 
     #[test]
     fn bridge_client_signed_headers_are_generated() {
