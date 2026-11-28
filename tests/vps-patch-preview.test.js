@@ -7,6 +7,26 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildPreview } from '../deploy/patch-preview.mjs';
+import { planRuntimeActions } from '../deploy/runtime-actions.mjs';
+
+test('dashboard source update rebuilds on VPS without packaging generated hashed assets', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-dashboard-patch-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
+    fs.mkdirSync(path.join(dir, 'dashboard', 'dist', 'assets'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'dashboard', 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'dashboard', 'dist', 'assets', 'old.js'), 'old build');
+    git('add', '.'); git('commit', '-qm', 'base'); const base = git('rev-parse', 'HEAD');
+    fs.rmSync(path.join(dir, 'dashboard', 'dist', 'assets', 'old.js'));
+    fs.writeFileSync(path.join(dir, 'dashboard', 'dist', 'assets', 'new.js'), 'new build');
+    fs.writeFileSync(path.join(dir, 'dashboard', 'src', 'app.js'), 'export default 1');
+    git('add', '-A'); git('commit', '-qm', 'dashboard source');
+    const preview = buildPreview({ repo: dir, base, target: 'HEAD' });
+    assert.deepEqual(preview.files.map(file => file.path), ['dashboard/src/app.js']);
+    assert.equal(planRuntimeActions(preview.files.map(file => file.path)).buildDashboard, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('preview uses committed blobs, expands renames and ignores working changes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mybot-patch-'));

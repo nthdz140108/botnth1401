@@ -1,19 +1,20 @@
+import { getProjectRoot } from "../../../utils/env.js";
 import fs from "fs";
 import path from "path";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 import { claimOwnerTrial, getOwnerTrialStatus } from "./mybot-trial-ledger.js";
 import { getProfile, updateProfile } from "./mybot-profile-service.js";
 
-const DEFAULT_REGISTRY_PATH = path.join(process.cwd(), "mybot", "mybots.json");
 
 export async function activatePendingTrial(botUid, {
-  registryPath = DEFAULT_REGISTRY_PATH,
+  registryPath = null,
   now = Date.now(),
   ownerUid = null,
   enforceQuota = false,
-  root = process.cwd(),
+  root = getProjectRoot(),
 } = {}) {
   if (!botUid) throw new Error("botUid is required");
+  registryPath ||= path.join(root, "mybot", "mybots.json");
   const myBots = fs.existsSync(registryPath) ? loadMyBotsRegistry(registryPath) : {};
   const bot = myBots[botUid];
   if (!bot) throw new Error(`Bot ${botUid} không tồn tại trong registry`);
@@ -69,11 +70,12 @@ export async function activatePendingTrial(botUid, {
 }
 
 export async function revertFailedTrialReactivation(botUid, {
-  registryPath = DEFAULT_REGISTRY_PATH,
+  registryPath = null,
   now = Date.now(),
-  root = process.cwd(),
+  root = getProjectRoot(),
 } = {}) {
   if (!botUid) throw new Error("botUid is required");
+  registryPath ||= path.join(root, "mybot", "mybots.json");
   const myBots = fs.existsSync(registryPath) ? loadMyBotsRegistry(registryPath) : {};
   const bot = myBots[botUid];
   if (!bot) return null;

@@ -2,7 +2,6 @@ import fs from "fs";
 import path from "path";
 import { spawn, exec } from "child_process";
 import net from "net";
-import { fileURLToPath } from "url";
 import { readIdentityHandshake } from "./identity-handshake.js";
 import { writeReloadRequest } from "./reload-request.js";
 import { consumeRestartRequest } from "../../../utils/restart-request.js";
@@ -18,9 +17,7 @@ import { withRegistryLock } from "./registry-lock.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 import { beginBotStartOperation, invalidateBotStartOperation, isBotStartOperationCurrent, withCurrentBotStartOperation } from "./bot-lifecycle-operation.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const defaultProjectRoot = path.resolve(__dirname, "../../../..");
+const defaultProjectRoot = getProjectRoot();
 
 function getEffectiveRoot(customRoot = null) {
   return customRoot ? path.resolve(customRoot) : getProjectRoot();

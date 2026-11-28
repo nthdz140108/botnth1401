@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRuntimeStatusResolver } from '../src/dashboard/runtime-status-resolver.js';
 import { BotRegistry } from '../src/dashboard/bot-registry.js';
+import { execFileSync } from 'node:child_process';
 
 test('storage paths use management key even when account UID differs', () => {
   const paths = resolveBotPaths({ key: 'bot_stable', uid: '1234567890123' }, process.cwd());
@@ -78,4 +79,16 @@ test('dashboard lists registered management keys only and passes verified accoun
   assert.equal(child.accountIdentityStatus, 'verified');
   assert.equal(child.adminBindingStatus, 'pending');
   assert.equal(await registry.describe('orphan'), null);
+});
+
+test('handshake and reload helpers resolve runtime root independently of the source release', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-handshake-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'mybot'));
+  const script = `import assert from 'node:assert/strict'; import path from 'node:path';
+    import { getHandshakePath } from ${JSON.stringify(new URL('../src/commands/mybot/System/identity-handshake.js', import.meta.url).href)};
+    import { getReloadRequestPath } from ${JSON.stringify(new URL('../src/commands/mybot/System/reload-request.js', import.meta.url).href)};
+    assert.equal(getHandshakePath('session'), path.join(process.argv[1], 'mybot', 'state', 'qr-bootstrap', 'session.json'));
+    assert.equal(getReloadRequestPath('bot_stable'), path.join(process.argv[1], 'mybot', 'state', 'reload', 'bot_stable.json'));`;
+  execFileSync(process.execPath, ['--input-type=module', '-e', script, root], { env: { ...process.env, PROJECT_ROOT: root, ProjectRoot: root }, stdio: 'pipe' });
 });

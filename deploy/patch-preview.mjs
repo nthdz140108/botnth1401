@@ -19,7 +19,8 @@ export function safePath(name, status) {
   return allowed.test(name) && !runtimeData(name) && (!migration.test(name) || status === 'delete' && retiredPortalMigration.test(name)) && parts.every(p => p && p !== '.' && p !== '..' && !/[\\:<>"|?*\x00-\x1f]/.test(p) && !/[. ]$/.test(p) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(p));
 }
 function ignored(name) {
-  return ['DAY_LEN_VPS.bat', 'CAI_DAT_PORTAL.bat', '.gitignore'].includes(name) || /^(?:docs\/|tests\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
+  // Build generated assets in the staged release before compiling the Rust SPA embed.
+  return ['DAY_LEN_VPS.bat', 'CAI_DAT_PORTAL.bat', '.gitignore'].includes(name) || /^(?:docs\/|tests\/|dashboard\/dist\/)/.test(name) || /(?:^|\/)README(?:\.[^/]*)?$/i.test(name) || /\.md$/i.test(name);
 }
 
 function releaseBackedCatalog(repo, base, target, name) {

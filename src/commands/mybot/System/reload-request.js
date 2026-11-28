@@ -1,10 +1,8 @@
 import path from "path";
-import { fileURLToPath } from "url";
+import { getProjectRoot } from "../../../utils/env.js";
 import { nowIso, readJsonFile, writeJsonAtomic } from "./json-state.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, "../../../..");
+const projectRoot = getProjectRoot();
 const reloadDir = path.join(projectRoot, "mybot", "state", "reload");
 
 export function getReloadRequestPath(uid) {
