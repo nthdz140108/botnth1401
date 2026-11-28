@@ -10,8 +10,11 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
   const accountUid = String(identity?.uid || '').trim();
   if (!accountUid) throw credentialError('ACCOUNT_IDENTITY_MISSING', 'Cần xác minh tài khoản trước khi lưu.', 'verify');
   if (newBotKey && (targetBotKey || !/^bot_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(newBotKey))) throw credentialError('INVALID_BOT_KEY', 'Mã bot dự thảo không hợp lệ.', 'identity');
-  return withMyBotsTransaction({ root }, async txn => {
+  const assertNotCancelled = () => {
     if (signal?.aborted) throw credentialError('LOGIN_CANCELLED', 'Phiên đăng nhập đã bị hủy.', 'persist');
+  };
+  return withMyBotsTransaction({ root }, async txn => {
+    assertNotCancelled();
     const registry = txn._registry;
     const main = registry.admin || Object.values(registry).find(record => record?.isMain);
     let state = {};
@@ -36,6 +39,7 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
     if (created) {
       botKey = newBotKey || `bot_${randomUUID()}`;
       existing = await txn.reserveProvisionedBot({ uid: botKey, name: botKey, accountUid, ownerUid, createdByUid: ownerUid, ownerName, displayName: identity.displayName || ownerName });
+      assertNotCancelled();
     }
     const record = { ...existing, ...(created ? profilePatch : {}), botKey, uid: accountUid, accountUid, accountIdentityStatus: 'verified', adminBindingStatus: existing.adminBindingStatus || 'pending', displayName: identity.displayName || existing.displayName || ownerName, avatar: identity.avatar || existing.avatar || '', canonicalUsername: identity.canonicalUsername || existing.canonicalUsername || '', desiredStatus: existing.desiredStatus || 'stopped', lastUpdated: new Date().toISOString(), cookieUpdatedAt: new Date().toISOString() };
     const stored = { ...credential, accountUid, accountIdentityStatus: 'verified' };
@@ -44,6 +48,7 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
     if (created) {
       if (typeof initialize !== 'function') throw credentialError('INITIALIZER_REQUIRED', 'Thiếu bước khởi tạo dữ liệu bot.', 'persist');
       await initialize(botKey, stored, record, txn);
+      assertNotCancelled();
     } else {
       const file = credentialFile;
       let previous = {};
@@ -57,6 +62,7 @@ export async function persistVerifiedBot({ root, credential: input, identity, ow
       const next = { ...previous, ...stored };
       if (txn.writeJson) txn.writeJson(file, next); else writeJsonAtomic(file, next);
     }
+    assertNotCancelled();
     if (created) txn.finalizeProvisionedBot(botKey, { ...record, status: 'stopped' });
     else if (txn.patchBot) txn.patchBot(botKey, record);
     else { txn._registry[botKey] = record; txn._flush(); }

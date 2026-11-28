@@ -127,6 +127,32 @@ test('verified dashboard draft may choose its stable key without creating duplic
     await assert.rejects(persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', newBotKey: 'bot_22222222-2222-4222-8222-222222222222', initialize }), { code: 'DUPLICATE_ACCOUNT' });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+test('cancelling during initialization rolls back the reserved bot and staged credentials', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cancel-initialize-'));
+  const controller = new AbortController();
+  let signalStaged;
+  let finishInitialize;
+  const staged = new Promise(resolve => { signalStaged = resolve; });
+  const initialized = new Promise(resolve => { finishInitialize = resolve; });
+  let credentialFile;
+  try {
+    const operation = persistVerifiedBot({ root, credential, identity: { uid: 'account' }, ownerUid: 'owner', signal: controller.signal,
+      initialize: async (key, value, _record, txn) => {
+        credentialFile = path.join(root, 'mybot', 'credentials', `${key}.json`);
+        txn.writeJson(credentialFile, value);
+        signalStaged();
+        await initialized;
+      },
+    });
+    await staged;
+    controller.abort('cancelled');
+    finishInitialize();
+    await assert.rejects(operation, { code: 'LOGIN_CANCELLED' });
+    const registry = JSON.parse(await fs.readFile(path.join(root, 'mybot', 'mybots.json'), 'utf8'));
+    assert.deepEqual(registry, {});
+    await assert.rejects(fs.access(credentialFile), { code: 'ENOENT' });
+  } finally { finishInitialize?.(); await fs.rm(root, { recursive: true, force: true }); }
+});
 test('QR reinitialization preserves command and group settings and seeds the account UID', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'qr-preserve-'));
   const previous = process.env.PROJECT_ROOT;
