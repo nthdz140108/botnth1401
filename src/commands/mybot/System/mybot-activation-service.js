@@ -9,6 +9,8 @@ import {
 } from "./mybot-trial-ledger.js";
 import { getProjectRoot } from "../../../utils/env.js";
 import { resolveManagedBotTarget } from "./mybot-identity.js";
+import { getBotLaunchGeneration } from "./pm2-manager.js";
+import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 import {
   resolveOwnedActivationCandidates,
   resolveOwnerActiveSlot,
@@ -50,13 +52,17 @@ export async function activateBot({
 
   const bId = String(botId).trim();
   const projectRoot = root || getProjectRoot();
+  const generation = getBotLaunchGeneration(bId, projectRoot);
+  const assertNotCancelled = () => {
+    if (getBotLaunchGeneration(bId, projectRoot) !== generation) throw Object.assign(new Error("Activation cancelled by stop/delete"), { code: "START_CANCELLED" });
+  };
 
   // Resolve inventory and bot record first
   const inventoryPath = path.join(projectRoot, "mybot", "mybots.json");
   let inventory = {};
   try {
     if (fs.existsSync(inventoryPath)) {
-      inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8").replace(/^\uFEFF/, ""));
+      inventory = loadMyBotsRegistry(inventoryPath);
     }
   } catch {}
 
@@ -69,7 +75,7 @@ export async function activateBot({
   const targetBot = resolvedTargets && resolvedTargets.length > 0 ? resolvedTargets[0] : null;
 
   const botEntry = inventory[bId] || (targetBot ? targetBot.rawRecord : null);
-  const profile = getProfile(targetBot?.uid || bId, { root: projectRoot });
+  const profile = getProfile(bId, { root: projectRoot });
 
   if (!botEntry && !targetBot && !fs.existsSync(path.join(projectRoot, "mybot", "bots", `${bId}.json`))) {
     return { success: false, code: "BOT_NOT_FOUND", error: `Bot ${bId} not found` };
@@ -156,9 +162,14 @@ export async function activateBot({
     const isUnexpired = profile?.expiryAt && new Date(profile.expiryAt).getTime() > now;
 
     // Case 1: Bot already has valid expiry (permanent or unexpired trial / admin extended)
-    if (isPermanent || isUnexpired) {
+    const policy = profile.activationPolicy || botEntry?.activationPolicy;
+    const pendingPolicy = !profile.activatedAt && policy &&
+      (policy.type === "permanent" || (policy.type === "duration" && Number(policy.durationMs) > 0));
+    if (isPermanent || isUnexpired || pendingPolicy) {
       // If process already running, return success immediately
-      if (botEntry?.status === "running" && pm2Adapter?.isRunning?.(bId)) {
+      if (!pendingPolicy && botEntry?.status === "running" && await pm2Adapter?.isRunning?.(bId)) {
+        const health = await performHealthCheck({ botId: bId, webPort: botEntry?.webPort, root: projectRoot, pm2Adapter, healthProbe });
+        if (!health.healthy) return { success: false, code: "READINESS_FAILED", error: health.error || "Bot is not ready", health };
         return {
           success: true,
           botId: bId,
@@ -186,15 +197,23 @@ export async function activateBot({
           }
         }
 
-        // Update profile & registry
-        updateProfile(bId, { enabled: true }, { root: projectRoot });
+        assertNotCancelled();
+        const readyAt = Number.isFinite(Date.parse(health.checkedAt)) ? Date.parse(health.checkedAt) : Date.now();
+        const effectiveExpiry = pendingPolicy
+          ? (policy.type === "permanent" ? "-1" : new Date(readyAt + Number(policy.durationMs)).toISOString())
+          : profile.expiryAt;
+        updateProfile(bId, {
+          enabled: true, desiredStatus: "running",
+          ...(pendingPolicy ? { activatedAt: new Date(readyAt).toISOString(), expiryAt: effectiveExpiry, trialStatus: "not_required" } : {}),
+        }, { root: projectRoot });
         if (fs.existsSync(inventoryPath)) {
-          const inv = JSON.parse(fs.readFileSync(inventoryPath, "utf8").replace(/^\uFEFF/, ""));
+          const inv = loadMyBotsRegistry(inventoryPath);
           if (inv[bId]) {
             inv[bId].status = "running";
+            inv[bId].desiredStatus = "running";
             inv[bId].enabled = true;
             inv[bId].lastUpdated = new Date().toISOString();
-            fs.writeFileSync(inventoryPath, JSON.stringify(inv, null, 2), "utf8");
+            saveMyBotsRegistry(inv, inventoryPath);
           }
         }
 
@@ -204,7 +223,7 @@ export async function activateBot({
           ownerUid,
           trialGranted: false,
           weekKey: null,
-          expiryAt: profile.expiryAt,
+          expiryAt: effectiveExpiry,
           status: "running",
           health,
         };
@@ -248,6 +267,7 @@ export async function activateBot({
       // The trial clock starts at the moment the bot reached READY (health /
       // readiness probe), NOT at the moment start was issued. This is the fix
       // for "trial time counts from before the bot was ready".
+      assertNotCancelled();
       const readyAt = health?.checkedAt ? Date.parse(health.checkedAt) : Date.now();
       const activatedNow = Number.isFinite(readyAt) ? readyAt : Date.now();
       const claim = txn.commit({ commitNow: activatedNow, commitDurationMs: durationMs });
@@ -258,6 +278,7 @@ export async function activateBot({
 
       // Update profile
       updateProfile(bId, {
+        desiredStatus: "running",
         trialStatus: "active",
         trialStartedAt: claim.grantedAt,
         expiryAt: claim.expiryAt,
@@ -266,15 +287,16 @@ export async function activateBot({
 
       // Update inventory status
       if (fs.existsSync(inventoryPath)) {
-        const inv = JSON.parse(fs.readFileSync(inventoryPath, "utf8").replace(/^\uFEFF/, ""));
+        const inv = loadMyBotsRegistry(inventoryPath);
         if (inv[bId]) {
           inv[bId].status = "running";
+          inv[bId].desiredStatus = "running";
           inv[bId].trialStatus = "active";
           inv[bId].trialStartedAt = claim.grantedAt;
           inv[bId].expiryAt = claim.expiryAt;
           inv[bId].enabled = true;
           inv[bId].lastUpdated = new Date(activatedNow).toISOString();
-          fs.writeFileSync(inventoryPath, JSON.stringify(inv, null, 2), "utf8");
+          saveMyBotsRegistry(inv, inventoryPath);
         }
       }
 
@@ -313,7 +335,7 @@ export async function activateBot({
 
       if (fs.existsSync(inventoryPath)) {
         try {
-          const inv = JSON.parse(fs.readFileSync(inventoryPath, "utf8").replace(/^\uFEFF/, ""));
+          const inv = loadMyBotsRegistry(inventoryPath);
           if (inv[bId]) {
             if (registrySnapshot) {
               // Restore the pre-activation snapshot but ALWAYS normalize the
@@ -321,6 +343,7 @@ export async function activateBot({
               // leaves a half-committed trial (no expiry, no startedAt).
               inv[bId] = {
                 ...registrySnapshot,
+                ...(getBotLaunchGeneration(bId, projectRoot) !== generation ? { desiredStatus: "stopped" } : {}),
                 status: registrySnapshot.status === "running" ? "stopped" : registrySnapshot.status,
                 trialStatus: "pending",
                 trialStartedAt: null,
@@ -333,7 +356,7 @@ export async function activateBot({
               inv[bId].expiryAt = null;
             }
             inv[bId].lastUpdated = new Date().toISOString();
-            fs.writeFileSync(inventoryPath, JSON.stringify(inv, null, 2), "utf8");
+            saveMyBotsRegistry(inv, inventoryPath);
           }
         } catch {}
       }
@@ -398,9 +421,9 @@ async function performHealthCheck({ botId, webPort, root, pm2Adapter, healthProb
   }
   const { checkBotHealth } = await import("./pm2-manager.js");
   if (typeof checkBotHealth === "function") {
-    return await checkBotHealth(botId, webPort || 4444, 5000);
+    return await checkBotHealth(botId, webPort || 4444, 5000, root);
   }
-  return { healthy: true };
+  return { healthy: false, error: "No readiness probe available" };
 }
 
 async function cleanupFailedProcess(botId, root, pm2Adapter) {

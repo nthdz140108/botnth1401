@@ -235,6 +235,7 @@ test("admin restart never calls process.exit and swapAdminBot rolls back stuck i
   // Case 2: Standalone mode (PM2 not managing admin) -> posts to loopback /internal/runtime/reload
   const reloadCalls = [];
   const standaloneActions = createBotActionService({
+    readinessProbe: async () => ({ healthy: true }),
     root,
     registry: {
       inventoryPath: path.join(root, "mybot", "mybots.json"),
@@ -256,7 +257,7 @@ test("admin restart never calls process.exit and swapAdminBot rolls back stuck i
   });
 
   const restartRes = await standaloneActions.restart("admin");
-  assert.equal(restartRes.status, "restarting");
+  assert.equal(restartRes.status, "running");
   assert.equal(exitCalled, false);
   assert.equal(reloadCalls.length, 1);
   assert.equal(reloadCalls[0].url, "http://127.0.0.1:24567/internal/runtime/reload");
@@ -425,12 +426,11 @@ test("CredentialService, ConfigStore.rollback, and CommandService prevent secret
   const credPath = path.join(root, "mybot", "credentials", "bot-1.json");
   await fs.mkdir(path.dirname(credPath), { recursive: true });
   const initialRaw = {
+    accountUid: "account-1",
+    accountIdentityStatus: "verified",
     imei: "real-imei-999",
     userAgent: "Mozilla/5.0 RealUA",
-    cookie: {
-      zpw_sek: "live-session-secret",
-      nested: { authToken: "deep-secret-token" },
-    },
+    cookie: { url: "https://chat.zalo.me", cookies: [{ name: "zpw_sek", value: "live-session-secret" }] },
   };
   await fs.writeFile(credPath, JSON.stringify(initialRaw, null, 2), "utf8");
 
@@ -438,7 +438,8 @@ test("CredentialService, ConfigStore.rollback, and CommandService prevent secret
   const registry = {
     describe: async (id) => (id === "bot-1" ? { id: "bot-1", configPath: "mybot/credentials/bot-1.json" } : null),
   };
-  const credentialService = new CredentialService({ root, registry, configStore });
+  await fs.writeFile(path.join(root, "mybot", "mybots.json"), JSON.stringify({ "bot-1": { name: "bot-1", uid: "account-1", accountUid: "account-1", ownerUid: "owner", accountIdentityStatus: "verified" } }));
+  const credentialService = new CredentialService({ root, registry, configStore, verifyCredential: async () => ({ uid: "account-1" }) });
 
   // read() redacts and omits raw
   const readResult = await credentialService.read("bot-1");
@@ -457,17 +458,13 @@ test("CredentialService, ConfigStore.rollback, and CommandService prevent secret
   await credentialService.update("bot-1", {
     imei: "[REDACTED]",
     userAgent: "Mozilla/5.0 UpdatedUA",
-    cookie: {
-      zpw_sek: "[masked]",
-      nested: { authToken: "[REDACTED]" },
-    },
+    cookie: "[masked]",
   });
 
   const persisted = JSON.parse(await fs.readFile(credPath, "utf8"));
   assert.equal(persisted.imei, "real-imei-999");
   assert.equal(persisted.userAgent, "Mozilla/5.0 UpdatedUA");
-  assert.equal(persisted.cookie.zpw_sek, "live-session-secret");
-  assert.equal(persisted.cookie.nested.authToken, "deep-secret-token");
+  assert.equal(persisted.cookie.cookies[0].value, "live-session-secret");
 
   // CredentialService rejects unsafe botId
   await assert.rejects(() => credentialService.read("../outside"), (err) => err.code === "INVALID_BOT_ID");

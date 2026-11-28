@@ -13,7 +13,9 @@ import { getProjectRoot } from "../../../utils/env.js";
 import { resolveManagedBotTarget, resolveManagedBotList, resolveBotPaths, resolveManagedBotTargetRecord } from "./mybot-identity.js";
 import { PM2Adapter } from "../../../runtime/pm2-adapter.js";
 import { createLaunchDescriptor } from "../../../runtime/launch-descriptor.js";
-import { probeBotReadiness } from "../../../runtime/runtime-readiness.js";
+import { probeBotReadiness, createBotReadinessService } from "../../../runtime/runtime-readiness.js";
+import { withRegistryLock } from "./registry-lock.js";
+import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +45,20 @@ const isWindows = process.platform === "win32";
 const spawnedProcesses = new Map();
 const startingBots = new Map();
 const restartingBots = new Map();
+const launchGenerations = new Map();
+
+export function getBotLaunchGeneration(botKey, projectRoot = null) {
+  return launchGenerations.get(`${getEffectiveRoot(projectRoot)}:${botKey}`) || 0;
+}
+
+export async function cancelPendingBotStart(targetOrUid, { projectRoot = null } = {}) {
+  const root = getEffectiveRoot(projectRoot);
+  const target = resolveManagedBotTargetRecord(targetOrUid, { projectRoot: root });
+  const token = `${root}:${target.key}`;
+  launchGenerations.set(token, (launchGenerations.get(token) || 0) + 1);
+  await updateMyBotRecord(target, { desiredStatus: "stopped", lastUpdated: new Date().toISOString() }, root);
+  await Promise.allSettled([startingBots.get(token), restartingBots.get(token)].filter(Boolean));
+}
 
 export function checkPortInUse(port) {
   return new Promise((resolve) => {
@@ -62,32 +78,14 @@ export function checkPortInUse(port) {
   });
 }
 
-export async function checkBotHealth(targetOrUid, webPort, timeout = 30000, customRoot = null) {
+export async function checkBotHealth(targetOrUid, webPort, timeout = 30000, customRoot = null, dependencies = {}) {
   const root = getEffectiveRoot(customRoot);
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeout) {
-    const target = resolveManagedBotTargetRecord(targetOrUid, { projectRoot: root });
-    const pm2Status = await checkPM2Status(target.key);
-    if (pm2Status.running) {
-      const portOk = await checkPortInUse(webPort);
-      if (portOk) {
-        return { healthy: true, method: "pm2+port" };
-      }
-    }
-    const spawnedStatus = await checkSpawnedProcessStatus(target, root);
-    if (spawnedStatus.running) {
-      const portOk = await checkPortInUse(webPort);
-      if (portOk) {
-        return { healthy: true, method: "spawned+port" };
-      }
-    }
-    const portOk = await checkPortInUse(webPort);
-    if (portOk) {
-      return { healthy: true, method: "port-only" };
-    }
-    await new Promise(resolve => setTimeout(resolve, 2000));
-  }
-  return { healthy: false, method: "timeout" };
+  const target = resolveManagedBotTargetRecord(targetOrUid, { projectRoot: root });
+  const descriptor = createLaunchDescriptor({ kind: target.key === "admin" ? "main" : "child", botKey: target.key, uid: target.uid, projectRoot: root, webPort });
+  descriptor.accountUid = target.rawRecord?.accountUid || target.accountUid || (target.uid !== target.key ? target.uid : null);
+  const service = createBotReadinessService({ root, ...dependencies });
+  const result = await service.waitFor({ descriptor, timeoutMs: timeout, intervalMs: 100 });
+  return { ...result, healthy: result.ready === true, method: "runtime-readiness", error: result.ready ? null : result.reason };
 }
 
 function getBotConfigPath(targetOrUid, customRoot = null) {
@@ -297,13 +295,18 @@ export async function removeSpawnedRecord(targetOrUid, pid = null, customRoot = 
 
 export async function updateMyBotRecord(targetOrUid, updater, customRoot = null) {
   const root = getEffectiveRoot(customRoot);
+  return withRegistryLock(path.join(root, "mybot", "mybots.json"), () => updateMyBotRecordLocked(targetOrUid, updater, root));
+}
+
+async function updateMyBotRecordLocked(targetOrUid, updater, customRoot = null) {
+  const root = getEffectiveRoot(customRoot);
   const { myBotsPath } = getMyBotPaths(root);
   if (!fs.existsSync(myBotsPath)) return false;
   let myBots = {};
   try {
-    myBots = JSON.parse(fs.readFileSync(myBotsPath, "utf8").replace(/^\uFEFF/, ""));
-  } catch {
-    return false;
+    myBots = loadMyBotsRegistry(myBotsPath);
+  } catch (error) {
+    throw error;
   }
 
   const target = resolveManagedBotTargetRecord(targetOrUid, { projectRoot: root, registry: myBots });
@@ -330,7 +333,7 @@ export async function updateMyBotRecord(targetOrUid, updater, customRoot = null)
   const currentVal = myBots[matchedKey];
   const nextValue = typeof updater === "function" ? updater({ ...currentVal }) : { ...currentVal, ...updater };
   myBots[matchedKey] = nextValue;
-  writeJsonAtomic(myBotsPath, myBots);
+  saveMyBotsRegistry(myBots, myBotsPath);
   return true;
 }
 
@@ -601,8 +604,8 @@ export function restartBotRuntime(targetOrUid, options = {}) {
   const effectiveBotUid = String(target.uid || target.key || targetOrUid).trim();
   const botKey = String(target.key || target.uid || targetOrUid).trim();
 
-  const lockKey = effectiveBotUid;
-  const existing = restartingBots.get(lockKey) || restartingBots.get(botKey);
+  const lockKey = `${root}:${botKey}`;
+  const existing = restartingBots.get(lockKey);
   if (existing) return existing;
 
   const operation = (async () => {
@@ -616,7 +619,10 @@ export function restartBotRuntime(targetOrUid, options = {}) {
     const pm2Status = await checkPM2Status(botKey);
     if (pm2Status.running) {
       const restarted = await restartPM2Process(botKey);
-      if (restarted) return { success: true, method: "pm2", botKey, pid: null, previousPid };
+      if (restarted) {
+        const health = await checkBotHealth(target, readBotWebPort(target, root), options.readinessTimeoutMs || 60000, root);
+        return { success: health.healthy, method: "pm2", botKey, pid: health.identity?.pid || null, previousPid, health, reason: health.healthy ? "ready" : health.reason };
+      }
     }
 
     // Kill any existing spawned / terminal process
@@ -646,10 +652,8 @@ export function restartBotRuntime(targetOrUid, options = {}) {
   let tracked;
   tracked = operation.finally(() => {
     if (restartingBots.get(lockKey) === tracked) restartingBots.delete(lockKey);
-    if (restartingBots.get(botKey) === tracked) restartingBots.delete(botKey);
   });
   restartingBots.set(lockKey, tracked);
-  restartingBots.set(botKey, tracked);
   return tracked;
 }
 
@@ -812,11 +816,13 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
   const botKey = String(target.key || target.uid || targetOrUid).trim();
   const paths = target.paths || resolveBotPaths(target, root);
 
-  const lockKey = effectiveBotUid;
-  if (startingBots.has(lockKey) || startingBots.has(botKey)) {
-    return startingBots.get(lockKey) || startingBots.get(botKey);
+  const lockKey = `${root}:${botKey}`;
+  if (startingBots.has(lockKey)) {
+    return startingBots.get(lockKey);
   }
 
+  const generation = launchGenerations.get(lockKey) || 0;
+  const isCancelled = () => (launchGenerations.get(lockKey) || 0) !== generation;
   const startPromise = (async () => {
     if (options.env?.TEST_MOCK_LAUNCH === "true") {
       return { success: true, pid: 99999, consolePid: 88888, reason: "mock" };
@@ -838,9 +844,10 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
     }
 
     if (webPort && (await checkPortInUse(webPort))) {
-      await updateMyBotRecord(target, { status: "running", lastUpdated: new Date().toISOString() }, root);
-      const state = readBotStateSafe(target, root);
-      return { success: true, pid: state?.pid || null, consolePid: state?.consolePid || null, reason: "already_running" };
+      const health = await checkBotHealth(target, webPort, 1000, root);
+      if (!health.healthy) return { success: false, reason: "PORT_IN_USE", health };
+      await updateMyBotRecord(target, { status: "running", desiredStatus: "running", lastUpdated: new Date().toISOString() }, root);
+      return { success: true, pid: health.identity?.pid || null, consolePid: null, reason: "already_running", health };
     }
 
     if (!fs.existsSync(botIndexPath)) {
@@ -910,6 +917,7 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
         projectRoot: root,
         webPort,
       });
+      descriptor.accountUid = target.rawRecord?.accountUid || target.accountUid || (target.uid !== target.key ? target.uid : null);
       const adapter = new PM2Adapter({ projectRoot: root });
       const result = await adapter.startBot(descriptor);
 
@@ -924,26 +932,24 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
         lastUpdated: new Date().toISOString(),
       }, root);
 
-      // Wait for the web port to open (health check)
-      const maxWait = 45000;
-      const startTime = Date.now();
-      while (Date.now() - startTime < maxWait) {
-        const portOk = await checkPortInUse(webPort);
-        if (portOk) {
-          const procs = await adapter.listMyBotProcesses().catch(() => []);
-          const proc = procs.find((p) => p.name === descriptor.pm2Name);
-          const nodePid = proc?.pid || null;
+      const service = createBotReadinessService({ adapter, root });
+      const health = await service.waitFor({ descriptor, timeoutMs: options.readinessTimeoutMs || 60000 });
+      if (health.ready) {
+          if (isCancelled()) {
+            await stopPM2Process(botKey);
+            return { success: false, code: "START_CANCELLED", reason: "START_CANCELLED" };
+          }
+          const nodePid = health.identity?.pid || null;
           await updateMyBotRecord(target, {
             pid: nodePid ? String(nodePid) : null,
             consolePid: null,
             status: "running",
+            desiredStatus: "running",
             startError: null,
             lastUpdated: new Date().toISOString(),
           }, root);
           appendStartupLog(target, `Healthy under PM2 pm2Name=${descriptor.pm2Name} pid=${nodePid} port=${webPort}`, root);
-          return { success: true, pid: nodePid, consolePid: null, reason: result.reason };
-        }
-        await new Promise((r) => setTimeout(r, 1500));
+          return { success: true, pid: nodePid, consolePid: null, reason: result.reason, health };
       }
 
       appendStartupLog(target, `Startup timeout under PM2: port=${webPort}`, root);
@@ -952,11 +958,9 @@ export async function startBotWithLauncher(targetOrUid, options = {}) {
     }
   })().finally(() => {
     startingBots.delete(lockKey);
-    startingBots.delete(botKey);
   });
 
   startingBots.set(lockKey, startPromise);
-  startingBots.set(botKey, startPromise);
   return startPromise;
 }
 
@@ -1138,7 +1142,17 @@ export function createBotConfig(uidFrom, webPort) {
 
 export async function createAllRequiredFiles(uidFrom, args, botConfig, customRoot = null) {
   const root = getEffectiveRoot(customRoot);
-  const runtimeContext = createBotRuntimeContext({ uid: uidFrom, ...botConfig });
+  const dataDir = path.join(root, "mybot", "instances", String(uidFrom), "data");
+  const runtimeContext = {
+    ...createBotRuntimeContext({ ...botConfig, uid: uidFrom }),
+    workspaceRoot: path.dirname(dataDir), dataDir,
+    adminListPath: path.join(dataDir, "admin-list.json"),
+    groupSettingsPath: path.join(dataDir, "group-settings.json"),
+    commandConfigPath: path.join(dataDir, "command.json"),
+    logsDir: path.join(path.dirname(dataDir), "logs"),
+    tempDir: path.join(path.dirname(dataDir), "temp"),
+    resourcesDir: path.join(path.dirname(dataDir), "resources"),
+  };
   const myBotDirPath = path.join(root, "mybot");
 
   const legacyAdminFilePath = path.join(root, botConfig.adminFilePath);
@@ -1244,6 +1258,9 @@ export async function createAllRequiredFiles(uidFrom, args, botConfig, customRoo
     }
   }
 
+  if (isChild && !fs.existsSync(runtimeAdminFilePath)) {
+    finalAdmins = [String(credentialsData.accountUid || credentialsData.verifiedAccountUid || (/^\d+$/.test(String(uidFrom)) ? uidFrom : ""))].filter(Boolean);
+  }
   const fileMap = {
     [path.join(root, botConfig.configFilePath)]: credentialsData,
     [path.join(root, botConfig.groupSettingsPath)]: {},
@@ -1288,6 +1305,7 @@ export async function createAllRequiredFiles(uidFrom, args, botConfig, customRoo
 
   for (const [filePath, data] of Object.entries(fileMap)) {
     try {
+      if (filePath !== path.join(root, botConfig.configFilePath) && fs.existsSync(filePath)) continue;
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
     } catch (error) {
       throw new Error(`Không thể tạo file ${filePath}: ${error.message}`);
@@ -1298,15 +1316,15 @@ export async function createAllRequiredFiles(uidFrom, args, botConfig, customRoo
   const legacyCommandFilePath = path.join(root, botConfig.commandFilePath);
   try {
     fs.mkdirSync(path.dirname(legacyCommandFilePath), { recursive: true });
-    fs.writeFileSync(legacyCommandFilePath, commandStateStub);
-    fs.writeFileSync(runtimeContext.commandConfigPath, commandStateStub);
+    if (!fs.existsSync(legacyCommandFilePath)) fs.writeFileSync(legacyCommandFilePath, commandStateStub);
+    if (!fs.existsSync(runtimeContext.commandConfigPath)) fs.writeFileSync(runtimeContext.commandConfigPath, commandStateStub);
   } catch (error) {
     throw new Error(`Không thể tạo file command state cho bot: ${error.message}`);
   }
 
   const botConfigPath = path.join(myBotDirPath, "bots", `${uidFrom}.json`);
   try {
-    fs.writeFileSync(botConfigPath, JSON.stringify(botConfig, null, 4));
+    if (!fs.existsSync(botConfigPath)) fs.writeFileSync(botConfigPath, JSON.stringify(botConfig, null, 4));
   } catch (error) {
     throw new Error(`Không thể tạo file config bot: ${error.message}`);
   }

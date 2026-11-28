@@ -11,7 +11,6 @@ function getGlobalPrefix() {
     return "!";
   }
 }
-import { getZaloCookiePayload, getZaloRuntimeConfig } from "../../api-zalo/zalo-config.js";
 import {
   checkBotExists,
   stopPM2Process,
@@ -25,9 +24,9 @@ import {
   killSpawnedProcess,
   checkSpawnedProcessStatus,
   resolveBotRuntimeState,
+  cancelPendingBotStart,
 } from "./System/pm2-manager.js";
 import { sendMessageComplete, sendMessageWarning } from "../../service-debug/chat-zalo/chat-style/chat-style.js";
-import { initSession, verifyClient, generateQRCode, waitingScan, waitingConfirm, getUserInfo } from "./Credentials/qr-login.js";
 import { handleQrLogin } from "./Manager/qr-login-command.js";
 import { createBotListImage } from "./list-canvas.js";
 import { parseMyBotCommand, parseDuration } from "./System/mybot-parser.js";
@@ -76,6 +75,8 @@ import { openMyBotActiveSelection } from "./System/mybot-active-selection.js";
 import { appContext } from "../../api-zalo/context.js";
 import { resolveMainBotUid, resolveCurrentInstanceIdentity } from "../../utils/instance-authorization.js";
 import { getProjectRoot } from "../../utils/env.js";
+import { verifyLoginCredential } from './System/login-verification.js';
+import { persistVerifiedBot } from './System/verified-provisioning.js';
 
 let projectRoot = getProjectRoot();
 let myBotDir = path.join(projectRoot, "mybot");
@@ -90,7 +91,6 @@ function refreshMyBotPaths() {
   return { projectRoot, myBotDir, myBotsPath, launcherPath };
 }
 
-const ZALO_RUNTIME = getZaloRuntimeConfig();
 
 // Single-flight lock for in-progress restarts
 const inProgressRestarts = new Map();
@@ -178,6 +178,19 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
 
     const isSystemAdmin = callerRole.isSystemAdmin;
     const myBots = loadMyBotsRegistry(myBotsPath);
+
+    if (options.selectedBotKey) parsed.selector = { type: 'uid', value: options.selectedBotKey };
+    const requiresTarget = new Set(['detail', 'cmd', 'start', 'restart', 'stop', 'delete', 'extend', 'minus', 'reject', 'approve', 'set', 'style', 'update', 'getupdate', 'nameserver']);
+    if (requiresTarget.has(parsed.action) && (!parsed.selector || parsed.selector.type === 'self')) {
+      const candidates = resolveManagedBotTarget({ registry: myBots, callerUid: uidFrom, isSystemAdmin, projectRoot });
+      if (candidates.length > 1) {
+        return openMyBotActiveSelection({ api, message, candidates, projectRoot, actionLabel: `thực hiện ${parsed.action}`,
+          onSelect: selected => mybotHandleCommand(api, message, isAdminLevelHighest, aliasCommand, { ...options, selectedBotKey: selected.key }),
+        });
+      }
+      if (candidates.length === 1) parsed.selector = { type: 'uid', value: candidates[0].key };
+    }
+    const selectedKey = parsed.selector?.type === 'uid' ? resolveManagedBotTarget({ selector: parsed.selector, registry: myBots, callerUid: uidFrom, isSystemAdmin, projectRoot })[0]?.key : null;
 
     // Subcommands handling
     switch (parsed.action) {
@@ -297,7 +310,8 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
       }
 
       case "getupdate": {
-        return await handleQrUpdate(api, message, threadId, type);
+        if (!selectedKey) return sendMessageWarning(api, message, 'Không tìm thấy bot để cập nhật.', true, false);
+        return await handleQrLogin(api, message, threadId, type, isSystemAdmin, { targetBotKey: selectedKey });
       }
 
       case "create": {
@@ -314,7 +328,7 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
             false
           );
         }
-        return await handleChangeNameServer(api, uidFrom, dName, parsed.serverName.trim(), threadId, type, message);
+        return await handleChangeNameServer(api, uidFrom, dName, parsed.serverName.trim(), threadId, type, message, selectedKey);
       }
 
       case "update": {
@@ -328,7 +342,7 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
               false
             );
           }
-          return await handleUpdateName(api, uidFrom, dName, parsed.updateValue.trim(), threadId, type, message);
+          return await handleUpdateName(api, uidFrom, dName, parsed.updateValue.trim(), threadId, type, message, selectedKey);
         } else if (parsed.updateType === "description") {
           if (!parsed.updateValue || !parsed.updateValue.trim()) {
             return await sendMessageWarning(
@@ -339,7 +353,7 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
               false
             );
           }
-          return await handleUpdateDescription(api, uidFrom, dName, parsed.updateValue.trim(), threadId, type, message);
+          return await handleUpdateDescription(api, uidFrom, dName, parsed.updateValue.trim(), threadId, type, message, selectedKey);
         } else if (parsed.updateType === "credentials") {
           if (!parsed.imei || !parsed.rawCookie) {
             return await sendMessageWarning(
@@ -350,7 +364,7 @@ export async function mybotHandleCommand(api, message, isAdminLevelHighest = fal
               false
             );
           }
-          return await updateBotCredentials(api, message, [parsed.imei, parsed.rawCookie, parsed.userAgent], aliasCommand);
+          return await updateBotCredentials(api, message, [parsed.imei, parsed.rawCookie, parsed.userAgent], aliasCommand, selectedKey, isSystemAdmin);
         } else {
           return await sendMessageWarning(
             api,
@@ -1133,98 +1147,17 @@ export async function startBot(api, message, isAdminLevelHighest, args, suppress
       return false;
     }
 
-    const effectiveOwner = botInfo.ownerUid || botInfo.createdByUid || requesterUid || uidFrom;
-    const hasExplicitExpiry = Boolean(
-      botInfo.expiryAt !== null &&
-      botInfo.expiryAt !== undefined &&
-      botInfo.expiryAt !== "" &&
-      (String(botInfo.expiryAt).trim() === "-1" || !Number.isNaN(Date.parse(String(botInfo.expiryAt))))
-    );
-    const isPendingTrial = !hasExplicitExpiry && (botInfo.trialStatus === "pending" || botInfo.trialStatus !== "active");
-
-    if (isPendingTrial && !isAdminLevelHighest) {
-      const trialCheck = getOwnerTrialStatus(effectiveOwner, { root: projectRoot });
-      if (!trialCheck.eligible) {
-        if (!suppressMessages) {
-          await sendMessageWarning(
-            api,
-            message,
-            `⚠️ Bạn đã sử dụng hết 1 lượt dùng thử miễn phí trong tuần lịch Bangkok (${trialCheck.currentWeek}). Hãy liên hệ Admin để gia hạn bot!`,
-            true,
-            false
-          );
-        }
-        return false;
-      }
-    }
-
-    const startResult = await startBotWithLauncher(uidFrom);
-    const isSuccess = Boolean(startResult === true || startResult?.success === true);
-    if (isSuccess) {
-      if (isPendingTrial) {
-        try {
-          await activatePendingTrial(uidFrom, {
-            root: projectRoot,
-            ownerUid: effectiveOwner,
-            enforceQuota: !isAdminLevelHighest,
-          });
-        } catch (quotaErr) {
-          await stopPM2Process(uidFrom).catch(() => {});
-          await killSpawnedProcess(uidFrom).catch(() => {});
-          await revertFailedTrialReactivation(uidFrom, { root: projectRoot }).catch(() => {});
-          if (!suppressMessages) {
-            await sendMessageWarning(
-              api,
-              message,
-              quotaErr?.code === "TRIAL_QUOTA_EXHAUSTED"
-                ? "⚠️ Bạn đã hết lượt dùng thử miễn phí trong tuần này! Hãy liên hệ Admin để gia hạn bot."
-                : `Không thể kích hoạt dùng thử cho bot: ${quotaErr?.message || quotaErr}`,
-              true,
-              false
-            );
-          }
-          return false;
-        }
-        if (!suppressMessages) {
-          await sendMessageComplete(
-            api,
-            message,
-            `✅ Khởi động bot ${botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom} thành công!\n⏳ Thời gian dùng thử 1 giờ đã bắt đầu tính từ bây giờ.`,
-            true,
-            false
-          );
-        }
-      } else {
-        await updateBotStatus(uidFrom, "running");
-        // Re-read identity AFTER the bot is running: the process may have
-        // resolved its admin identities during startup. Report restricted mode
-        // only if it is STILL pending.
-        const postLaunch = await checkBotExists(uidFrom).catch(() => ({ botInfo: botInfo }));
-        const stillPending = postLaunch?.botInfo?.identityPending === true;
-        if (!suppressMessages) {
-          if (stillPending) {
-            await sendMessageComplete(
-              api,
-              message,
-              `✅ Khởi động bot ${botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom} thành công!\n⚠️ Bot đang chạy ở chế độ hạn chế: danh tính chưa được xác minh (${postLaunch.botInfo.identityPendingReason || "thiếu 3 identity seeds"}). Chỉ UID của chính bot (${uidFrom}) có quyền cao; bot sẽ tự xác minh khi chạy.`,
-              true,
-              false
-            );
-          } else {
-            await sendMessageComplete(api, message, `Khởi động bot ${botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom} thành công!`, true, false);
-          }
-        }
-      }
-      return true;
-    } else {
-      if (botInfo.trialStatus === "pending") {
-        await revertFailedTrialReactivation(uidFrom, { root: projectRoot }).catch(() => {});
-      }
-      if (!suppressMessages) {
-        await sendMessageWarning(api, message, `Không thể khởi động bot ${botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom}. Vui lòng thử lại sau!`, true, false);
-      }
+    const result = await activateBot({
+      botId: uidFrom, actorUid: requesterUid, isSystemAdmin: isAdminLevelHighest,
+      root: projectRoot,
+    });
+    if (!result.success) {
+      if (!suppressMessages) await sendMessageWarning(api, message, result.error || result.code || "Không thể khởi động bot", true, false);
       return false;
     }
+    if (!suppressMessages) await sendMessageComplete(api, message,
+      `✅ Bot ${botInfo.displayName || botInfo.name || uidFrom} đã kết nối và sẵn sàng!${result.trialGranted ? "\n⏳ Dùng thử 1 giờ bắt đầu từ khi sẵn sàng." : ""}`, true, false);
+    return true;
   } catch (error) {
     await handleError(error, api, threadId, "khởi động bot", type, message);
     return false;
@@ -1323,6 +1256,8 @@ export async function stopBot(api, message, isAdminLevelHighest, args, suppressM
     const botInfo = checkResult.botInfo;
     const botName = botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom;
 
+    await cancelPendingBotStart(uidFrom, { projectRoot });
+    updateProfile(uidFrom, { desiredStatus: "stopped" }, { root: projectRoot });
     let stopped = false;
     const pm2Status = await checkPM2Status(uidFrom);
     if (pm2Status.running) {
@@ -1335,7 +1270,9 @@ export async function stopBot(api, message, isAdminLevelHighest, args, suppressM
       stopped = stopped || spawnedStopped;
     }
 
-    if (stopped || (!pm2Status.running && !spawnedStatus.running)) {
+    const verifiedPm2 = await checkPM2Status(uidFrom);
+    const verifiedSpawn = await checkSpawnedProcessStatus(uidFrom);
+    if (!verifiedPm2.running && !verifiedSpawn.running && (stopped || (!pm2Status.running && !spawnedStatus.running))) {
       await updateBotStatus(uidFrom, "stopped");
       if (!suppressMessages) {
         await sendMessageComplete(api, message, `Bot ${botName} đã tạm dừng trong hệ thống!`, true, false);
@@ -1373,6 +1310,7 @@ export async function deleteBot(api, message, isAdminLevelHighest, args, suppres
       return false;
     }
 
+    await cancelPendingBotStart(uidFrom, { projectRoot });
     const deleteResult = await deleteChildBotLogic({
       projectRoot,
       registryPath: myBotsPath,
@@ -1567,9 +1505,10 @@ export async function rejectBot(api, message, isAdminLevelHighest, isPermanent, 
     await stopPM2Process(uidFrom).catch(() => {});
     await killSpawnedProcess(uidFrom).catch(() => {});
 
+    await cancelPendingBotStart(uidFrom, { projectRoot });
     await updateBotField(uidFrom, "status", "rejected");
     await updateBotField(uidFrom, "rejecter", rejecter);
-    updateProfile(uidFrom, { enabled: false }, { root: projectRoot });
+    updateProfile(uidFrom, { enabled: false, desiredStatus: "stopped" }, { root: projectRoot });
 
     if (isPermanent) {
       const expiredTime = new Date(Date.now() - 1000).toISOString();
@@ -1608,7 +1547,7 @@ export async function approveBot(api, message, isAdminLevelHighest, targetBotUid
     const updatedStatus = botInfo.expiryAt === "-1" || expiryTime > currentTime ? "stopped" : "expired";
 
     await updateBotField(uidFrom, "status", updatedStatus);
-    updateProfile(uidFrom, { enabled: true }, { root: projectRoot });
+    updateProfile(uidFrom, { enabled: true, desiredStatus: "stopped" }, { root: projectRoot });
 
     await sendMessageComplete(
       api,
@@ -1796,142 +1735,25 @@ async function handleListBots(api, threadId, type, message, { isSystemAdmin = tr
   }
 }
 
-async function updateBotCredentials(api, message, args, aliasCommand) {
-  const { threadId, data: { uidFrom, dName }, type } = message;
+async function updateBotCredentials(api, message, args, aliasCommand, targetBotKey, allowAdmin = false) {
+  const { threadId, data: { uidFrom }, type } = message;
   try {
-    const checkResult = await checkBotExists(uidFrom);
-    if (!checkResult.exists) {
-      return await sendMessageWarning(api, message, "Bạn chưa có bot để cập nhật!", true, false);
-    }
-    const botInfo = checkResult.botInfo;
-    const botName = botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom;
-
-    const validationResult = validateCredentials(args, getGlobalPrefix(), aliasCommand);
-    if (!validationResult.valid) {
-      return await sendMessageWarning(api, message, validationResult.message, true, false);
-    }
-    const credentialsData = {
-      cookie: {
-        ...getZaloCookiePayload({ cookies: JSON.parse(args[1]) }, ZALO_RUNTIME),
-      },
-      imei: args[0],
-      userAgent: args[2] || "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
-    };
-    const botConfig = createBotConfig(uidFrom, botInfo.webPort);
-    await fs.writeFile(path.join(projectRoot, botConfig.configFilePath), JSON.stringify(credentialsData, null, 2), "utf-8");
-    await sendMessageComplete(
-      api,
-      message,
-      `Đã cập nhật thông tin đăng nhập cho bot ${botName} thành công!`,
-      true,
-      false
-    );
-    if (botInfo.status === "running") {
-      await restartBotRuntime(uidFrom).catch(() => {});
-    }
+    if (!targetBotKey) return await sendMessageWarning(api, message, "Không tìm thấy bot để cập nhật!", true, false);
+    const validation = validateCredentials(args, getGlobalPrefix(), aliasCommand);
+    if (!validation.valid) return await sendMessageWarning(api, message, validation.message, true, false);
+    const credential = { imei: args[0], cookie: args[1], userAgent: args[2] };
+    const identity = await verifyLoginCredential(credential, { root: projectRoot });
+    await persistVerifiedBot({ root: projectRoot, credential, identity, ownerUid: uidFrom, targetBotKey, allowAdmin });
+    await sendMessageComplete(api, message, `Đã xác minh và lưu thông tin đăng nhập cho bot ${targetBotKey}. Credential mới áp dụng sau lần restart được yêu cầu.`, true, false);
   } catch (error) {
     await handleError(error, api, threadId, "cập nhật thông tin đăng nhập bot", type, message);
   }
 }
 
-async function handleQrUpdate(api, message, threadId, type) {
-  const { data: { dName, uidFrom } } = message;
-  const sessionId = `update-${uidFrom}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  let qrPath = path.join(projectRoot, ".cache", `qr_code_${sessionId}.png`);
-
+async function handleUpdateName(api, uidFrom, dName, newName, threadId, type, message, targetBotKey) {
+  if (!targetBotKey) return sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu!", true, false);
   try {
-    const checkResult = await checkBotExists(uidFrom);
-    if (!checkResult.exists) {
-      return await sendMessageWarning(api, message, "Bạn chưa có bot để cập nhật!", true, false);
-    }
-    const botInfo = checkResult.botInfo;
-    const botName = botInfo.displayName || botInfo.nameServer || botInfo.name || uidFrom;
-
-    let session = await initSession({ sessionId, qrFilePath: qrPath });
-    if (!session) {
-      return await sendMessageWarning(api, message, `Không thể khởi tạo phiên đăng nhập! Vui lòng thử lại sau.`, true, false);
-    }
-    session = await verifyClient(session);
-    if (!session) {
-      return await sendMessageWarning(api, message, `Không thể xác minh phiên đăng nhập! Vui lòng thử lại sau.`, true, false);
-    }
-    const [code, updatedSession] = await generateQRCode(session, { sessionId, qrFilePath: qrPath });
-    session = updatedSession;
-    if (!code || !session) {
-      return await sendMessageWarning(api, message, `Đã xảy ra lỗi khi tạo QR`, true, false);
-    }
-    qrPath = session.qrFilePath || qrPath;
-
-    const expiresAt = Date.now() + 180_000;
-    await api.sendMessage(
-      {
-        msg: `${dName}, mở app Zalo và quét mã QR này để cập nhật thông tin đăng nhập (hiệu lực 3 phút)!`,
-        attachments: [qrPath],
-        mentions: [{ pos: 0, uid: uidFrom, len: dName.length }],
-        ttl: 180000,
-      },
-      threadId,
-      type
-    );
-
-    const scanResult = await waitingScan(code, session, null, { expiresAt });
-    if (!scanResult) {
-      return await sendMessageWarning(api, message, `Cập nhật không thành công hoặc đã hết thời gian quét mã!`, true, false);
-    }
-    await sendMessageComplete(api, message, `Đã quét QR, vui lòng xác nhận cập nhật trên thiết bị của bạn.`, true, false);
-
-    const [resultData, rawCookies] = await waitingConfirm(code, session, { expiresAt });
-    if (!resultData || !rawCookies) {
-      return await sendMessageWarning(api, message, `Cập nhật không thành công hoặc đã hết thời gian xác nhận!`, true, false);
-    }
-
-    const userInfo = await getUserInfo(session);
-    const scannedUid = String(
-      userInfo?.data?.uid ||
-      userInfo?.data?.userId ||
-      userInfo?.data?.info?.uid ||
-      userInfo?.data?.info?.userId ||
-      ""
-    ).trim();
-    if (scannedUid && scannedUid !== String(uidFrom).trim()) {
-      return await sendMessageWarning(
-        api,
-        message,
-        `Tài khoản Zalo vừa quét (${scannedUid}) không khớp với bot cần cập nhật (${uidFrom})! Đã hủy ghi đè thông tin đăng nhập.`,
-        true,
-        false
-      );
-    }
-
-    const credentialsData = {
-      cookie: {
-        ...getZaloCookiePayload(rawCookies, ZALO_RUNTIME),
-      },
-      imei: resultData.imei,
-      userAgent: ZALO_RUNTIME.userAgent,
-    };
-    const botConfig = createBotConfig(uidFrom, botInfo.webPort);
-    await fs.writeFile(path.join(projectRoot, botConfig.configFilePath), JSON.stringify(credentialsData, null, 2), "utf-8");
-    await sendMessageComplete(
-      api,
-      message,
-      `Đã cập nhật thông tin đăng nhập cho bot ${botName} thành công!\nTên: ${userInfo?.data?.info?.name || ""}`,
-      true,
-      false
-    );
-    if (botInfo.status === "running") {
-      await restartBotRuntime(uidFrom).catch(() => {});
-    }
-  } catch (error) {
-    await handleError(error, api, threadId, "xử lý cập nhật qua QR", type, message);
-  } finally {
-    await fs.unlink(qrPath).catch(() => {});
-  }
-}
-
-async function handleUpdateName(api, uidFrom, dName, newName, threadId, type, message) {
-  try {
-    const checkResult = await checkBotExists(uidFrom);
+    const checkResult = await checkBotExists(targetBotKey);
     if (!checkResult.exists) {
       return await sendMessageWarning(api, message, "Bạn chưa có bot nào được tạo!", true, false);
     }
@@ -1939,8 +1761,8 @@ async function handleUpdateName(api, uidFrom, dName, newName, threadId, type, me
       return await sendMessageWarning(api, message, "Tên hiển thị không được quá 50 ký tự!", true, false);
     }
     const trimmedName = newName.trim();
-    await updateBotField(uidFrom, "displayName", trimmedName);
-    updateProfile(uidFrom, { nameServer: trimmedName }, { root: projectRoot, actor: uidFrom });
+    await updateBotField(targetBotKey, "displayName", trimmedName);
+    updateProfile(targetBotKey, { nameServer: trimmedName }, { root: projectRoot, actor: uidFrom });
     await sendMessageComplete(
       api,
       message,
@@ -1953,9 +1775,10 @@ async function handleUpdateName(api, uidFrom, dName, newName, threadId, type, me
   }
 }
 
-async function handleUpdateDescription(api, uidFrom, dName, newDescription, threadId, type, message) {
+async function handleUpdateDescription(api, uidFrom, dName, newDescription, threadId, type, message, targetBotKey) {
+  if (!targetBotKey) return sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu!", true, false);
   try {
-    const checkResult = await checkBotExists(uidFrom);
+    const checkResult = await checkBotExists(targetBotKey);
     if (!checkResult.exists) {
       return await sendMessageWarning(api, message, "Bạn chưa có bot nào được tạo!", true, false);
     }
@@ -1963,8 +1786,8 @@ async function handleUpdateDescription(api, uidFrom, dName, newDescription, thre
       return await sendMessageWarning(api, message, "Mô tả không được quá 200 ký tự!", true, false);
     }
     const trimmedDescription = newDescription.trim();
-    await updateBotField(uidFrom, "description", trimmedDescription);
-    updateProfile(uidFrom, { description: trimmedDescription }, { root: projectRoot, actor: uidFrom });
+    await updateBotField(targetBotKey, "description", trimmedDescription);
+    updateProfile(targetBotKey, { description: trimmedDescription }, { root: projectRoot, actor: uidFrom });
     await sendMessageComplete(
       api,
       message,
@@ -1977,24 +1800,25 @@ async function handleUpdateDescription(api, uidFrom, dName, newDescription, thre
   }
 }
 
-async function handleChangeNameServer(api, uidFrom, dName, newNameServer, threadId, type, message) {
+async function handleChangeNameServer(api, uidFrom, dName, newNameServer, threadId, type, message, targetBotKey) {
+  if (!targetBotKey) return sendMessageWarning(api, message, "Không tìm thấy bot mục tiêu!", true, false);
   try {
-    const checkResult = await checkBotExists(uidFrom);
+    const checkResult = await checkBotExists(targetBotKey);
     if (!checkResult.exists) {
       return await sendMessageWarning(api, message, "Bạn chưa có bot nào được tạo!", true, false);
     }
     if (newNameServer.length > 100) {
       return await sendMessageWarning(api, message, "Tên server không được quá 100 ký tự!", true, false);
     }
-    const botConfig = createBotConfig(uidFrom, checkResult.botInfo.webPort);
+    const botConfig = createBotConfig(targetBotKey, checkResult.botInfo.webPort);
     const databaseFilePath = path.join(projectRoot, botConfig.databaseFile);
     if (await fs.access(databaseFilePath).then(() => true).catch(() => false)) {
       const databaseConfig = JSON.parse(await fs.readFile(databaseFilePath, "utf8"));
       databaseConfig.nameServer = newNameServer.trim();
       await fs.writeFile(databaseFilePath, JSON.stringify(databaseConfig, null, 2));
     }
-    await updateBotField(uidFrom, "displayName", newNameServer.trim());
-    updateProfile(uidFrom, { nameServer: newNameServer.trim() }, { root: projectRoot, actor: uidFrom });
+    await updateBotField(targetBotKey, "displayName", newNameServer.trim());
+    updateProfile(targetBotKey, { nameServer: newNameServer.trim() }, { root: projectRoot, actor: uidFrom });
     await sendMessageComplete(
       api,
       message,

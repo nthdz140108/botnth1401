@@ -14,15 +14,15 @@ import { getProfile } from "../mybot/System/mybot-profile-service.js";
  * fail closed until identities are resolved in the child's own session.
  * Never throws — returns the list written.
  */
-async function fallbackWriteChildAdmins(botUid, { projectRoot, api } = {}) {
+async function fallbackWriteChildAdmins(botUid, { projectRoot, api, botKey } = {}) {
   const root = projectRoot || getProjectRoot();
-  const bUid = String(botUid || "").trim();
+  const bUid = String(botKey || process.env.BOT_KEY || botUid || "").trim();
 
   // Only the bot's own UID is guaranteed to be a valid local Supreme Admin.
-  const admins = [bUid].filter((s) => s && s.toLowerCase() !== "admin");
+  const selfUid = String((typeof api?.getOwnId === "function" ? api.getOwnId() : "") || botUid || "").trim();
+  const admins = [selfUid].filter((s) => s && s.toLowerCase() !== "admin");
 
-  const runtimeContext = createBotRuntimeContext({ uid: bUid });
-  const runtimeAdminPath = runtimeContext.adminListPath;
+  const runtimeAdminPath = path.join(root, "mybot", "instances", bUid, "data", "admin-list.json");
   const legacyAdminPath = path.join(root, "mybot", "configs", `list_admin-${bUid}.json`);
 
   for (const targetPath of new Set([runtimeAdminPath, legacyAdminPath])) {
@@ -43,6 +43,7 @@ async function fallbackWriteChildAdmins(botUid, { projectRoot, api } = {}) {
     updateProfile(bUid, {
       ...profile,
       identityPending: true,
+      adminBindingStatus: "pending",
       identityPendingReason: "Không resolve được owner/main username trong session bot; chỉ bot UID là Admin Tối Cao (fail-closed).",
       resolvedChildAdminUids: admins,
     }, { root });
@@ -58,6 +59,7 @@ export async function initAdminHandle(api) {
   const projectRoot = getProjectRoot();
   const runtimeContext = createBotRuntimeContext(botInfo);
   const botUid = appContext.uid ? String(appContext.uid).trim() : (botInfo.name || botInfo.uid);
+  const botKey = String(process.env.BOT_KEY || botInfo.botKey || botInfo.name || botUid || "").trim();
 
   // For child bot, dynamic session resolution is the ONLY source for Supreme Admins.
   // Wrapped in try-catch: on ANY failure we fall back to writing [botUid, ownerUid]
@@ -67,6 +69,7 @@ export async function initAdminHandle(api) {
       const result = await resolveChildAdminIdentities({
         api,
         botUid,
+        botKey,
         projectRoot,
       });
       console.log(`[initAdminHandle] Đã resolve Admin Tối Cao cho bot con ${botUid}:`, result.resolvedAdmins);
@@ -74,7 +77,7 @@ export async function initAdminHandle(api) {
     } catch (err) {
       console.error(`[initAdminHandle] Dynamic identity resolution thất bại cho bot con ${botUid}: ${err.message}. Fallback ghi [botUid, ownerUid] làm admin.`);
       try {
-        await fallbackWriteChildAdmins(botUid, { projectRoot, api });
+        await fallbackWriteChildAdmins(botUid, { projectRoot, api, botKey });
       } catch (fallbackErr) {
         console.error(`[initAdminHandle] Fallback ghi admin list cũng thất bại cho bot con ${botUid}: ${fallbackErr.message}`);
       }

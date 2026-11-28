@@ -240,12 +240,21 @@ export async function resolveUsernameInChildSession({
 export async function resolveChildAdminIdentities({
   api,
   botUid,
+  botKey,
   seeds = null,
   projectRoot = getProjectRoot(),
   store = null,
 } = {}) {
   const root = projectRoot || getProjectRoot();
-  const bUid = String(botUid || (typeof api?.getOwnId === "function" ? api.getOwnId() : "")).trim();
+  const accountUid = String((typeof api?.getOwnId === "function" ? api.getOwnId() : "") || botUid || "").trim();
+  let bUid = String(botKey || process.env.BOT_KEY || "").trim();
+  if (!bUid) {
+    const registryPath = path.join(root, "mybot", "mybots.json");
+    const registry = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, "utf8").replace(/^\uFEFF/, "")) : {};
+    const matches = Object.entries(registry).filter(([, record]) => String(record?.accountUid || record?.uid || "") === accountUid);
+    if (matches.length > 1) throw Object.assign(new Error("Account maps to multiple bot keys"), { code: "IDENTITY_CONFLICT" });
+    bUid = matches[0]?.[0] || String(botUid || accountUid);
+  }
   if (!bUid) {
     console.error("[child-admin-resolver] CHILD_ADMIN_RESOLUTION_FAILED: botUid is required, cannot resolve admins");
     return {
@@ -274,7 +283,7 @@ export async function resolveChildAdminIdentities({
   }
 
   // Resolve the bot's own UID — this is always a guaranteed Supreme Admin.
-  const selfUid = bUid;
+  const selfUid = accountUid;
   let ownerUid = null;
   let botAdminUid = null;
 
@@ -394,7 +403,10 @@ export async function resolveChildAdminIdentities({
   // via foreign UID fallback). The bot's own UID remains the only verified admin.
   try {
     updateProfile(bUid, {
-      ownerUid: ownerUid || null,
+      childOwnerUid: ownerUid || null,
+      childMainAdminUid: botAdminUid || null,
+      accountIdentityStatus: "verified",
+      adminBindingStatus: usedFallback ? "pending" : "verified",
       adminIdentitySeeds: { botAdminUsername: botAdminUsername || null, ownerUsername: ownerUsername || null, selfUsername: selfUsername || null },
       identityPending: usedFallback,
       identityPendingReason: usedFallback ? fallbackNote : null,

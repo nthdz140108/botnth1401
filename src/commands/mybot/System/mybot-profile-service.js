@@ -3,6 +3,7 @@ import path from "node:path";
 import { writeJsonAtomic } from "./json-state.js";
 import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 import { DEFAULT_STYLE, normalizeStyle, validateStyle } from "./mybot-style.js";
+import { withRegistryLockSync } from "./registry-lock.js";
 
 export function getProfileDir(botId, root = process.cwd()) {
   return path.join(root, "mybot", "instances", String(botId), "data");
@@ -53,6 +54,13 @@ export function createDefaultProfile(botId, overrides = {}) {
     trialStatus,
     expiryAt,
     enabled,
+    activationPolicy: overrides.activationPolicy || null,
+    activatedAt: overrides.activatedAt || null,
+    desiredStatus: overrides.desiredStatus || null,
+    accountIdentityStatus: overrides.accountIdentityStatus || "unverified",
+    adminBindingStatus: overrides.adminBindingStatus || "pending",
+    childOwnerUid: overrides.childOwnerUid || null,
+    childMainAdminUid: overrides.childMainAdminUid || null,
     adminIdentitySeeds,
     identityPending,
     identityPendingReason,
@@ -176,6 +184,13 @@ export function getProfile(botId, { root = process.cwd() } = {}) {
     trialStatus: regEntry.trialStatus || (regEntry.expiryAt ? "active" : "pending"),
     expiryAt: regEntry.expiryAt || null,
     enabled: regEntry.enabled !== false && regEntry.status !== "disabled" && regEntry.status !== "rejected",
+    activationPolicy: regEntry.activationPolicy || null,
+    activatedAt: regEntry.activatedAt || null,
+    desiredStatus: regEntry.desiredStatus || null,
+    accountIdentityStatus: regEntry.accountIdentityStatus || "unverified",
+    adminBindingStatus: regEntry.adminBindingStatus || "pending",
+    childOwnerUid: regEntry.childOwnerUid || null,
+    childMainAdminUid: regEntry.childMainAdminUid || null,
     adminIdentitySeeds: regEntry.adminIdentitySeeds || null,
     identityPending: regEntry.identityPending !== undefined ? regEntry.identityPending : false,
     identityPendingReason: regEntry.identityPendingReason || null,
@@ -184,7 +199,12 @@ export function getProfile(botId, { root = process.cwd() } = {}) {
   });
 }
 
-export function saveProfile(botId, profileData, {
+export function saveProfile(botId, profileData, options = {}) {
+  const root = options.root || process.cwd();
+  return withRegistryLockSync(path.join(root, "mybot", "mybots.json"), () => saveProfileLocked(botId, profileData, options));
+}
+
+function saveProfileLocked(botId, profileData, {
   root = process.cwd(),
   expectedRevision = null,
   actor = "system",
@@ -266,10 +286,16 @@ export function saveProfile(botId, profileData, {
 }
 
 export function updateProfile(botId, patch = {}, options = {}) {
+  const root = options.root || process.cwd();
+  return withRegistryLockSync(path.join(root, "mybot", "mybots.json"), () => updateProfileLocked(botId, patch, options));
+}
+
+function updateProfileLocked(botId, patch = {}, options = {}) {
   const bId = String(botId).trim();
   const current = getProfile(bId, { root: options.root });
 
   const allowedFields = [
+    "activationPolicy", "activatedAt", "desiredStatus", "accountIdentityStatus", "adminBindingStatus", "childOwnerUid", "childMainAdminUid",
     "ownerUid",
     "ownerUsername",
     "ownerName",
@@ -297,6 +323,11 @@ export function updateProfile(botId, patch = {}, options = {}) {
 }
 
 export function updateStyle(botId, stylePatch = {}, options = {}) {
+  const root = options.root || process.cwd();
+  return withRegistryLockSync(path.join(root, "mybot", "mybots.json"), () => updateStyleLocked(botId, stylePatch, options));
+}
+
+function updateStyleLocked(botId, stylePatch = {}, options = {}) {
   const bId = String(botId).trim();
   const current = getProfile(bId, { root: options.root });
 
@@ -352,6 +383,9 @@ export function syncProfileToRegistry(profile, { root = process.cwd() } = {}) {
   entry.trialStatus = profile.trialStatus;
   entry.expiryAt = profile.expiryAt;
   entry.enabled = profile.enabled !== false;
+  for (const field of ["activationPolicy", "activatedAt", "desiredStatus", "accountIdentityStatus", "adminBindingStatus", "childOwnerUid", "childMainAdminUid"]) {
+    if (profile[field] !== undefined) entry[field] = profile[field];
+  }
   if (profile.adminIdentitySeeds !== undefined) {
     entry.adminIdentitySeeds = profile.adminIdentitySeeds;
   }

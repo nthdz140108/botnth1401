@@ -23,7 +23,7 @@ function cleanupTestEnv() {
 
 // NEW POLICY: previous `status` (including `stopped`) never excludes a bot;
 // only validity (expiry, credentials, port, flags) does.
-test("auto-restore selects every valid unexpired bot regardless of previous status", async () => {
+test("auto-restore selects valid running bots and preserves manual stops", async () => {
   setupTestEnv();
   try {
     const { getAutoRestoreCandidates } = await import("../src/commands/mybot/System/mybot-auto-restore.js");
@@ -41,7 +41,7 @@ test("auto-restore selects every valid unexpired bot regardless of previous stat
     };
 
     const candidates = getAutoRestoreCandidates(registry);
-    assert.deepEqual(candidates.map(c => c.uid).sort(), ["bot-running-1", "bot-stopped"]);
+    assert.deepEqual(candidates.map(c => c.uid).sort(), ["bot-running-1"]);
   } finally {
     cleanupTestEnv();
   }

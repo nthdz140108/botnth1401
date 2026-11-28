@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
  * reconcile flow, not by this policy (see tests below).
  */
 
-test("restore policy filters disabled, expired and cookie-dead bots but keeps stopped", async () => {
+test("restore policy filters disabled, expired and cookie-dead bots and preserves manual stops", async () => {
   const { getAutoRestoreCandidates } = await import("../../src/commands/mybot/System/mybot-auto-restore.js");
 
   const past = new Date(Date.now() - 86400_000).toISOString();
@@ -29,7 +29,7 @@ test("restore policy filters disabled, expired and cookie-dead bots but keeps st
   const candidates = getAutoRestoreCandidates(registry);
   const uids = candidates.map(c => c.uid);
   assert.ok(uids.includes("bot-ok"), `bot-ok should be restored (got: ${uids.join(",")})`);
-  assert.ok(uids.includes("bot-stopped-valid"), "stopped-but-valid bot must be restored");
+  assert.ok(!uids.includes("bot-stopped-valid"), "manually stopped bot must remain stopped");
   assert.ok(!uids.includes("bot-disabled"), "disabled bot must NOT be restored");
   assert.ok(!uids.includes("bot-expired"), "expired bot must NOT be restored");
   assert.ok(!uids.includes("bot-cookie-dead"), "cookie-dead bot must NOT be restored");

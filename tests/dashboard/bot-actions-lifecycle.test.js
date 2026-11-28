@@ -13,11 +13,11 @@ async function fixture() {
     await fs.mkdir(path.join(root, dir), { recursive: true });
   }
   await fs.writeFile(path.join(root, "mybot/mybots.json"), JSON.stringify({
-    child: { name: "child", displayName: "Child Bot", status: "running", webPort: 3333 },
+    child: { name: "child", displayName: "Child Bot", ownerUid: "test-owner", expiryAt: "-1", status: "running", webPort: 3333 },
   }));
   await fs.writeFile(path.join(root, "mybot/bots/child.json"), JSON.stringify({ name: "child", webPort: 3333 }));
   await fs.writeFile(path.join(root, "mybot/state/child.json"), JSON.stringify({ status: "running", pid: "99999" }));
-  await fs.writeFile(path.join(root, "mybot/credentials/child.json"), "{\"cookie\":{\"token\":\"secret\"}}\n");
+  await fs.writeFile(path.join(root, "mybot/credentials/child.json"), "{\"cookie\":{\"token\":\"secret\"},\"imei\":\"test-imei\",\"userAgent\":\"test-ua\"}\n");
   return root;
 }
 
@@ -42,6 +42,7 @@ function serviceFor(root, overrides = {}) {
     calls,
     registry,
     service: createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,
@@ -69,11 +70,11 @@ test("start with legacy boolean false must throw ACTION_FAILED", async () => {
   await assert.rejects(() => service.start("child"), { code: "ACTION_FAILED" });
 });
 
-test("successful PM2 start reports starting (not running) before readiness", async () => {
+test("successful PM2 start reports running only after injected readiness evidence", async () => {
   const root = await fixture();
   const { service } = serviceFor(root);
   const result = await service.start("child");
-  assert.equal(result.status, "starting");
+  assert.equal(result.status, "running");
   assert.equal(result.action, "start");
 });
 

@@ -33,6 +33,7 @@ function validRegistryEntry(uid, overrides = {}) {
   return {
     uid,
     status: "stopped",
+    desiredStatus: "running",
     webPort: "5311",
     expiryAt: FUTURE,
     enabled: true,

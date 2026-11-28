@@ -13,6 +13,8 @@ import {
   startBotWithLauncher,
   stopPM2Process,
   createBotConfig as defaultCreateBotConfig,
+  checkBotHealth,
+  cancelPendingBotStart,
 } from "../commands/mybot/System/pm2-manager.js";
 import { requestRestartForBot } from "../utils/util.js";
 import { claimOwnerTrial, getOwnerTrialStatus } from "../commands/mybot/System/mybot-trial-ledger.js";
@@ -21,6 +23,7 @@ import { activateBot } from "../commands/mybot/System/mybot-activation-service.j
 import { PM2Adapter, PM2ErrorCode } from "../runtime/pm2-adapter.js";
 import { createLaunchDescriptor } from "../runtime/launch-descriptor.js";
 import { withBotLock } from "../runtime/bot-lock.js";
+import { withMyBotsTransaction } from "../commands/mybot/Manager/qr-provisioning-registry.js";
 
 const DELETE_CONFIRMATION = "DELETE_SELECTED_BOTS";
 
@@ -79,23 +82,7 @@ function safeReason(result) {
  * CMD windows. Keeps the same return shape so callers don't have to branch.
  */
 async function defaultPM2Start(botId, options = {}) {
-  const projectRoot = path.resolve(options.projectRoot || process.cwd());
-  const adapter = options.pm2Adapter || new PM2Adapter({ projectRoot });
-  const isMain = botId === "admin";
-  const descriptor = createLaunchDescriptor({
-    kind: isMain ? "main" : "child",
-    botKey: isMain ? "admin" : botId,
-    uid: botId,
-    projectRoot,
-  });
-  const result = await adapter.startBot(descriptor);
-  if (!result?.success) {
-    return { success: false, pid: null, reason: result?.reason || result?.detail || "pm2_start_failed", detail: result?.detail || null };
-  }
-  // Best-effort PID lookup; success path doesn't strictly require pid
-  const procs = await adapter.listMyBotProcesses().catch(() => []);
-  const proc = procs.find((p) => p.name === descriptor.pm2Name);
-  return { success: true, pid: proc?.pid || null, reason: result.reason };
+  return startBotWithLauncher(botId, options);
 }
 
 async function defaultInternalBridgeCaller({ port, pathname, body = {}, root = process.cwd() }) {
@@ -131,6 +118,7 @@ export function createBotActionService({
   restartLauncher = defaultRestartLauncher,
   createBotConfig = defaultCreateBotConfig,
   internalBridgeCaller = defaultInternalBridgeCaller,
+  readinessProbe = null,
 } = {}) {
   if (!registry) throw new Error("registry is required");
   if (!configStore) throw new Error("configStore is required");
@@ -157,7 +145,13 @@ export function createBotActionService({
   function trackOperation(botId, action, executor) {
     const existing = activeOperations.get(botId);
     if (existing && (existing.operation.phase === "accepted" || existing.operation.phase === "connecting" || existing.operation.phase === "stopping")) {
-      return existing.promise;
+      if (existing.operation.action === action) return existing.promise;
+      if (["stop", "standby", "disable", "delete"].includes(action)) {
+        existing.operation.cancelled = true;
+        return Promise.allSettled([existing.promise, cancelPendingBotStart(botId, { projectRoot })])
+          .then(() => trackOperation(botId, action, executor));
+      }
+      return Promise.reject(actionError(409, "OPERATION_CONFLICT", "Another lifecycle action is in progress", { stage: "operation", operationId: existing.operation.operationId }));
     }
 
     const operationId = `op_${action}_${botId}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
@@ -180,6 +174,7 @@ export function createBotActionService({
     const promise = (async () => {
       try {
         const result = await executor(operation);
+        if (operation.cancelled) throw actionError(409, "START_CANCELLED", "Startup was cancelled", { stage: "readiness" });
         const resolvedPhase = result?.phase || (action === "standby" ? "standby" : action === "stop" ? (result?.status === "standby" ? "standby" : "stopped") : (result?.status === "running" ? "ws_ready" : "connecting"));
         const resolvedStatus = result?.status || resolvedPhase;
         operation.phase = resolvedPhase;
@@ -201,6 +196,7 @@ export function createBotActionService({
         operation.updatedAt = new Date().toISOString();
         operation.error = {
           code: err.code || "ACTION_FAILED",
+          stage: err.stage || "lifecycle",
           message: err.message,
           details: err.details || null,
           fallback: err.fallback || null,
@@ -244,7 +240,7 @@ export function createBotActionService({
         operation.phase = "connecting";
         let started;
         try {
-          started = await pm2.start(botId);
+          started = await pm2.start(botId, { projectRoot });
         } catch (error) {
           throw actionFailureFromPM2(error, "Bot start failed");
         }
@@ -252,12 +248,20 @@ export function createBotActionService({
         if (!normalized?.success) {
           throw actionFailureFromPM2(normalized, "Bot start failed");
         }
+        if (operation.cancelled) throw actionError(409, "START_CANCELLED", "Startup was cancelled", { stage: "readiness" });
+        const health = await verifyReady(botId, bot);
+        if (operation.cancelled) throw actionError(409, "START_CANCELLED", "Startup was cancelled", { stage: "readiness" });
+        if (botId !== "admin" && !bot.isMain) {
+          const activation = await activateBot({ botId, root: projectRoot, actorUid: bot.ownerUid || bot.profile?.ownerUid, isSystemAdmin: true,
+            pm2Adapter: { start: async () => true, stop: pm2.stop }, healthProbe: async () => health });
+          if (!activation.success) throw actionError(409, activation.code || "ACTIVATION_FAILED", activation.error || "Activation failed", { stage: "activation" });
+        }
 
         return {
           botId,
           action: "start",
-          status: "starting",
-          phase: "connecting",
+          status: "running",
+          phase: "ws_ready",
           pm2: { pid: normalized.pid ?? null, reason: normalized.reason || null },
         };
       }, { root: projectRoot });
@@ -275,7 +279,9 @@ export function createBotActionService({
         }
 
         operation.phase = "stopping";
+        await cancelPendingBotStart(botId, { projectRoot });
         await stopRuntime(botId);
+        updateProfile(botId, { desiredStatus: "stopped" }, { root: projectRoot });
         // Verify the process is really no longer online before claiming "stopped".
         try {
           const status = await pm2.status(botId);
@@ -381,6 +387,8 @@ export function createBotActionService({
         body: { botId, options },
         root: projectRoot,
       });
+      await verifyReady(botId, bot);
+      updateProfile(botId, { desiredStatus: "running" }, { root: projectRoot });
       return {
         botId,
         action: "resume",
@@ -420,7 +428,8 @@ export function createBotActionService({
             if (error?.code === "ACTION_FAILED") throw error;
             throw actionError(409, "ACTION_FAILED", "Bot restart failed", { details: [error?.message || String(error)] });
           }
-          return { botId, action: "restart", status: "restarting", phase: "connecting" };
+          await verifyReady(botId, bot);
+          return { botId, action: "restart", status: "running", phase: "ws_ready" };
         }
         const [pm2Status, processStatus] = await Promise.all([
           Promise.resolve(pm2.status(botId)).catch(() => null),
@@ -446,7 +455,9 @@ export function createBotActionService({
           if (error?.code === "ACTION_FAILED") throw error;
           throw actionError(409, "ACTION_FAILED", "Bot restart failed", { details: [error?.message || String(error)] });
         }
-        return { botId, action: "restart", status: "restarting", phase: "connecting" };
+        await verifyReady(botId, bot);
+        updateProfile(botId, { desiredStatus: "running" }, { root: projectRoot });
+        return { botId, action: "restart", status: "running", phase: "ws_ready" };
       }, { root: projectRoot });
     });
   }
@@ -465,17 +476,23 @@ export function createBotActionService({
   async function disable(botId, { reason = "" } = {}) {
     const bot = await requireBot(botId);
     if (bot.isMain || botId === "admin") throw actionError(403, "ADMIN_PROTECTED", "Admin bot is protected");
+    await cancelPendingBotStart(botId, { projectRoot });
     await stopRuntime(botId, bot);
     const inventory = await readInventory();
     const disabledAt = new Date().toISOString();
     inventory[botId] = { ...(inventory[botId] || {}), enabled: false, disabledAt, disabledReason: String(reason || "") };
     await configStore.writeJson(registry.inventoryPath, inventory);
-    try { updateProfile(botId, { enabled: false }, { root: projectRoot }); } catch {}
+    updateProfile(botId, { enabled: false, desiredStatus: "stopped" }, { root: projectRoot });
     await auditStore.append({ action: "bots.disable", botId, reason: String(reason || "") });
     return { botId, action: "disable", enabled: false, disabledAt, disabledReason: String(reason || ""), status: "disabled" };
   }
 
   async function deleteBot(botId, { confirm, confirmId, confirmName } = {}) {
+    await cancelPendingBotStart(botId, { projectRoot });
+    return withMyBotsTransaction({ root: projectRoot, registryPath: registry.inventoryPath }, (transaction) => deleteBotLocked(botId, { confirm, confirmId, confirmName }, transaction));
+  }
+
+  async function deleteBotLocked(botId, { confirm, confirmId, confirmName } = {}, transaction) {
     return await withBotLock(botId, async () => {
       const bot = await requireBot(botId);
       if (bot.isMain || botId === "admin") throw actionError(403, "ADMIN_PROTECTED", "Admin bot is protected");
@@ -521,7 +538,7 @@ export function createBotActionService({
       const inventory = await readInventory();
       delete inventory[botId];
       try {
-        await configStore.writeJson(inventoryPath, inventory);
+        transaction.removeProvisionedBot(botId);
         deletedPaths.push(inventoryPath);
       } catch (error) {
         partial = true;
@@ -532,6 +549,7 @@ export function createBotActionService({
         if (target === inventoryPath) continue;
         try {
           const stat = await fs.stat(target);
+          await trackDeletionTarget(target, transaction);
           await fs.rm(target, { recursive: stat.isDirectory(), force: true });
           deletedPaths.push(target);
         } catch (error) {
@@ -544,8 +562,17 @@ export function createBotActionService({
       }
 
       await auditStore.append({ action: "bots.delete", botId, backup: backup.file, deletedPaths, skippedPaths, partial });
+      if (partial) throw actionError(409, "DELETE_DATA_FAILED", "Bot process stopped; data cleanup failed and was rolled back", { stage: "delete-data" });
       return { botId, deletedPaths, skippedPaths, backup, partial };
     }, { root: projectRoot });
+  }
+
+  async function trackDeletionTarget(target, transaction) {
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink()) throw actionError(400, "DELETE_PATH_UNSAFE", "Refusing symlink in bot data");
+    if (stat.isDirectory()) {
+      for (const child of await fs.readdir(target)) await trackDeletionTarget(path.join(target, child), transaction);
+    } else if (stat.isFile()) transaction.trackFile(target);
   }
 
   async function bulk(action, botIds = [], payload = {}) {
@@ -639,6 +666,16 @@ export function createBotActionService({
       if (!killResult?.success) errors.push("SPAWNED_PROCESS_KILL_FAILED");
     }
     if (errors.length) throw actionError(409, "STOP_FAILED", "Bot could not be stopped", { details: errors });
+  }
+
+  async function verifyReady(botId, bot) {
+    const health = typeof readinessProbe === "function"
+      ? await readinessProbe(botId, bot)
+      : await checkBotHealth(botId, Number(bot.webPort || bot.port), 60000, projectRoot);
+    if (!(health?.healthy === true || health?.ready === true)) {
+      throw actionError(409, "READINESS_FAILED", health?.reason || health?.error || "Bot listener is not ready", { stage: "readiness" });
+    }
+    return { ...health, healthy: true };
   }
 
   async function readInventory() {

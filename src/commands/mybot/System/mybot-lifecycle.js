@@ -4,6 +4,8 @@ import path from "path";
 import { writeJsonAtomic } from "./json-state.js";
 import { isMainBot, assertCanDeleteBot, resolveManagedBotTarget, resolveManagedBotList } from "./mybot-identity.js";
 import { releaseCreationQuota } from "./mybot-creation-quota.js";
+import { withMyBotsTransaction } from "../Manager/qr-provisioning-registry.js";
+import { loadMyBotsRegistry, saveMyBotsRegistry } from "./mybots-registry.js";
 
 export function getSortedBotList(myBotsRegistry = {}, projectRoot = process.cwd()) {
   return resolveManagedBotList({ registry: myBotsRegistry, projectRoot, includeMain: true, includeRejected: true });
@@ -66,7 +68,12 @@ export function calculateMinusExpiry(currentExpiryAt, durationMs, now = Date.now
   return new Date(now - 1000).toISOString();
 }
 
-export async function extendBotExpiryLogic({
+export async function extendBotExpiryLogic(options = {}) {
+  const root = path.resolve(path.dirname(options.registryPath || path.join(process.cwd(), "mybot", "mybots.json")), "..");
+  return withMyBotsTransaction({ root, registryPath: options.registryPath }, () => extendBotExpiryLocked(options));
+}
+
+async function extendBotExpiryLocked({
   registryPath,
   botKey,
   durationMs,
@@ -77,8 +84,7 @@ export async function extendBotExpiryLogic({
     throw new Error(`File registry không tồn tại: ${registryPath}`);
   }
 
-  const raw = await fsPromises.readFile(registryPath, "utf8");
-  const myBots = JSON.parse(raw) || {};
+  const myBots = loadMyBotsRegistry(registryPath);
   const botRecord = myBots[botKey];
 
   if (!botRecord) {
@@ -93,12 +99,17 @@ export async function extendBotExpiryLogic({
   }
 
   botRecord.lastUpdated = new Date(now).toISOString();
-  writeJsonAtomic(registryPath, myBots);
+  saveMyBotsRegistry(myBots, registryPath);
 
   return { success: true, botRecord, newExpiry };
 }
 
-export async function reduceBotExpiryLogic({
+export async function reduceBotExpiryLogic(options = {}) {
+  const root = path.resolve(path.dirname(options.registryPath || path.join(process.cwd(), "mybot", "mybots.json")), "..");
+  return withMyBotsTransaction({ root, registryPath: options.registryPath }, () => reduceBotExpiryLocked(options));
+}
+
+async function reduceBotExpiryLocked({
   registryPath,
   botKey,
   durationMs,
@@ -108,8 +119,7 @@ export async function reduceBotExpiryLogic({
     throw new Error(`File registry không tồn tại: ${registryPath}`);
   }
 
-  const raw = await fsPromises.readFile(registryPath, "utf8");
-  const myBots = JSON.parse(raw) || {};
+  const myBots = loadMyBotsRegistry(registryPath);
   const botRecord = myBots[botKey];
 
   if (!botRecord) {
@@ -124,12 +134,18 @@ export async function reduceBotExpiryLogic({
   }
 
   botRecord.lastUpdated = new Date(now).toISOString();
-  writeJsonAtomic(registryPath, myBots);
+  saveMyBotsRegistry(myBots, registryPath);
 
   return { success: true, botRecord, newExpiry };
 }
 
-export async function deleteChildBotLogic({
+export async function deleteChildBotLogic(options = {}) {
+  const root = path.resolve(options.projectRoot || process.cwd());
+  const registryPath = options.registryPath ? path.resolve(options.registryPath) : path.join(root, "mybot", "mybots.json");
+  return withMyBotsTransaction({ root, registryPath }, (transaction) => deleteChildBotLocked({ ...options, projectRoot: root, registryPath, transaction }));
+}
+
+async function deleteChildBotLocked({
   projectRoot = process.cwd(),
   registryPath,
   botKey,
@@ -138,6 +154,7 @@ export async function deleteChildBotLogic({
   killProcessFn = null,
   deleteProcessFn = null,
   auditPath = null,
+  transaction,
 } = {}) {
   const root = path.resolve(projectRoot || process.cwd());
   const resolvedRegistryPath = registryPath ? path.resolve(registryPath) : path.join(root, "mybot", "mybots.json");
@@ -146,8 +163,7 @@ export async function deleteChildBotLogic({
     throw new Error(`File registry không tồn tại: ${resolvedRegistryPath}`);
   }
 
-  const raw = await fsPromises.readFile(resolvedRegistryPath, "utf8");
-  const myBots = JSON.parse(raw) || {};
+  const myBots = loadMyBotsRegistry(resolvedRegistryPath);
   const botRecord = myBots[botKey];
 
   if (!botRecord) {
@@ -161,7 +177,7 @@ export async function deleteChildBotLogic({
   const previousStatus = botRecord.status || "stopped";
   botRecord.status = "deleting";
   botRecord.lastUpdated = new Date().toISOString();
-  writeJsonAtomic(resolvedRegistryPath, myBots);
+  saveMyBotsRegistry(myBots, resolvedRegistryPath);
 
   try {
     let deleteResult;
@@ -196,7 +212,7 @@ export async function deleteChildBotLogic({
       botRecord.status = previousStatus;
       botRecord.lastDeleteError = deleteResult?.detail || deleteResult?.reason || "PM2 delete failed";
       botRecord.lastUpdated = new Date().toISOString();
-      writeJsonAtomic(resolvedRegistryPath, myBots);
+      saveMyBotsRegistry(myBots, resolvedRegistryPath);
 
       return {
         success: false,
@@ -219,7 +235,9 @@ export async function deleteChildBotLogic({
     }
 
     // 3. Collect paths to clean up
-    const targetUid = String(botRecord.uid || botKey);
+    // Account UID is not a storage alias. Deleting that UID path may destroy
+    // another legacy bot whose stable management key happens to match it.
+    const targetUid = String(botKey);
     const candidateFiles = [
       path.join(root, "mybot", "credentials", `${targetUid}.json`),
       path.join(root, "mybot", "credentials", `${botKey}.json`),
@@ -284,10 +302,11 @@ export async function deleteChildBotLogic({
       if (!filePath.startsWith(root)) continue;
       try {
         if (await fsPromises.access(filePath).then(() => true).catch(() => false)) {
+          transaction.trackFile(filePath);
           await fsPromises.unlink(filePath);
         }
       } catch (err) {
-        console.warn(`Không thể xóa file ${filePath}:`, err.message);
+        throw new Error(`Không thể xóa file dữ liệu của bot: ${err.code || "DELETE_DATA_FAILED"}`, { cause: err });
       }
     }
 
@@ -296,19 +315,17 @@ export async function deleteChildBotLogic({
       if (!dirPath.startsWith(root)) continue;
       try {
         if (await fsPromises.access(dirPath).then(() => true).catch(() => false)) {
+          await trackDirectoryFiles(dirPath, transaction);
           await fsPromises.rm(dirPath, { recursive: true, force: true });
         }
       } catch (err) {
-        console.warn(`Không thể xóa thư mục ${dirPath}:`, err.message);
+        throw new Error(`Không thể xóa thư mục dữ liệu của bot: ${err.code || "DELETE_DATA_FAILED"}`, { cause: err });
       }
     }
 
     // 4. Remove from registry
     delete myBots[botKey];
-    if (targetUid !== botKey && myBots[targetUid]) {
-      delete myBots[targetUid];
-    }
-    writeJsonAtomic(resolvedRegistryPath, myBots);
+    saveMyBotsRegistry(myBots, resolvedRegistryPath);
 
     // 5. Append audit (no secrets)
     if (auditPath) {
@@ -350,8 +367,17 @@ export async function deleteChildBotLogic({
     botRecord.status = previousStatus;
     botRecord.lastDeleteError = error.message;
     botRecord.lastUpdated = new Date().toISOString();
-    writeJsonAtomic(resolvedRegistryPath, myBots);
+    saveMyBotsRegistry(myBots, resolvedRegistryPath);
     throw error;
+  }
+}
+
+async function trackDirectoryFiles(directory, transaction) {
+  for (const entry of await fsPromises.readdir(directory, { withFileTypes: true })) {
+    const file = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) throw Object.assign(new Error("Refusing symlink in bot delete data"), { code: "DELETE_PATH_UNSAFE" });
+    if (entry.isDirectory()) await trackDirectoryFiles(file, transaction);
+    else if (entry.isFile()) transaction.trackFile(file);
   }
 }
 

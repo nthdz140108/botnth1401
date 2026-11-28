@@ -35,8 +35,8 @@ async function createTestWorkspace() {
     path.join(root, "mybot/mybots.json"),
     JSON.stringify({
       admin: { name: "admin", displayName: "Admin Bot", status: "running", webPort: 3100 },
-      bot1: { name: "bot1", displayName: "Sub Bot 1", status: "running", webPort: 3101 },
-      bot2: { name: "bot2", displayName: "Sub Bot 2", status: "stopped", webPort: 3102 },
+      bot1: { name: "bot1", displayName: "Sub Bot 1", ownerUid: "owner", expiryAt: "-1", status: "running", webPort: 3101 },
+      bot2: { name: "bot2", displayName: "Sub Bot 2", ownerUid: "owner", expiryAt: "-1", status: "stopped", webPort: 3102 },
       deadBot: { name: "deadBot", displayName: "Dead Bot", status: "running", webPort: 3103, cookieDead: true },
     }, null, 2)
   );
@@ -117,6 +117,7 @@ test("lifecycle: single lock ownership in bot-action-service and no double lock 
     };
 
     const actionService = createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,
@@ -143,12 +144,15 @@ test("lifecycle: single lock ownership in bot-action-service and no double lock 
         body,
       });
 
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 202);
       const data = await res.json();
       assert.equal(data.success, true);
       assert.equal(data.data.botId, "bot1");
       assert.equal(data.data.action, "start");
       assert.ok(data.data.operationId, "Returns structured operationId");
+      for (let attempt = 0; attempt < 100 && actionService.getActiveOperation("bot1"); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       assert.ok(lockActiveDuringAction, "Lock was acquired by bot-action-service");
 
       // Verify lock file is released after action finishes
@@ -188,6 +192,7 @@ test("lifecycle: operations return operationId and transitions; duplicate call r
     };
 
     const service = createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,
@@ -218,8 +223,8 @@ test("lifecycle: operations return operationId and transitions; duplicate call r
 
     const [res1, res2, resBot1] = await Promise.all([op1Promise, op2Promise, opBot1Promise]);
     assert.equal(res1.operationId, res2.operationId, "Both callers receive identical operationId");
-    assert.equal(res1.status, "starting");
-    assert.equal(res1.phase, "connecting");
+    assert.equal(res1.status, "running");
+    assert.equal(res1.phase, "ws_ready");
     assert.equal(startCalls, 1, "Underlying PM2 start was called exactly once");
 
     assert.equal(resBot1.botId, "bot1");
@@ -230,7 +235,7 @@ test("lifecycle: operations return operationId and transitions; duplicate call r
     const retrieved = service.getOperation(res1.operationId);
     assert.ok(retrieved);
     assert.equal(retrieved.operationId, res1.operationId);
-    assert.equal(retrieved.phase, "connecting");
+    assert.equal(retrieved.phase, "ws_ready");
   } finally {
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   }
@@ -505,6 +510,7 @@ test("hot-standby: service.standby and service.resume flow with RAM measurement 
     };
 
     const service = createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,
@@ -553,6 +559,7 @@ test("hot-standby: fallbacks trigger cleanly on dead process or dead cookie", as
     };
 
     const service = createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,

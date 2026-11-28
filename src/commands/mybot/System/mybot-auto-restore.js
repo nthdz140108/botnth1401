@@ -4,10 +4,8 @@ import fs from "fs";
 /**
  * Auto-restore / auto-start policy for child bots at startup (`run.bat`).
  *
- * NEW POLICY: every VALID, non-expired child bot is an auto-start candidate
- * regardless of its previous `status` (including `stopped`). `status` only
- * records what happened in the previous session — Stop is honored until the
- * next `run.bat`.
+ * Only bots whose desiredStatus is running resume after reboot. Legacy records
+ * without desiredStatus resume only when their last status was running/starting.
  *
  * A bot is selected when ALL of the following hold (fail-closed):
  * - key is not `admin`
@@ -78,7 +76,7 @@ function readCredentialFile(absPath) {
 export function resolveCredentialFilePath(botInfo, projectRoot) {
   if (!botInfo || typeof botInfo !== "object") return null;
   const root = projectRoot ? path.resolve(projectRoot) : null;
-  const uid = String(botInfo.uid || botInfo.botKey || "").trim();
+  const uid = String(botInfo.botKey || botInfo.key || botInfo.uid || "").trim();
   const candidates = [];
 
   // 1. configFilePath declared in the registry (relative or absolute).
@@ -140,6 +138,10 @@ function parseWebPort(botInfo) {
 export function evaluateRestoreCandidate(uid, botInfo, { now = Date.now(), projectRoot = null } = {}) {
   if (!uid || uid === "admin") return { ok: false, reason: "not-a-child-bot" };
   if (!botInfo || typeof botInfo !== "object") return { ok: false, reason: "malformed-record" };
+  if (botInfo.desiredStatus === "stopped") return { ok: false, reason: "desired-stopped" };
+  if (!botInfo.desiredStatus && !["running", "starting", "online"].includes(String(botInfo.status || "").toLowerCase())) {
+    return { ok: false, reason: "desired-stopped" };
+  }
 
   if (botInfo.deleted === true) return { ok: false, reason: "deleted" };
   if (botInfo.enabled === false) return { ok: false, reason: "disabled" };
@@ -178,7 +180,7 @@ export function getAutoRestoreCandidates(registry = {}, options = {}) {
   const projectRoot = options.projectRoot || null;
   const candidates = [];
   for (const [uid, botInfo] of Object.entries(registry || {})) {
-    const verdict = evaluateRestoreCandidate(uid, botInfo, { now, projectRoot });
+    const verdict = evaluateRestoreCandidate(uid, { ...botInfo, botKey: uid }, { now, projectRoot });
     if (!verdict.ok) continue;
     const port = parseWebPort(botInfo);
     candidates.push({
@@ -211,7 +213,7 @@ export function explainAutoRestoreCandidates(registry = {}, options = {}) {
   const candidates = [];
   const skipped = {};
   for (const [uid, botInfo] of Object.entries(registry || {})) {
-    const verdict = evaluateRestoreCandidate(uid, botInfo, { now, projectRoot });
+    const verdict = evaluateRestoreCandidate(uid, { ...botInfo, botKey: uid }, { now, projectRoot });
     if (verdict.ok) candidates.push({ uid, botKey: botInfo?.botKey || uid, webPort: parseWebPort(botInfo) });
     else skipped[uid] = verdict.reason;
   }
@@ -235,13 +237,6 @@ export async function executeAutoRestore({
     const bot = { ...candidate, ...(registry[candidate.uid] || {}) };
     const uid = candidate.uid;
     attempted.push(uid);
-
-    const webPort = candidate.webPort || parseInt(bot.webPort, 10);
-    if (webPort && (await isPortInUseFn(webPort))) {
-      logFn(`Bot ${bot.displayName || uid} (${uid}) is already running on port ${webPort}, skipping`);
-      succeeded.push(uid);
-      continue;
-    }
 
     try {
       const result = await launcherFn(uid);

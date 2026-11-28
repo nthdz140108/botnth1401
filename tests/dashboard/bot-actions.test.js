@@ -13,7 +13,7 @@ async function fixture() {
     await fs.mkdir(path.join(root, dir), { recursive: true });
   }
   await fs.writeFile(path.join(root, "mybot/mybots.json"), JSON.stringify({
-    child: { name: "child", displayName: "Child Bot", status: "running", webPort: 3333 },
+    child: { name: "child", displayName: "Child Bot", ownerUid: "test-owner", expiryAt: "-1", status: "running", webPort: 3333 },
     stopped: { name: "stopped", status: "stopped" },
     disabled: { name: "disabled", status: "stopped", enabled: false, disabledReason: "maintenance" },
   }));
@@ -25,7 +25,7 @@ async function fixture() {
     dataPath: "mybot/data/child",
   }));
   await fs.writeFile(path.join(root, "mybot/state/child.json"), JSON.stringify({ status: "running", pid: "99999" }));
-  await fs.writeFile(path.join(root, "mybot/credentials/child.json"), "{\"cookie\":{\"token\":\"secret\"}}\n");
+  await fs.writeFile(path.join(root, "mybot/credentials/child.json"), "{\"cookie\":{\"token\":\"secret\"},\"imei\":\"test-imei\",\"userAgent\":\"test-ua\"}\n");
   await fs.mkdir(path.join(root, "mybot/overrides/child"), { recursive: true });
   await fs.writeFile(path.join(root, "mybot/overrides/child/commands.json"), "{}\n");
   await fs.mkdir(path.join(root, "mybot/data/child"), { recursive: true });
@@ -54,6 +54,7 @@ function serviceFor(root, overrides = {}) {
     calls,
     registry,
     service: createBotActionService({
+      readinessProbe: async () => ({ healthy: true, checkedAt: new Date().toISOString() }),
       root,
       registry,
       configStore,
@@ -77,9 +78,9 @@ test("restarts admin through the launcher without starting a second bot", async 
   const result = await service.restart("admin");
   assert.equal(result.botId, "admin");
   assert.equal(result.action, "restart");
-  assert.equal(result.status, "restarting");
+  assert.equal(result.status, "running");
   assert.ok(result.operationId);
-  assert.equal(result.phase, "connecting");
+  assert.equal(result.phase, "ws_ready");
   assert.deepEqual(calls, [["launcher", "admin"]]);
 });
 
@@ -93,9 +94,9 @@ test("restarts a directly spawned bot by killing then starting it", async () => 
   const result = await service.restart("child");
   assert.equal(result.botId, "child");
   assert.equal(result.action, "restart");
-  assert.equal(result.status, "restarting");
+  assert.equal(result.status, "running");
   assert.ok(result.operationId);
-  assert.equal(result.phase, "connecting");
+  assert.equal(result.phase, "ws_ready");
   assert.deepEqual(calls, [["kill", "child"], ["start", "child"]]);
 });
 

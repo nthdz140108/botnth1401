@@ -24,6 +24,7 @@ const PAST = new Date(Date.now() - 86400_000).toISOString();
 function validBot(overrides = {}) {
   return {
     status: "stopped",
+    desiredStatus: "running",
     webPort: "5001",
     expiryAt: FUTURE,
     enabled: true,
@@ -32,11 +33,11 @@ function validBot(overrides = {}) {
   };
 }
 
-test("stopped but valid and unexpired bot IS an auto-start candidate", async () => {
+test("manually stopped valid bot is excluded from reboot restoration", async () => {
   const { getAutoRestoreCandidates } = await loadPolicy();
-  const registry = { "bot-stopped-valid": validBot({}) };
+  const registry = { "bot-stopped-valid": validBot({ desiredStatus: "stopped" }) };
   const candidates = getAutoRestoreCandidates(registry);
-  assert.deepEqual(candidates.map((c) => c.uid), ["bot-stopped-valid"]);
+  assert.deepEqual(candidates.map((c) => c.uid), []);
 });
 
 test("permanently valid bot (expiryAt '-1') is a candidate", async () => {
@@ -126,7 +127,7 @@ test("skip reasons are collected per bot for diagnostics", async () => {
   assert.match(report.skipped["bot-expired"], /expired/i);
 });
 
-test("executeAutoRestore counts already-online ports as success without launcher call", async () => {
+test("executeAutoRestore delegates occupied ports to launcher readiness verification", async () => {
   const { executeAutoRestore } = await loadPolicy();
   const launched = [];
   const report = await executeAutoRestore({
@@ -137,7 +138,7 @@ test("executeAutoRestore counts already-online ports as success without launcher
     launcherFn: async (uid) => { launched.push(uid); return { success: true }; },
     isPortInUseFn: async (port) => port === 5101,
   });
-  assert.deepEqual(launched, ["bot-offline"]);
+  assert.deepEqual(launched.sort(), ["bot-offline", "bot-online"]);
   assert.equal(report.attempted.length, 2);
   assert.equal(report.succeeded.length, 2);
   assert.equal(report.failed.length, 0);
