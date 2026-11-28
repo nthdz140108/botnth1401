@@ -43,7 +43,6 @@ import { normalizeLoginCredential } from "../commands/mybot/System/credential-no
 import { verifyLoginCredential } from "../commands/mybot/System/login-verification.js";
 import { persistVerifiedBot } from "../commands/mybot/System/verified-provisioning.js";
 import { initializeVerifiedBotFiles } from "../commands/mybot/Manager/qr-login-command.js";
-import { withMyBotsTransaction } from "../commands/mybot/Manager/qr-provisioning-registry.js";
 import { writeJsonAtomic } from "../commands/mybot/System/json-state.js";
 import { CredentialService } from "./credential-service.js";
 import { createBotManagementService } from "./bot-management-service.js";
@@ -90,6 +89,7 @@ export class NodeBridgeService {
     secret = null,
     verifyCredential = verifyLoginCredential,
     verifyChildAdminUid = null,
+    qrModuleLoader = undefined,
   } = {}) {
     this.root = path.resolve(root);
     this.verifyCredential = verifyCredential;
@@ -127,7 +127,11 @@ export class NodeBridgeService {
       actions: this.actions,
     });
 
+    this.botDrafts = new Map();
     this.botQrManager = createQrSessionManager({
+      drafts: this.botDrafts,
+      verifyAccount: verifyCredential,
+      ...(qrModuleLoader ? { moduleLoader: qrModuleLoader } : {}),
       root: this.root,
       registry: this.registry,
       configStore: this.configStore,
@@ -1003,13 +1007,11 @@ export class NodeBridgeService {
         const identity = await this.verifyCredential(credential, { root: this.root });
         created = await persistVerifiedBot({ root: this.root, credential, identity, ownerUid, allowAdmin: true, initialize, profilePatch: { activationPolicy } });
       } else {
-        created = await withMyBotsTransaction({ root: this.root }, async (txn) => {
-          const botKey = `bot_${crypto.randomUUID()}`;
-          const record = await txn.reserveProvisionedBot({ uid: botKey, botKey, ownerUid, createdByUid: ownerUid, displayName: req.body?.displayName || botKey, accountIdentityStatus: "pending", adminBindingStatus: "pending", desiredStatus: "stopped", activationPolicy });
-          await initialize(botKey, { prefix, cookie: {}, imei: "", userAgent: getZaloRuntimeConfig().userAgent, active: false }, record, txn);
-          txn.finalizeProvisionedBot(botKey, { ...record, status: "stopped" });
-          return { botKey, record, created: true, restartRequired: false };
-        });
+        for (const [key, draft] of this.botDrafts) if (draft.expiresAt <= Date.now()) this.botDrafts.delete(key);
+        const botKey = `bot_${crypto.randomUUID()}`;
+        const draft = { botKey, ownerUid, prefix, activationPolicy, displayName: req.body?.displayName || botKey, createdAt: Date.now(), expiresAt: Date.now() + 5 * 60_000 };
+        this.botDrafts.set(botKey, draft);
+        created = { botKey, record: { ...draft, accountIdentityStatus: "pending", adminBindingStatus: "pending", desiredStatus: "stopped", status: "draft" }, created: true, restartRequired: false };
       }
       const botKey = created.botKey;
       let qr = null;
